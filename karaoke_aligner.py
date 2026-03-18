@@ -311,4 +311,3 @@ class KaraokeAligner:
                 "letters": [] 
             })
         return final_json
-    
