@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+    <meta http-equiv="Pragma" content="no-cache">
+    <meta http-equiv="Expires" content="0">
+    <title>AI-Karaoke Pro</title>
+    <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+
+<div class="app-container">
+
+    <!-- Прогресс-баннер обработки -->
+    <div id="upload-progress-box" class="progress-banner" style="display: none;">
+        <div class="status-text">
+            <span id="upload-status">Инициализация...</span>
+            <span id="progress-percent" class="color-accent">0%</span>
+        </div>
+        <div class="progress-bar-bg">
+            <div id="upload-fill" class="progress-bar-fill"></div>
+        </div>
+    </div>
+
+    <main class="main-layout" id="main-layout">
+
+        <!-- ═══════════════════════════════════════════ МЕДИАТЕКА -->
+        <section id="library-box" class="panel library-panel">
+            <div class="library-header">
+
+                <!-- Строка 1: заголовок + кнопки -->
+                <div class="lh-row">
+                    <h2>Медиатека</h2>
+
+                    <div class="lh-group">
+                        <label class="btn btn-surface btn-icon lh-element" for="audio-files" title="Загрузить треки">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M12 5v14M5 12h14"/>
+                            </svg>
+                        </label>
+                        <input type="file" id="audio-files" accept="audio/*" multiple style="display:none;">
+
+                        <button id="cancel-btn" class="btn btn-danger-soft btn-icon lh-element" title="Отменить обработку">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <line x1="18" y1="6" x2="6" y2="18"/>
+                                <line x1="6" y1="6" x2="18" y2="18"/>
+                            </svg>
+                        </button>
+                    </div>
+
+                    <div class="lh-group library-stats">
+                        <div class="stat-item lh-element" title="Уникальных артистов">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
+                                <circle cx="12" cy="7" r="4"/>
+                            </svg>
+                            <span id="stat-artists">0</span>
+                        </div>
+                        <div class="stat-item lh-element" title="Готовых треков">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M9 18V5l12-2v13"/>
+                                <circle cx="6" cy="18" r="3"/>
+                                <circle cx="18" cy="16" r="3"/>
+                            </svg>
+                            <span id="stat-tracks">0</span>
+                        </div>
+                    </div>
+
+                    <div class="lh-group actions">
+                        <button id="scan-btn" class="btn btn-icon btn-surface lh-element" title="Сканировать библиотеку">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>
+                            </svg>
+                        </button>
+                        <button id="clear-btn" class="btn btn-icon btn-danger-soft lh-element" title="Очистить всё">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <polyline points="3 6 5 6 21 6"/>
+                                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+                            </svg>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Строка 2: поиск + сортировка -->
+                <div class="lh-row filters">
+                    <div class="search-box">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="search-icon">
+                            <circle cx="11" cy="11" r="8"/>
+                            <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+                        </svg>
+                        <input type="text" id="search-input" placeholder="Поиск (трек, артист, текст)...">
+                        <button id="search-clear-btn" class="clear-search" style="display:none;" title="Очистить">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <line x1="18" y1="6" x2="6" y2="18"/>
+                                <line x1="6" y1="6" x2="18" y2="18"/>
+                            </svg>
+                        </button>
+                    </div>
+
+                    <div class="sort-box">
+                        <button id="sort-by-btn" class="sort-toggle" data-sort="artist" title="Сменить сортировку">
+                            <svg id="icon-artist" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
+                                <circle cx="12" cy="7" r="4"/>
+                            </svg>
+                            <svg id="icon-title" style="display:none;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M9 18V5l12-2v13"/>
+                                <circle cx="6" cy="18" r="3"/>
+                                <circle cx="18" cy="16" r="3"/>
+                            </svg>
+                            <span id="sort-text-label">Артист</span>
+                            <svg class="st-hint" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M17 1l4 4-4 4"/>
+                                <path d="M3 11V9a4 4 0 0 1 4-4h14"/>
+                                <path d="M7 23l-4-4 4-4"/>
+                                <path d="M21 13v2a4 4 0 0 1-4 4H3"/>
+                            </svg>
+                        </button>
+                        <button id="sort-dir-btn" class="sort-dir" data-dir="asc" title="Направление сортировки">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M12 5v14M19 12l-7 7-7-7"/>
+                            </svg>
+                        </button>
+                    </div>
+                </div>
+
+            </div><!-- /library-header -->
+
+            <div id="tracks-list"></div>
+        </section>
+
+        <!-- ═══════════════════════════════════════════ ПЛЕЕР -->
+        <section id="karaoke-container" class="panel player-panel">
+            <div class="lyrics-wrapper" id="lyrics-wrapper">
+
+                <!-- Обложка (левый верхний угол) -->
+                <img id="cover-img" class="top-left-cover"
+                     src="data:image/svg+xml;charset=UTF-8,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='%2394a3b8' viewBox='0 0 24 24'%3E%3Cpath d='M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z'/%3E%3C/svg%3E"
+                     alt="Cover">
+
+                <!-- Кнопка полноэкранного режима -->
+                <button class="fs-btn" id="fs-btn" title="На весь экран">
+                    <svg viewBox="0 0 24 24" fill="currentColor">
+                        <path d="M5 5h5v2H7v3H5V5zm9 0h5v5h-2V7h-3V5zm5 14h-5v-2h3v-3h2v5zm-14 0v-5h2v3h3v2H5z"/>
+                    </svg>
+                </button>
+
+                <!-- Фоновое изображение -->
+                <div class="bg-slide" id="bg-img-1"></div>
+                <div class="lyrics-overlay"></div>
+
+                <!-- Текст караоке -->
+                <lyrics-display id="lyrics-display"></lyrics-display>
+
+                <!-- ── Плавающая панель управления ── -->
+                <div class="floating-control-panel">
+
+                    <!-- Строка 1: play/stop + таймлайн -->
+                    <div class="fcp-row-top">
+                        <div class="fcp-buttons">
+                            <button id="play-btn" class="seek-btn" title="Play / Pause">
+                                <svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+                            </button>
+                            <button id="stop-btn" class="seek-btn" title="Stop">
+                                <svg viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h12v12H6z"/></svg>
+                            </button>
+                        </div>
+                        <div class="fcp-timeline">
+                            <span id="time-current" class="time-label">0:00</span>
+                            <input type="range" id="seek-bar" class="seek-bar-range" min="0" value="0" step="0.1">
+                            <span id="time-total" class="time-label">0:00</span>
+                        </div>
+                    </div>
+
+                    <!-- Строка 2: мета + микшер -->
+                    <div class="fcp-row-bottom">
+                        <div class="fcp-meta-text">
+                            <div class="fcp-title"  id="cv-title"  title="Трек не выбран">Трек не выбран</div>
+                            <div class="fcp-artist" id="cv-artist" title="Артист не выбран">Артист не выбран</div>
+                        </div>
+
+                        <div class="fcp-vol-col">
+                            <div class="control-item" title="Громкость музыки (двойной клик — сброс)">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <path d="M9 18V5l12-2v13"/>
+                                    <circle cx="6" cy="18" r="3"/>
+                                    <circle cx="18" cy="16" r="3"/>
+                                </svg>
+                                <div class="range-wrapper">
+                                    <input type="range" id="vol-inst" min="0" max="1" step="0.05" value="1">
+                                    <div class="range-thumb-val" id="lbl-inst">100%</div>
+                                </div>
+                            </div>
+                            <div class="control-item" title="Громкость вокала (двойной клик — сброс)">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+                                    <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+                                    <line x1="12" y1="19" x2="12" y2="23"/>
+                                    <line x1="8"  y1="23" x2="16" y2="23"/>
+                                </svg>
+                                <div class="range-wrapper">
+                                    <input type="range" id="vol-voc" min="0" max="1" step="0.05" value="0.2">
+                                    <div class="range-thumb-val" id="lbl-voc">20%</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                </div><!-- /floating-control-panel -->
+
+            </div><!-- /lyrics-wrapper -->
+        </section>
+
+    </main>
+</div>
+
+<script src="/static/script.js"></script>
+</body>
+</html>

@@ -1,0 +1,10 @@
+.venv/
+cache/
+models/
+library/
+debug_logs/
+.env
+.env.cache
+*.db
+__pycache__/
+*.pyc
