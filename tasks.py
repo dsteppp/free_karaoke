@@ -8,6 +8,10 @@ from app_logger import get_logger
 
 log = get_logger("worker")
 
+# Жестко фиксируем папку библиотеки, чтобы не зависеть от пустых путей в БД
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+LIBRARY_DIR = os.path.join(BASE_DIR, "library")
+
 @huey.task()
 def process_audio_task(track_id: str):
     """
@@ -34,28 +38,27 @@ def process_audio_task(track_id: str):
         # Инициализируем наш умный пайплайн
         pipeline = AIPipeline()
         
-        # Получаем директорию, где лежат файлы (library/)
-        output_dir = os.path.dirname(track.original_path)
+        # Берем стабильную директорию
+        output_dir = LIBRARY_DIR
         base_name = os.path.splitext(track.filename)[0]
         
         # Запускаем магию (Разделение -> Текст -> Выравнивание)
         result_paths = pipeline.run_pipeline(
             track_id=track_id,
-            audio_path=track.original_path,
+            audio_path=track.original_path,  # Может быть None, пайплайн с этим справится
             artist=track.artist,
             title=track.title,
             output_dir=output_dir,
             base_name=base_name
         )
 
-        # Если мы дошли сюда, пайплайн отработал идеально.
-        # Сохраняем пути к готовым файлам в БД, строго как ожидает main.py
+        # Сохраняем пути к готовым файлам в БД
         track.vocals_path = result_paths.get("vocal")
         track.instrumental_path = result_paths.get("instrumental")
         track.karaoke_json_path = result_paths.get("json")
         track.lyrics_path = result_paths.get("lyrics")
         
-        # Если пайплайн сам нашел артиста и название (из метаданных или Genius)
+        # Если пайплайн сам нашел артиста и название
         if result_paths.get("artist"):
             track.artist = result_paths.get("artist")
         if result_paths.get("title"):
@@ -67,15 +70,12 @@ def process_audio_task(track_id: str):
         log.info(f"[Huey Worker] Track {track_id} COMPLETED successfully.")
 
     except Exception as e:
-        # Произошла ошибка (не нашли текст, упал Whisper и т.д.)
         error_msg = str(e)
         log.error(f"[Huey Worker] FATAL ERROR in track {track_id}: {error_msg}")
         log.error(traceback.format_exc())
         
-        # Откатываем незавершенные транзакции, чтобы не залочить БД
         db.rollback()
         
-        # Пытаемся безопасно записать статус ошибки в БД
         try:
             track = db.query(Track).filter(Track.id == track_id).first()
             if track:
@@ -86,6 +86,5 @@ def process_audio_task(track_id: str):
             log.error(f"[Huey Worker] Failed to write error status to DB for track {track_id}: {db_err}")
             
     finally:
-        # ЖЕЛЕЗОБЕТОННО закрываем сессию при любом исходе
         db.close()
         log.info(f"[Huey Worker] DB session closed for track {track_id}.")
