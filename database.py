@@ -1,45 +1,56 @@
 from sqlalchemy import create_engine, Column, Integer, String, Float
-from sqlalchemy.orm import declarative_base, sessionmaker
-import os
-import uuid
+from sqlalchemy.orm import sessionmaker, declarative_base
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.path.join(BASE_DIR, "karaoke.db")
+# Создаст локальный файл базы данных karaoke.db прямо в папке проекта
+SQLALCHEMY_DATABASE_URL = "sqlite:///./karaoke.db"
 
+# Создаем движок SQLite. 
+# check_same_thread=False обязателен для работы FastAPI с SQLite
 engine = create_engine(
-    f"sqlite:///{DB_PATH}",
-    connect_args={"check_same_thread": False},
+    SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False}
 )
+
+# Фабрика сессий
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+# Базовый класс для моделей
 Base = declarative_base()
 
-
 class Track(Base):
+    """
+    Оригинальная модель трека, на которую завязан фронтенд и сканер библиотеки.
+    """
     __tablename__ = "tracks"
 
-    id               = Column(String,  primary_key=True, index=True, default=lambda: str(uuid.uuid4()))
-    filename         = Column(String,  unique=True, index=True, nullable=False)
-    original_name    = Column(String,  nullable=False)
+    id = Column(Integer, primary_key=True, index=True)
+    
+    # Имена и пути
+    filename = Column(String, index=True)         # Безопасное имя файла (без пробелов)
+    original_name = Column(String)                # Исходное имя при загрузке
+    original_path = Column(String)                # Путь к исходнику
+    vocals_path = Column(String, nullable=True)   # Путь к _(Vocals).mp3
+    instrumental_path = Column(String, nullable=True) # Путь к _(Instrumental).mp3
+    lyrics_path = Column(String, nullable=True)   # Путь к _(Genius Lyrics).txt
+    karaoke_json_path = Column(String, nullable=True) # Путь к _(Karaoke Lyrics).json
+    
+    # Метаданные
+    artist = Column(String, nullable=True)
+    title = Column(String, nullable=True)
+    
+    # Синхронизация для плеера
+    offset = Column(Float, default=0.0)
+    
+    # Статус (pending, processing, done, error) и ошибки
+    status = Column(String, default="pending", index=True)
+    error_message = Column(String, nullable=True)
 
-    title            = Column(String,  index=True, nullable=True)
-    artist           = Column(String,  index=True, nullable=True)
-
-    original_path    = Column(String,  nullable=True)
-    vocals_path      = Column(String,  nullable=True)
-    instrumental_path= Column(String,  nullable=True)
-    lyrics_path      = Column(String,  nullable=True)
-    karaoke_json_path= Column(String,  nullable=True)
-
-    duration_sec     = Column(Integer, default=0)
-    status           = Column(String,  default="pending")
-    offset           = Column(Float,   default=0.0)
-    error_message    = Column(String,  nullable=True)
-
-
+# Автоматически создаем таблицы, если их нет
 Base.metadata.create_all(bind=engine)
 
-
 def get_db():
+    """
+    Генератор сессий для эндпоинтов FastAPI.
+    """
     db = SessionLocal()
     try:
         yield db

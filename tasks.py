@@ -1,210 +1,91 @@
+import os
+import logging
+import traceback
 from huey_config import huey
 from database import SessionLocal, Track
-from ai_pipeline import (
-    convert_to_mp3,
-    separate_vocals,
-    fetch_lyrics,
-    generate_karaoke_subtitles,
-    get_audio_metadata,
-)
+from ai_pipeline import AIPipeline
 from app_logger import get_logger
-from tinytag import TinyTag
-import os
-import traceback
-import threading
-import gc
-import torch
 
 log = get_logger("worker")
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Глобальный мьютекс: гарантирует, что только один трек обрабатывается
-# в любой момент времени, даже если Huey worker получит задачу раньше,
-# чем предыдущая полностью завершится (включая очистку GPU).
-# ──────────────────────────────────────────────────────────────────────────────
-_processing_lock = threading.Lock()
-
-
 @huey.task()
-def process_audio_task(track_id: str):
-    with _processing_lock:
-        _process_track(track_id)
-
-
-def _process_track(track_id: str):
+def process_audio_task(track_id: int):
+    """
+    Фоновая задача для обработки аудио. 
+    Берется воркером Huey из очереди Redis.
+    """
+    log.info(f"[Huey Worker] Picked up task for track ID: {track_id}")
+    
+    # Открываем независимую сессию БД для фонового процесса
     db = SessionLocal()
-
+    
     try:
+        # Ищем трек в базе
         track = db.query(Track).filter(Track.id == track_id).first()
         if not track:
-            log.warning("Трек %s не найден в БД — пропуск.", track_id)
+            log.error(f"[Huey Worker] Track {track_id} not found in DB! Aborting.")
             return
 
-        # ── Проверка отмены ───────────────────────────────────────────────
-        def check_if_cancelled():
-            db.expire(track)
-            current_status = db.query(Track.status).filter(Track.id == track_id).scalar()
-            if current_status == "error":
-                raise InterruptedError("Обработка прервана пользователем.")
+        # Обновляем статус: Пользователь видит "Обработка..."
+        track.status = "processing"
+        track.error_message = None
+        db.commit()
 
-        log.info("=" * 50)
-        log.info("СТАРТ: %s (id=%s)", track.original_name, track_id)
+        # Инициализируем наш умный пайплайн
+        pipeline = AIPipeline()
+        
+        # Получаем директорию, где лежат файлы (library/)
+        output_dir = os.path.dirname(track.original_path)
+        base_name = os.path.splitext(track.filename)[0]
+        
+        # Запускаем магию (Разделение -> Текст -> Выравнивание)
+        result_paths = pipeline.run_pipeline(
+            track_id=track_id,
+            audio_path=track.original_path,
+            artist=track.artist,
+            title=track.title,
+            output_dir=output_dir,
+            base_name=base_name
+        )
 
-        base_name         = os.path.splitext(track.filename)[0]
-        base_path         = os.path.join("library", base_name)
-        vocals_path       = f"{base_path}_(Vocals).mp3"
-        instrumental_path = f"{base_path}_(Instrumental).mp3"
-        lyrics_path       = f"{base_path}_(Genius Lyrics).txt"
-        meta_path         = f"{base_path}_meta.json"
-        karaoke_json_path = f"{base_path}_(Karaoke Lyrics).json"
-
-        log.debug("base_name=%s, base_path=%s", base_name, base_path)
-
-        check_if_cancelled()
-
-        # ── 1. Конвертация + сепарация ────────────────────────────────────
-        if not (os.path.exists(vocals_path) and os.path.exists(instrumental_path)):
-            if not track.original_path or not os.path.exists(track.original_path):
-                raise FileNotFoundError(
-                    "Исходный файл удалён. Загрузите трек заново."
-                )
-
-            track.status = "Конвертация в MP3..."
-            db.commit()
-            log.info("Конвертация: %s", track.original_path)
-            mp3_path = convert_to_mp3(track.original_path)
-            track.filename      = os.path.basename(mp3_path)
-            track.original_path = mp3_path
-
-            try:
-                tag = TinyTag.get(mp3_path)
-                if tag.duration:
-                    track.duration_sec = int(tag.duration)
-                    log.debug("Длительность: %d с", track.duration_sec)
-            except Exception:
-                pass
-
-            artist, title  = get_audio_metadata(mp3_path, track.original_name)
-            track.artist   = artist or None
-            track.title    = title  or None
-            log.info("Метаданные: artist=%s, title=%s", track.artist, track.title)
-            db.commit()
-
-            check_if_cancelled()
-
-            track.status = "Разделение вокала и музыки..."
-            db.commit()
-            log.info("Сепарация вокала...")
-            vocals_path, instrumental_path = separate_vocals(mp3_path)
-            track.vocals_path       = vocals_path
-            track.instrumental_path = instrumental_path
-            log.info("Сепарация завершена: vocals=%s, inst=%s", vocals_path, instrumental_path)
-            db.commit()
-
-        else:
-            log.info("Стемы уже существуют — пропуск сепарации.")
-            if not track.title:
-                artist, title = get_audio_metadata(vocals_path, track.original_name)
-                track.artist  = artist or None
-                track.title   = title  or None
-                log.info("Метаданные из стемов: artist=%s, title=%s", track.artist, track.title)
-                db.commit()
-
-        check_if_cancelled()
-
-        # ── 2. Поиск текста и обложек ─────────────────────────────────────
-        if not os.path.exists(lyrics_path) or not os.path.exists(meta_path):
-            track.status = "Поиск текста и обложек..."
-            db.commit()
-            log.info("Поиск текста на Genius: artist=%s, title=%s", track.artist, track.title)
-            
-            new_lyrics, genius_artist, genius_title = fetch_lyrics(
-                track.artist, track.title, base_path
-            )
-            
-            if new_lyrics:
-                lyrics_path = new_lyrics
-                log.info("Текст найден: %s", lyrics_path)
-                
-                # Обновляем artist/title из Genius (авторитетный источник)
-                if genius_artist:
-                    track.artist = genius_artist
-                    log.info("Artist обновлён из Genius: %s", genius_artist)
-                if genius_title:
-                    track.title = genius_title
-                    log.info("Title обновлён из Genius: %s", genius_title)
-            else:
-                log.warning("Текст не найден на Genius.")
-            
-            track.lyrics_path = lyrics_path
-            db.commit()
-        else:
-            log.info("Текст и обложки уже существуют — пропуск.")
-
-        check_if_cancelled()
-
-        # ── 3. Нейросетевая синхронизация (Whisper) ───────────────────────
-        if lyrics_path and os.path.exists(lyrics_path):
-            if not os.path.exists(karaoke_json_path):
-                track.status = "Нейросетевая синхронизация (Whisper)..."
-                db.commit()
-                log.info("Запуск Whisper-синхронизации...")
-                
-                # Вызов СТРОГО позиционный: inst, vocals, lyrics
-                karaoke_json_path = generate_karaoke_subtitles(
-                    instrumental_path,
-                    vocals_path,
-                    lyrics_path
-                )
-                
-                track.karaoke_json_path = karaoke_json_path
-                if karaoke_json_path:
-                    log.info("Караоке JSON создан: %s", karaoke_json_path)
-                else:
-                    log.warning("Караоке JSON не был создан (ошибка выравнивания).")
-                db.commit()
-            else:
-                log.info("Караоке JSON уже существует — пропуск.")
-        else:
-            log.warning("Текст не найден — JSON не будет создан.")
-
-        check_if_cancelled()
-
-        # ── 4. Удаление оригинала (экономия места) ────────────────────────
-        if track.original_path and os.path.exists(track.original_path):
-            log.info("Удаляем оригинал: %s", track.original_path)
-            try:
-                os.remove(track.original_path)
-                track.original_path = None
-            except Exception as e:
-                log.warning("Не удалось удалить оригинал: %s", e)
+        # Если мы дошли сюда, пайплайн отработал идеально.
+        # Сохраняем пути к готовым файлам в БД, строго как ожидает main.py
+        track.vocals_path = result_paths.get("vocal")
+        track.instrumental_path = result_paths.get("instrumental")
+        track.karaoke_json_path = result_paths.get("json")
+        track.lyrics_path = result_paths.get("lyrics")
+        
+        # Если пайплайн сам нашел артиста и название (из метаданных или Genius)
+        if result_paths.get("artist"):
+            track.artist = result_paths.get("artist")
+        if result_paths.get("title"):
+            track.title = result_paths.get("title")
 
         track.status = "done"
+        
         db.commit()
-        log.info("ФИНИШ: %s (artist=%s, title=%s)", track.original_name, track.artist, track.title)
-        log.info("=" * 50)
-
-    except InterruptedError as e:
-        db.rollback()
-        log.warning("ОСТАНОВКА: %s", e)
+        log.info(f"[Huey Worker] Track {track_id} COMPLETED successfully.")
 
     except Exception as e:
+        # Произошла ошибка (не нашли текст, упал Whisper и т.д.)
+        error_msg = str(e)
+        log.error(f"[Huey Worker] FATAL ERROR in track {track_id}: {error_msg}")
+        log.error(traceback.format_exc())
+        
+        # Откатываем незавершенные транзакции, чтобы не залочить БД
         db.rollback()
-        error_track = db.query(Track).filter(Track.id == track_id).first()
-        if error_track and error_track.status != "error":
-            error_track.status        = "error"
-            error_track.error_message = str(e)
-            db.commit()
-        log.error("ОШИБКА: %s", e)
-        log.debug("Traceback:\n%s", traceback.format_exc())
-
+        
+        # Пытаемся безопасно записать статус ошибки в БД
+        try:
+            track = db.query(Track).filter(Track.id == track_id).first()
+            if track:
+                track.status = "error"
+                track.error_message = error_msg
+                db.commit()
+        except Exception as db_err:
+            log.error(f"[Huey Worker] Failed to write error status to DB for track {track_id}: {db_err}")
+            
     finally:
+        # ЖЕЛЕЗОБЕТОННО закрываем сессию при любом исходе
         db.close()
-
-        # Тотальная очистка VRAM после каждой задачи
-        gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-            torch.cuda.ipc_collect()
-
-        log.info("GPU память сброшена.")
+        log.info(f"[Huey Worker] DB session closed for track {track_id}.")

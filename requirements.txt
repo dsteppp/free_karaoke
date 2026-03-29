@@ -23,7 +23,7 @@ typing-inspection==0.4.2
 
 # ── AI: PyTorch ───────────────────────────────────────────────────────────────
 torch==2.10.0
-torchaudio
+torchaudio==2.10.0
 torchvision==0.25.0
 triton==3.6.0
 
@@ -123,6 +123,7 @@ cffi==2.0.0
 pycparser==3.0
 pillow==12.1.1
 msgpack==1.1.2
+rapidfuzz==3.9.0
 
 # ── GUI (pywebview + Qt) ──────────────────────────────────────────────────────
 pywebview==5.0.5
