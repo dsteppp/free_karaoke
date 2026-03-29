@@ -12,15 +12,14 @@ log = get_logger("aligner")
 
 class KaraokeAligner:
     """
-    Пайплайн выравнивания "Hybrid Engine V15.0" (Восстановленная оригинальная логика).
-    Возвращает 100% совместимый со script.js плоский JSON с флагом line_break.
+    Пайплайн выравнивания "Hybrid Engine V15.1"
+    (Исправлены краши FP16 на нестандартном оборудовании).
     """
 
     def __init__(self, model_name="medium"):
         self.model_name = model_name
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         
-        # Директория для моделей (сохраняем оригинальную структуру)
         base_dir = os.path.dirname(os.path.abspath(__file__))
         self.whisper_model_dir = os.path.join(base_dir, "models", "whisper")
         os.makedirs(self.whisper_model_dir, exist_ok=True)
@@ -28,19 +27,17 @@ class KaraokeAligner:
         self._track_stem = ""
 
     def _detect_language(self, text: str) -> str:
-        """Определяет доминирующий язык для защиты от смены языков Whisper."""
         cyrillic = len(re.findall(r'[\u0400-\u04FFёЁ]', text))
         hangul = len(re.findall(r'[\uac00-\ud7a3]', text))
         latin = len(re.findall(r'[a-zA-Z]', text))
         
         if hangul > 10: 
-            return "ko" # K-Pop
+            return "ko" 
         if cyrillic > latin * 0.3: 
-            return "ru" # Русские треки
-        return "en"     # Зарубежные
+            return "ru" 
+        return "en"     
 
     def _is_align_bad(self, sw_words: list, threshold=0.08) -> bool:
-        """Валидатор качества DTW. Проверяет 'схлопнутые' слова."""
         if not sw_words:
             return True
         
@@ -55,11 +52,10 @@ class KaraokeAligner:
         return ratio > threshold
 
     def process_audio(self, vocals_path: str, raw_lyrics: str, output_json_path: str):
-        """Главный метод, который вызывает ai_pipeline.py"""
         self._track_stem = os.path.basename(output_json_path).replace("_(Karaoke Lyrics).json", "")
 
         log.info("=" * 50)
-        log.info("Aligner СТАРТ (Hybrid Engine V15.0): %s", self._track_stem)
+        log.info("Aligner СТАРТ (Hybrid Engine V15.1): %s", self._track_stem)
         log.info("Vocals: %s", vocals_path)
         log.info("Device: %s", self.device)
 
@@ -69,7 +65,6 @@ class KaraokeAligner:
 
         if not canon_words:
             log.warning("Текст пуст! Выход.")
-            # Записываем пустой массив, чтобы фронтенд не упал
             with open(output_json_path, "w", encoding="utf-8") as f:
                 json.dump([], f)
             return output_json_path
@@ -88,11 +83,11 @@ class KaraokeAligner:
             log.info("Аудио загружено: %.2f сек. Запуск Whisper (%s)...", audio_duration, self.device)
 
             model = stable_whisper.load_model(self.model_name, download_root=self.whisper_model_dir, device=self.device)
-            fp16_mode = self.device == "cuda"
             
             log.info("Фаза 1: Акустическое выравнивание (DTW)...")
             try:
-                result = model.align(audio_data, text_for_whisper, language=lang, fp16=fp16_mode)
+                # ВЫРЕЗАН ПАРАМЕТР FP16 - Теперь работает безотказно везде!
+                result = model.align(audio_data, text_for_whisper, language=lang)
                 sw_raw_words = result.all_words()
                 
                 if self._is_align_bad(sw_raw_words):
@@ -101,7 +96,8 @@ class KaraokeAligner:
                     
             except Exception as align_err:
                 log.warning("Фаза 2: Слепая Транскрибация (Transcribe-First)...")
-                result = model.transcribe(audio_data, language=lang, fp16=fp16_mode)
+                # ВЫРЕЗАН ПАРАМЕТР FP16
+                result = model.transcribe(audio_data, language=lang, fp16=False)
                 sw_raw_words = result.all_words()
 
         except RuntimeError as e:
@@ -127,7 +123,6 @@ class KaraokeAligner:
 
         dump_debug("1_WhisperRaw", [{"word": w.word, "start": w.start, "end": w.end} for w in sw_raw_words], self._track_stem)
 
-        # NLP сшивание и интерполяция (твоя идеальная логика)
         canon_words = self._fuzzy_match_and_interpolate(canon_words, sw_raw_words, audio_duration)
         canon_words = self._apply_surgeons(canon_words)
         final_json = self._finalize_json(canon_words)

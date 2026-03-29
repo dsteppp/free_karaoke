@@ -21,26 +21,6 @@ annotated-types==0.7.0
 typing-extensions==4.15.0
 typing-inspection==0.4.2
 
-# ── AI: PyTorch ───────────────────────────────────────────────────────────────
-torch==2.10.0
-torchaudio==2.10.0
-torchvision==0.25.0
-triton==3.6.0
-
-# ── AI: CUDA (устанавливаются автоматически вместе с torch, но зафиксированы) ─
-nvidia-cublas-cu12==12.8.4.1
-nvidia-cuda-cupti-cu12==12.8.90
-nvidia-cuda-nvrtc-cu12==12.8.93
-nvidia-cuda-runtime-cu12==12.8.90
-nvidia-cudnn-cu12==9.10.2.21
-nvidia-cufft-cu12==11.3.3.83
-nvidia-curand-cu12==10.3.9.90
-nvidia-cusolver-cu12==11.7.3.90
-nvidia-cusparse-cu12==12.5.8.93
-nvidia-nccl-cu12==2.27.5
-nvidia-nvjitlink-cu12==12.8.93
-nvidia-nvtx-cu12==12.8.90
-
 # ── AI: Whisper ───────────────────────────────────────────────────────────────
 openai-whisper
 stable-ts
@@ -50,7 +30,6 @@ tokenizers==0.22.2
 
 # ── AI: Разделение вокала ─────────────────────────────────────────────────────
 audio-separator==0.41.1
-onnxruntime==1.24.3
 
 # ── Аудио-обработка ───────────────────────────────────────────────────────────
 librosa==0.11.0

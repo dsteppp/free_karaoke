@@ -1,7 +1,6 @@
 #!/bin/bash
 # ─────────────────────────────────────────────────────────────────────────────
-# reinstall.sh — умная починка/переустановка окружения AI-Karaoke Pro
-# БЕЗ УДАЛЕНИЯ тяжелых моделей и кэша. Идеально при переезде на другой ПК/диск.
+# reinstall.sh — умная переустановка AI-Karaoke Pro (Adaptive GPU Edition)
 # ─────────────────────────────────────────────────────────────────────────────
 
 set -e
@@ -11,17 +10,17 @@ cd "$DIR"
 
 echo ""
 echo "╔══════════════════════════════════════════════════════╗"
-echo "║        AI-Karaoke Pro — Починка окружения (uv)       ║"
+echo "║     AI-Karaoke Pro — Адаптивная Переустановка        ║"
 echo "╚══════════════════════════════════════════════════════╝"
 echo ""
 
 # ── Предупреждение ────────────────────────────────────────────────────────────
-echo "⚠️  Что произойдет:"
-echo "     • .venv          (будет пересоздан для починки сломанных путей)"
-echo "     • models/        (БУДЕТ СОХРАНЕН — модели качать не придется)"
-echo "     • cache/         (БУДЕТ СОХРАНЕН — пакеты установятся мгновенно)"
+echo "⚠️  Будут удалены и/или перенесены:"
+echo "     • .venv          (виртуальное окружение)"
+echo "     • models/        (AI-модели)"
+echo "     • cache/         (кэши uv, torch, huggingface)"
 echo ""
-read -p "Продолжить починку? [y/N] " confirm
+read -p "Продолжить? [y/N] " confirm
 if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
     echo "Отменено."
     exit 0
@@ -37,55 +36,45 @@ if ! command -v uv &> /dev/null; then
     echo "   uv не найден. Устанавливаем..."
     curl -LsSf https://astral.sh/uv/install.sh | sh
     export PATH="$HOME/.local/bin:$PATH"
-    if ! command -v uv &> /dev/null; then
-        echo "❌ uv не удалось установить. https://github.com/astral-sh/uv"
-        exit 1
-    fi
 fi
 echo "   ✓ uv $(uv --version)"
 echo ""
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 2. Создаём внутренние папки (если их вдруг нет)
+# 2. Создаём внутренние папки кэша
 # ─────────────────────────────────────────────────────────────────────────────
-echo "📁 Проверяем директории проекта..."
-mkdir -p "$DIR/cache/uv"
-mkdir -p "$DIR/cache/torch"
-mkdir -p "$DIR/cache/huggingface"
-mkdir -p "$DIR/models/whisper"
-mkdir -p "$DIR/library"
-mkdir -p "$DIR/static"
-echo "   ✓ Папки готовы"
+echo "📁 Подготовка файловой системы..."
+mkdir -p "$DIR/cache/uv" "$DIR/cache/torch" "$DIR/cache/huggingface" "$DIR/models/whisper" "$DIR/library" "$DIR/static"
+echo "   ✓ Папки созданы"
 echo ""
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 3, 4, 5. Перенос кэша из системы (пропускаем, если кэш уже внутри)
+# 3. Анализ Оборудования (Умный Адаптер)
 # ─────────────────────────────────────────────────────────────────────────────
-# Этот блок оставлен для совместимости, если ты когда-то запустишь проект 
-# на абсолютно чистой системе. Он просто проверит системные папки.
-UV_SYS_CACHE="${UV_CACHE_DIR:-$HOME/.cache/uv}"
-if [ -d "$UV_SYS_CACHE" ] && [ "$UV_SYS_CACHE" != "$DIR/cache/uv" ]; then
-    echo "📦 Перенос кэша uv из системы..."
-    for subdir in wheels archives builds; do
-        SRC="$UV_SYS_CACHE/$subdir"
-        DST="$DIR/cache/uv/$subdir"
-        if [ -d "$SRC" ]; then
-            mkdir -p "$DST"
-            if rsync --version &>/dev/null; then
-                rsync -a --remove-source-files "$SRC/" "$DST/" || true
-            else
-                cp -a "$SRC/." "$DST/" 2>/dev/null && rm -rf "$SRC" || true
-            fi
+echo "🤖 Сканирование оборудования..."
+GPU_TYPE="CPU"
+OS_NAME=$(uname -s)
+
+if [ "$OS_NAME" = "Linux" ]; then
+    if command -v lspci &> /dev/null; then
+        if lspci | grep -iE "nvidia" &> /dev/null; then
+            GPU_TYPE="NVIDIA"
+        elif lspci | grep -iE "radeon|amd" &> /dev/null; then
+            GPU_TYPE="AMD"
         fi
-    done
+    fi
+elif [ "$OS_NAME" = "Darwin" ]; then
+    GPU_TYPE="APPLE"
 fi
+echo "   ✓ Обнаружена платформа: $GPU_TYPE ($OS_NAME)"
+echo ""
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 6. Записываем .env.cache — все переменные изоляции
+# 4. Создание изоляции и патчей (.env.cache)
 # ─────────────────────────────────────────────────────────────────────────────
-echo "📌 Настраиваем пути изоляции (.env.cache)..."
+echo "📌 Настройка среды..."
 cat > "$DIR/.env.cache" << EOF
-# Автогенерируется reinstall.sh
+# Автогенерируется reinstall.sh — не редактировать вручную
 UV_CACHE_DIR=$DIR/cache/uv
 TORCH_HOME=$DIR/cache/torch
 HF_HOME=$DIR/cache/huggingface
@@ -93,106 +82,97 @@ HUGGINGFACE_HUB_CACHE=$DIR/cache/huggingface/hub
 TRANSFORMERS_CACHE=$DIR/cache/huggingface/hub
 XDG_CACHE_HOME=$DIR/cache
 EOF
-echo "   ✓ .env.cache обновлен"
-echo ""
 
-# ── Применяем переменные для текущей сессии ───────────────────────────────────
-set -a
-source "$DIR/.env.cache"
-set +a
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 7. Удаляем ТОЛЬКО старое сломанное .venv
-# ─────────────────────────────────────────────────────────────────────────────
-if [ -d "$DIR/.venv" ]; then
-    echo "🗑️  Удаляем старое сломанное .venv (ссылки)..."
-    rm -rf "$DIR/.venv"
-    echo "   ✓ .venv удалён"
+if [ "$GPU_TYPE" = "AMD" ]; then
+    echo "HSA_OVERRIDE_GFX_VERSION=11.0.0" >> "$DIR/.env.cache"
+    echo "   ✓ Инжектирован патч HSA_OVERRIDE_GFX_VERSION=11.0.0 для AMD RDNA3"
 fi
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 8. Проверяем папку models (УДАЛЯТЬ НЕЛЬЗЯ!)
-# ─────────────────────────────────────────────────────────────────────────────
-echo "💾 Сохраняем тяжелые AI-модели..."
-if [ -d "$DIR/models" ]; then
-    echo "   ✓ Папка models/ на месте. Скачивать заново не придется."
-fi
+set -a; source "$DIR/.env.cache"; set +a
 echo ""
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 9. Создаём чистое .venv через uv
+# 5. Очистка кэша от "мусора" других архитектур (Облегчаем вес)
 # ─────────────────────────────────────────────────────────────────────────────
-echo "🐍 Создаём новое .venv (Python 3.11)..."
+echo "🧹 Очистка старых данных и чужих драйверов..."
+rm -rf "$DIR/.venv" "$DIR/models"
+mkdir -p "$DIR/models/whisper"
+
+if [ "$GPU_TYPE" != "NVIDIA" ]; then
+    # Если мы не на NVIDIA, безжалостно удаляем тяжеленные CUDA-драйвера из кэша
+    find "$DIR/cache/uv" -name "*nvidia*" -type d -exec rm -rf {} + 2>/dev/null || true
+    find "$DIR/cache/uv" -name "*nvidia*" -type f -exec rm -f {} + 2>/dev/null || true
+    find "$DIR/cache/uv" -name "*cu12*" -type f -exec rm -f {} + 2>/dev/null || true
+fi
+echo "   ✓ Кэш оптимизирован под текущее железо"
+echo ""
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 6. Создаём .venv
+# ─────────────────────────────────────────────────────────────────────────────
+echo "🐍 Создаём .venv (Python 3.11)..."
 uv venv "$DIR/.venv" --python 3.11 --seed
-echo "   ✓ .venv создан"
-echo ""
-
 source "$DIR/.venv/bin/activate"
-echo "   ✓ Окружение активировано"
 echo ""
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 10. Устанавливаем зависимости из локального кэша
+# 7. Установка специфичного тензорного ядра (ДО requirements.txt)
 # ─────────────────────────────────────────────────────────────────────────────
-if [ ! -f "$DIR/requirements.txt" ]; then
-    echo "❌ requirements.txt не найден"
-    exit 1
+echo "🚀 Установка AI-ядра под архитектуру $GPU_TYPE..."
+
+if [ "$GPU_TYPE" = "NVIDIA" ]; then
+    uv pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
+    uv pip install onnxruntime-gpu
+
+elif [ "$GPU_TYPE" = "AMD" ]; then
+    uv pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/rocm6.2
+    uv pip install onnxruntime-rocm || uv pip install onnxruntime
+
+elif [ "$GPU_TYPE" = "APPLE" ]; then
+    uv pip install torch torchvision torchaudio
+    uv pip install onnxruntime-silicon || uv pip install onnxruntime
+
+else
+    uv pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
+    uv pip install onnxruntime
 fi
+echo "   ✓ AI-ядро установлено!"
+echo ""
 
-echo "📦 Восстанавливаем пакеты (мгновенно из cache/)..."
+# ─────────────────────────────────────────────────────────────────────────────
+# 8. Устанавливаем остальные зависимости
+# ─────────────────────────────────────────────────────────────────────────────
+echo "📦 Устанавливаем остальные пакеты..."
+# uv увидит, что torch уже стоит, и НЕ будет его перезаписывать!
 uv pip install -r "$DIR/requirements.txt"
-echo ""
-echo "   ✓ Все пакеты восстановлены"
-echo ""
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 11. Проверка ключевых пакетов
-# ─────────────────────────────────────────────────────────────────────────────
-echo "🔬 Проверка ключевых пакетов..."
-
-check_pkg() {
-    if python -c "import $1" 2>/dev/null; then
-        echo "   ✓ $1"
-    else
-        echo "   ✗ $1 — НЕ НАЙДЕН"
-    fi
-}
-
-check_pkg torch
-check_pkg torchaudio
-check_pkg fastapi
-check_pkg uvicorn
-check_pkg huey
-check_pkg stable_whisper
-check_pkg audio_separator
-check_pkg lyricsgenius
-check_pkg rapidfuzz
-check_pkg webview
-check_pkg sqlalchemy
-
+echo "   ✓ Все пакеты установлены"
 echo ""
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 12. Проверка CUDA
+# 9. Финальная сборка мусора
 # ─────────────────────────────────────────────────────────────────────────────
-echo "🎮 Проверка видеокарты (CUDA)..."
+echo "🧽 Сборка мусора в кэше..."
+uv cache clean 2>/dev/null || true
+echo "   ✓ Приложение максимально облегчено"
+echo ""
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 10. Финальная проверка
+# ─────────────────────────────────────────────────────────────────────────────
+echo "🎮 Тест аппаратного ускорения..."
 python -c "
 import torch
 if torch.cuda.is_available():
-    print(f'   ✓ CUDA Активна: {torch.cuda.get_device_name(0)}')
-    print(f'     VRAM: {torch.cuda.get_device_properties(0).total_memory // 1024**3} ГБ')
+    print(f'   ✓ Ускоритель: {torch.cuda.get_device_name(0)} (CUDA/ROCm)')
+elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+    print('   ✓ Ускоритель: Apple Silicon (MPS)')
 else:
-    print('   ⚠️  CUDA недоступна — будет использован CPU')
+    print('   ⚠️  Ускоритель недоступен — будет использован CPU')
 "
 echo ""
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Финал
-# ─────────────────────────────────────────────────────────────────────────────
 echo "╔══════════════════════════════════════════════════════╗"
-echo "║              ✅ Окружение восстановлено!             ║"
+echo "║              ✅ Установка завершена!                  ║"
 echo "╚══════════════════════════════════════════════════════╝"
-echo ""
-echo "Теперь можешь запускать проект:"
-echo "   bash run.sh"
+echo "Для запуска: bash run.sh"
 echo ""

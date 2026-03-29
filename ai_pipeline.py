@@ -7,6 +7,7 @@ import re
 import json
 import traceback
 import gc
+import unicodedata
 import torch
 
 import lyricsgenius
@@ -41,11 +42,13 @@ _TECHNICAL_SUFFIXES_RE = re.compile(
 )
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Умный фильтр метаданных (Whitelist + Очистка от мусора)
+# Умный фильтр метаданных (NFC Нормализация + Очистка от мусора)
 # ──────────────────────────────────────────────────────────────────────────────
 def clean_metadata_string(text: str) -> str:
     if not text: return ""
-    text = text.strip()
+    
+    # МАГИЯ UNICODE: Лечит проблему с буквой Ё (NFD vs NFC) для Mac и Linux
+    text = unicodedata.normalize('NFC', text.strip())
     text = re.sub(r'[\*]+$', '', text).strip()
     
     whitelist = [
@@ -107,18 +110,20 @@ def compress_stem_mp3(file_path: str) -> None:
 # Разделение вокала (audio-separator)
 # ──────────────────────────────────────────────────────────────────────────────
 def separate_vocals(mp3_path: str) -> tuple[str, str]:
-    log.info("Запуск сепарации аудио (audio-separator)...")
+    log.info("Запуск сепарации аудио (audio-separator на CPU)...")
     basedir  = os.path.dirname(mp3_path)
     basename = os.path.splitext(os.path.basename(mp3_path))[0]
 
     vocals_final       = os.path.join(basedir, f"{basename}_(Vocals).mp3")
     instrumental_final = os.path.join(basedir, f"{basename}_(Instrumental).mp3")
 
+    # Принудительно активируем CPUExecutionProvider (Ryzen 7500F справится играючи)
     separator = Separator(
         model_file_dir=MODELS_DIR,
         output_dir=basedir,
         output_format="MP3",
         normalization_threshold=0.9,
+        execution_providers=["CPUExecutionProvider"]
     )
     separator.load_model(model_filename="MDX23C-8KFFT-InstVoc_HQ.ckpt")
     output_files = separator.separate(mp3_path)
@@ -170,12 +175,10 @@ def get_audio_metadata(file_path: str, original_filename: str) -> tuple[str, str
         except Exception:
             pass
 
-    # Если теги есть, возвращаем их
     if artist and title:
         return artist, title
 
-    # Иначе парсим имя файла
-    clean = original_filename
+    clean = unicodedata.normalize('NFC', original_filename)
     clean = re.sub(r"\.[^.]+$", "", clean)
     clean = re.sub(r"_+", " ", clean)
     clean = strip_technical_suffix(clean)
@@ -196,23 +199,15 @@ def get_audio_metadata(file_path: str, original_filename: str) -> tuple[str, str
 def clean_genius_lyrics(raw_text: str) -> str:
     text = raw_text.strip()
     
-    # 1. Убираем только первую строку, если это системный заголовок
     lines = text.split('\n')
     if lines and ("Lyrics" in lines[0] or "Текст песни" in lines[0] or "Текст" in lines[0]):
         lines = lines[1:]
     text = '\n'.join(lines)
 
-    # 2. Убираем системный хвост Genius
     text = re.sub(r'\d*\s*Embed\s*$', '', text, flags=re.IGNORECASE)
     text = re.sub(r'Contributors.*$', '', text, flags=re.IGNORECASE | re.DOTALL)
-    
-    # 3. Агрессивно убираем технические теги в квадратных скобках ДАЖЕ МНОГОСТРОЧНЫЕ
     text = re.sub(r'\x5B.*?\x5D', '', text, flags=re.DOTALL)
-    
-    # 4. Убираем бэки в круглых скобках
     text = re.sub(r'\x28.*?\x29', '', text, flags=re.DOTALL)
-    
-    # 5. Нормализация знаков препинания и отступов
     text = re.sub(r'\s+([,.:;?!—])', r'\1', text)
     text = re.sub(r'[ \t]{2,}', ' ', text)
     text = re.sub(r'\n{3,}', '\n\n', text)
@@ -236,7 +231,6 @@ def fetch_lyrics(artist: str, title: str, base_path: str) -> tuple[str | None, s
         g_artist = clean_metadata_string(song.artist)
         g_title  = clean_metadata_string(song.title)
 
-        # Вытаскиваем обложки для фронтенда!
         meta = {
             "cover": getattr(song, "song_art_image_url", "") or "",
             "bg":    getattr(song, "header_image_url",   "") or "",
@@ -270,7 +264,6 @@ def generate_karaoke_subtitles(inst_mp3: str, vocals_mp3: str, lyrics_path: str)
     clean_text = clean_genius_lyrics(raw_text)
 
     try:
-        # Вызов нашего нового, защищенного движка
         aligner = KaraokeAligner(model_name="medium")
         aligner.process_audio(vocals_path=vocals_mp3, raw_lyrics=clean_text, output_json_path=final_json)
         return final_json
