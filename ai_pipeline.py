@@ -117,7 +117,7 @@ def separate_vocals(mp3_path: str) -> tuple[str, str]:
     vocals_final       = os.path.join(basedir, f"{basename}_(Vocals).mp3")
     instrumental_final = os.path.join(basedir, f"{basename}_(Instrumental).mp3")
 
-    # Принудительно активируем CPUExecutionProvider (Ryzen 7500F справится играючи)
+    # Принудительно активируем CPUExecutionProvider
     separator = Separator(
         model_file_dir=MODELS_DIR,
         output_dir=basedir,
@@ -194,7 +194,7 @@ def get_audio_metadata(file_path: str, original_filename: str) -> tuple[str, str
     return artist, clean_metadata_string(clean) or title
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Genius и безопасная очистка текста (Sanitizer Phase 1)
+# Genius и безопасная очистка текста
 # ──────────────────────────────────────────────────────────────────────────────
 def clean_genius_lyrics(raw_text: str) -> str:
     text = raw_text.strip()
