@@ -109,7 +109,7 @@ class AIPipeline:
             log.error("Lyrics not found on Genius.")
             raise ValueError(f"Lyrics not found for {artist} - {title}")
 
-    def run_pipeline(self, track_id: int, audio_path: str, artist: str, title: str, output_dir: str, base_name: str):
+    def run_pipeline(self, track_id: str, audio_path: str, artist: str, title: str, output_dir: str, base_name: str):
         """
         Главный оркестратор.
         """

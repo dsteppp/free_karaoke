@@ -9,7 +9,7 @@ from app_logger import get_logger
 log = get_logger("worker")
 
 @huey.task()
-def process_audio_task(track_id: int):
+def process_audio_task(track_id: str):
     """
     Фоновая задача для обработки аудио. 
     Берется воркером Huey из очереди Redis.

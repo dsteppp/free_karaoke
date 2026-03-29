@@ -1,4 +1,5 @@
-from sqlalchemy import create_engine, Column, Integer, String, Float
+import uuid
+from sqlalchemy import create_engine, Column, String, Float
 from sqlalchemy.orm import sessionmaker, declarative_base
 
 # Создаст локальный файл базы данных karaoke.db прямо в папке проекта
@@ -22,7 +23,8 @@ class Track(Base):
     """
     __tablename__ = "tracks"
 
-    id = Column(Integer, primary_key=True, index=True)
+    # Используем текстовый UUID как ожидает твой main.py
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()), index=True)
     
     # Имена и пути
     filename = Column(String, index=True)         # Безопасное имя файла (без пробелов)
