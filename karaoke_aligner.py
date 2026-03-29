@@ -1,155 +1,272 @@
 import os
+import gc
 import re
 import json
-import logging
 import torch
+import difflib
+import librosa
 import stable_whisper
-from rapidfuzz import process, fuzz
+from app_logger import get_logger, dump_debug
+
+log = get_logger("aligner")
 
 class KaraokeAligner:
+    """
+    Пайплайн выравнивания "Hybrid Engine V15.0" (Восстановленная оригинальная логика).
+    Возвращает 100% совместимый со script.js плоский JSON с флагом line_break.
+    """
+
     def __init__(self, model_name="medium"):
-        """
-        Инициализация PhoneticAlignerV15.
-        Используем medium, так как он дает идеальный баланс 
-        между скоростью локальной работы и точностью фонетики.
-        """
-        self.logger = logging.getLogger(__name__)
-        self.logger.info(f"Initializing PhoneticAlignerV15 with Whisper '{model_name}'...")
-        
-        # Автоопределение GPU для Linux/Manjaro
+        self.model_name = model_name
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.model = stable_whisper.load_model(model_name, device=self.device)
-        self.logger.info(f"Model loaded successfully on {self.device.upper()}.")
+        
+        # Директория для моделей (сохраняем оригинальную структуру)
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        self.whisper_model_dir = os.path.join(base_dir, "models", "whisper")
+        os.makedirs(self.whisper_model_dir, exist_ok=True)
+        
+        self._track_stem = ""
 
-    def clean_lyrics(self, text: str) -> list:
-        """
-        Агрессивная и безопасная очистка текста Genius.
-        Обход бага регулярных выражений: удаляем любые скобки и их содержимое.
-        """
-        # Стандартизация переносов строк
-        text = text.replace('\r\n', '\n')
+    def _detect_language(self, text: str) -> str:
+        """Определяет доминирующий язык для защиты от смены языков Whisper."""
+        cyrillic = len(re.findall(r'[\u0400-\u04FFёЁ]', text))
+        hangul = len(re.findall(r'[\uac00-\ud7a3]', text))
+        latin = len(re.findall(r'[a-zA-Z]', text))
         
-        # Безопасные паттерны для любых видов скобок (включая азиатские)
-        patterns = [
-            r'$$.*?$$',
-            r'$.*?$',
-            r'\{.*?\}',
-            r'【.*?】',
-            r'［.*?］'
-        ]
-        
-        for p in patterns:
-            text = re.sub(p, '', text)
-            
-        # Убираем пустые строки и лишние пробелы
-        lines = [line.strip() for line in text.split('\n') if line.strip()]
-        return lines
+        if hangul > 10: 
+            return "ko" # K-Pop
+        if cyrillic > latin * 0.3: 
+            return "ru" # Русские треки
+        return "en"     # Зарубежные
 
-    def _unfold_structure(self, genius_lines: list, whisper_result) -> list:
-        """
-        Магия развертывания: сопоставляет черновой звук с идеальным текстом.
-        Если певец спел припев три раза, а в тексте он один - функция размножит текст.
-        """
-        unfolded = []
-        last_idx = -1
+    def _is_align_bad(self, sw_words: list, threshold=0.08) -> bool:
+        """Валидатор качества DTW. Проверяет 'схлопнутые' слова."""
+        if not sw_words:
+            return True
         
-        for seg in whisper_result.segments:
-            seg_text = seg.text.strip()
-            if not seg_text: 
-                continue
-            
-            # Ищем, к какой строке Genius больше всего подходит этот кусок аудио
-            match = process.extractOne(seg_text, genius_lines, scorer=fuzz.token_set_ratio)
-            
-            if match and match[1] > 55:  # Порог уверенности (55% совпадения)
-                idx = genius_lines.index(match[0])
+        bad_count = 0
+        for w in sw_words:
+            if (w.end - w.start) < 0.05:
+                bad_count += 1
                 
-                # Защита от разрезания одной строки на два сегмента
-                # Но если сегмент длинный (больше 3 слов), считаем это настоящим повтором в песне
-                if idx != last_idx:
-                    unfolded.append(genius_lines[idx])
-                    last_idx = idx
-                else:
-                    if len(seg_text.split()) > 3:
-                        unfolded.append(genius_lines[idx])
-                        last_idx = idx
-                        
-        return unfolded
-
-    def _format_result(self, result) -> list:
-        """
-        Конвертирует сырой результат выравнивания строго в формат, 
-        который ожидает твой script.js для CSS-анимаций.
-        """
-        karaoke_data = []
-        for seg in result.segments:
-            words = []
-            for w in seg.words:
-                clean_word = w.word.strip()
-                if clean_word:
-                    words.append({
-                        "word": clean_word,
-                        "start": round(w.start, 3),
-                        "end": round(w.end, 3)
-                    })
-            if words:
-                karaoke_data.append({
-                    "start": words[0]["start"],
-                    "end": words[-1]["end"],
-                    "text": seg.text.strip(),
-                    "words": words
-                })
-        return karaoke_data
-
-    def process_audio(self, audio_path: str, lyrics_input: str, output_json_path: str):
-        """
-        Главный пайплайн фонетического выравнивания.
-        """
-        # Проверяем, передали нам текст или путь к файлу с текстом
-        if os.path.isfile(lyrics_input):
-            with open(lyrics_input, 'r', encoding='utf-8') as f:
-                lyrics_text = f.read()
-        else:
-            lyrics_text = lyrics_input
-
-        self.logger.info("Step 1: Cleaning Genius Lyrics...")
-        genius_lines = self.clean_lyrics(lyrics_text)
+        ratio = bad_count / len(sw_words)
+        log.info("Валидатор DTW: %d/%d бракованных слов (%.1f%%)", bad_count, len(sw_words), ratio * 100)
         
-        if not genius_lines:
-            raise ValueError("Lyrics are empty after cleaning! Check the Genius source.")
+        return ratio > threshold
 
-        self.logger.info("Step 2: Reality Mapping (Transcribing with VAD)...")
-        # Черновое прослушивание с жестким контролем тишины (vad=True)
-        # word_timestamps=False ускоряет процесс, так как нам нужна только структура
-        reality_result = self.model.transcribe(audio_path, vad=True, word_timestamps=False)
-        detected_lang = reality_result.language  # Запоминаем язык для выравнивания
+    def process_audio(self, vocals_path: str, raw_lyrics: str, output_json_path: str):
+        """Главный метод, который вызывает ai_pipeline.py"""
+        self._track_stem = os.path.basename(output_json_path).replace("_(Karaoke Lyrics).json", "")
 
-        self.logger.info("Step 3: Structural Unfolding...")
-        unfolded_lines = self._unfold_structure(genius_lines, reality_result)
-        
-        if not unfolded_lines:
-            self.logger.warning("Unfolding failed (0 matches). Falling back to Blind Transcription.")
-            # Фолбэк как у Монеточки: если текст вообще не совпадает, делаем слепую транскрибацию
-            blind_result = self.model.transcribe(audio_path, vad=True, word_timestamps=True)
-            karaoke_json = self._format_result(blind_result)
-        else:
-            self.logger.info("Step 4: Phonetic Forced Alignment...")
+        log.info("=" * 50)
+        log.info("Aligner СТАРТ (Hybrid Engine V15.0): %s", self._track_stem)
+        log.info("Vocals: %s", vocals_path)
+        log.info("Device: %s", self.device)
+
+        canon_words = self._prepare_text(raw_lyrics)
+        text_for_whisper = " ".join([w["word"] for w in canon_words])
+        log.info("Текст Genius: %d слов", len(canon_words))
+
+        if not canon_words:
+            log.warning("Текст пуст! Выход.")
+            # Записываем пустой массив, чтобы фронтенд не упал
+            with open(output_json_path, "w", encoding="utf-8") as f:
+                json.dump([], f)
+            return output_json_path
+
+        lang = self._detect_language(raw_lyrics)
+        log.info("Определен язык: %s", lang)
+
+        model = None
+        sw_raw_words = []
+        audio_duration = 0.0
+
+        try:
+            log.info("Загрузка аудио в ОЗУ (librosa, sr=16000)...")
+            audio_data, sr = librosa.load(vocals_path, sr=16000, mono=True)
+            audio_duration = len(audio_data) / sr
+            log.info("Аудио загружено: %.2f сек. Запуск Whisper (%s)...", audio_duration, self.device)
+
+            model = stable_whisper.load_model(self.model_name, download_root=self.whisper_model_dir, device=self.device)
+            fp16_mode = self.device == "cuda"
+            
+            log.info("Фаза 1: Акустическое выравнивание (DTW)...")
             try:
-                # Магия: принудительно выравниваем развернутый текст по аудио
-                aligned_result = self.model.align(
-                    audio_path, 
-                    unfolded_lines, 
-                    language=detected_lang
-                )
-                karaoke_json = self._format_result(aligned_result)
-            except Exception as e:
-                self.logger.error(f"Forced Alignment failed: {e}. Falling back to Blind Transcription.")
-                blind_result = self.model.transcribe(audio_path, vad=True, word_timestamps=True)
-                karaoke_json = self._format_result(blind_result)
+                result = model.align(audio_data, text_for_whisper, language=lang, fp16=fp16_mode)
+                sw_raw_words = result.all_words()
+                
+                if self._is_align_bad(sw_raw_words):
+                    log.warning("DTW забракован! Текст не совпадает с аудио. Запуск Фазы 2...")
+                    raise ValueError("Bad Align Quality")
+                    
+            except Exception as align_err:
+                log.warning("Фаза 2: Слепая Транскрибация (Transcribe-First)...")
+                result = model.transcribe(audio_data, language=lang, fp16=fp16_mode)
+                sw_raw_words = result.all_words()
 
-        self.logger.info(f"Step 5: Saving final JSON to {output_json_path}...")
-        with open(output_json_path, 'w', encoding='utf-8') as f:
-            json.dump(karaoke_json, f, ensure_ascii=False, indent=4)
+        except RuntimeError as e:
+            if "out of memory" in str(e).lower() and self.device == "cuda":
+                log.warning("CUDA OOM! Переключаемся на CPU...")
+                if model: del model
+                torch.cuda.empty_cache()
+                self.device = "cpu"
+                model = stable_whisper.load_model(self.model_name, download_root=self.whisper_model_dir, device="cpu")
+                
+                result = model.transcribe(audio_data, language=lang, fp16=False)
+                sw_raw_words = result.all_words()
+            else:
+                raise e
+        finally:
+            if model: del model
+            if 'audio_data' in locals(): del audio_data
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                torch.cuda.ipc_collect()
+            log.info("Whisper выгружен, память очищена.")
+
+        dump_debug("1_WhisperRaw", [{"word": w.word, "start": w.start, "end": w.end} for w in sw_raw_words], self._track_stem)
+
+        # NLP сшивание и интерполяция (твоя идеальная логика)
+        canon_words = self._fuzzy_match_and_interpolate(canon_words, sw_raw_words, audio_duration)
+        canon_words = self._apply_surgeons(canon_words)
+        final_json = self._finalize_json(canon_words)
         
-        self.logger.info("Phonetic Alignment complete!")
-        return karaoke_json
+        with open(output_json_path, "w", encoding="utf-8") as f:
+            json.dump(final_json, f, ensure_ascii=False, indent=2)
+
+        dump_debug("2_Final", final_json, self._track_stem)
+        log.info("Aligner ГОТОВО → %s (%d слов)", output_json_path, len(final_json))
+        log.info("=" * 50)
+        
+        return output_json_path
+
+    def _prepare_text(self, text: str) -> list:
+        text = re.sub(r'[\x5B\x28].*?[\x5D\x29]', '', text)
+        text = re.sub(r'([a-zA-Z\u0400-\u04FFёЁ])([\x2D\u2013\u2014]+)([a-zA-Z\u0400-\u04FFёЁ])', r'\1\2 \3', text)
+        text = re.sub(r'[ \t]{2,}', ' ', text)
+        text = re.sub(r'\n{3,}', '\n\n', text)
+
+        words_list = []
+        for raw_line in text.splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+                
+            tokens = line.split()
+            for idx, token in enumerate(tokens):
+                has_punct = bool(re.search(r'[\x2C\x2E\x3A\x3B\x3F\x21\x2D]$', token))
+                is_last_in_line = (idx == len(tokens) - 1)
+                
+                clean = re.sub(r'[^\w]', '', token.lower())
+                if clean:
+                    words_list.append({
+                        "word": token,
+                        "clean_text": clean,
+                        "has_punct": has_punct,
+                        "line_break": is_last_in_line,
+                        "start": -1.0,
+                        "end": -1.0
+                    })
+        return words_list
+
+    def _fuzzy_match_and_interpolate(self, canon_words: list, sw_words: list, total_duration: float) -> list:
+        valid_sw = []
+        for w in sw_words:
+            if (w.end - w.start) < 0.05:
+                continue
+            cl = re.sub(r'[^\w]', '', w.word.lower())
+            if cl:
+                valid_sw.append({"word": w.word, "clean": cl, "start": w.start, "end": w.end})
+                
+        canon_clean = [w["clean_text"] for w in canon_words]
+        sw_clean = [w["clean"] for w in valid_sw]
+        
+        log.info("NLP Сшивание: Поиск временных якорей...")
+        sm = difflib.SequenceMatcher(None, canon_clean, sw_clean)
+        anchors_count = 0
+        
+        for i, j, n in sm.get_matching_blocks():
+            for k in range(n):
+                canon_words[i+k]["start"] = valid_sw[j+k]["start"]
+                canon_words[i+k]["end"] = valid_sw[j+k]["end"]
+                anchors_count += 1
+                
+        log.info("Найдено совпадений: %d из %d слов", anchors_count, len(canon_words))
+
+        i = 0
+        while i < len(canon_words):
+            if canon_words[i]["start"] == -1.0:
+                start_idx = i
+                while i < len(canon_words) and canon_words[i]["start"] == -1.0:
+                    i += 1
+                end_idx = i - 1
+                
+                prev_end = 0.0
+                if start_idx > 0:
+                    prev_end = canon_words[start_idx - 1]["end"]
+                    
+                next_start = total_duration
+                if end_idx < len(canon_words) - 1:
+                    next_start = canon_words[end_idx + 1]["start"]
+                    
+                if next_start <= prev_end:
+                    next_start = prev_end + 0.3 * (end_idx - start_idx + 1)
+                    
+                gap = next_start - prev_end
+                total_chars = sum(max(1, len(canon_words[k]["clean_text"])) for k in range(start_idx, end_idx + 1))
+                
+                curr_time = prev_end + 0.02
+                for k in range(start_idx, end_idx + 1):
+                    chars = max(1, len(canon_words[k]["clean_text"]))
+                    w_dur = (chars / total_chars) * (gap - 0.04) 
+                    canon_words[k]["start"] = curr_time
+                    canon_words[k]["end"] = curr_time + w_dur * 0.9
+                    curr_time += w_dur
+            else:
+                i += 1
+                
+        last_end = 0.0
+        for cw in canon_words:
+            if cw["start"] < last_end:
+                cw["start"] = last_end + 0.01
+            if cw["end"] < cw["start"] + 0.05:
+                cw["end"] = cw["start"] + 0.05
+            last_end = cw["end"]
+            
+        return canon_words
+
+    def _apply_surgeons(self, words: list) -> list:
+        for idx, cw in enumerate(words):
+            c_len = max(1, len(cw["clean_text"]))
+            max_dur = min(c_len * 0.4 + 0.5, 3.5)
+            
+            if cw["end"] - cw["start"] > max_dur:
+                is_first = (idx == 0) or words[idx-1]["line_break"]
+                
+                if is_first:
+                    cw["start"] = cw["end"] - max_dur
+                else:
+                    cw["end"] = cw["start"] + max_dur
+
+        last_end = 0.0
+        for cw in words:
+            if cw["start"] < last_end:
+                cw["start"] = last_end + 0.01
+            if cw["end"] < cw["start"] + 0.05:
+                cw["end"] = cw["start"] + 0.05
+            last_end = cw["end"]
+                
+        return words
+
+    def _finalize_json(self, canon_words: list) -> list:
+        final_json = []
+        for w in canon_words:
+            final_json.append({
+                "word": w["word"], 
+                "start": round(w["start"], 3),
+                "end": round(w["end"], 3),
+                "line_break": w["line_break"],
+                "letters": [] 
+            })
+        return final_json

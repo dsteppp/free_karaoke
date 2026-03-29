@@ -1,161 +1,280 @@
 import os
-import json
-import logging
-from dotenv import load_dotenv
-from audio_separator.separator import Separator
-import lyricsgenius
-from tinytag import TinyTag
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+os.environ["PYTORCH_ALLOC_CONF"]       = "expandable_segments:True"
 
-# Наш новый фонетический движок
+import subprocess
+import re
+import json
+import traceback
+import gc
+import torch
+
+import lyricsgenius
+from dotenv import load_dotenv
+from tinytag import TinyTag
+from audio_separator.separator import Separator
+
+# Наш обновленный безотказный выравниватель
 from karaoke_aligner import KaraokeAligner
-from app_logger import get_logger
+from app_logger import get_logger, dump_debug_text
+
+log = get_logger("pipeline")
+
+BASE_DIR    = os.path.dirname(os.path.abspath(__file__))
+MODELS_DIR  = os.path.join(BASE_DIR, "models")
+WHISPER_DIR = os.path.join(MODELS_DIR, "whisper")
+
+os.makedirs(MODELS_DIR,  exist_ok=True)
+os.makedirs(WHISPER_DIR, exist_ok=True)
 
 load_dotenv()
-log = get_logger("ai_pipeline")
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Технические суффиксы в именах файлов
+# ──────────────────────────────────────────────────────────────────────────────
+_TECHNICAL_SUFFIXES_RE = re.compile(
+    r'\s*[\x5B\x28\{_]?\s*'
+    r'(?:Vocals?|Instrumental|No[_ ]?Vocals?|Karaoke|Acapella|Backing|'
+    r'вокал|инструментал|минус|бэк|караоке)'
+    r'\s*[\x5D\x29\}]?\s*$',
+    re.IGNORECASE,
+)
 
-def get_audio_metadata(file_path: str, fallback_name: str = "") -> tuple[str, str]:
-    """
-    Извлекает артиста и название из MP3-тегов.
-    Если файл None или тегов нет, пытается распарсить имя файла.
-    """
-    artist, title = "", fallback_name
+# ──────────────────────────────────────────────────────────────────────────────
+# Умный фильтр метаданных (Whitelist + Очистка от мусора)
+# ──────────────────────────────────────────────────────────────────────────────
+def clean_metadata_string(text: str) -> str:
+    if not text: return ""
+    text = text.strip()
+    text = re.sub(r'[\*]+$', '', text).strip()
     
+    whitelist = [
+        'live', 'cover', 'acoustic', 'remix', 'feat', 'ft.', 'edit', 
+        'version', 'mix', 'prod', 'ost', 'unplugged', 'radio'
+    ]
+    
+    def bracket_replacer(match):
+        content = match.group(1) or match.group(2)
+        if not content: return ""
+        if any(w in content.lower() for w in whitelist):
+            return match.group(0) 
+        return ""
+
+    text = re.sub(r'\x28([^\x29]+)\x29', bracket_replacer, text)
+    text = re.sub(r'\x5B([^\x5D]+)\x5D', bracket_replacer, text)
+    text = re.sub(r'^\s*[«"\'`]|[»"\'`]\s*$', '', text)
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Конвертация и сжатие
+# ──────────────────────────────────────────────────────────────────────────────
+def convert_to_mp3(input_path: str) -> str:
+    basename   = os.path.splitext(input_path)[0]
+    final_path = f"{basename}.mp3"
+    temp_path  = f"{basename}_tmp_conv.mp3"
+
+    log.info("Конвертация в MP3 192k: %s", input_path)
+    subprocess.run(
+        ["ffmpeg", "-i", input_path,
+         "-vn", "-ar", "44100", "-ac", "2", "-b:a", "192k",
+         temp_path, "-y"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.STDOUT,
+        check=True,
+    )
+
+    if os.path.abspath(input_path) != os.path.abspath(final_path):
+        if os.path.exists(input_path):
+            os.remove(input_path)
+
+    os.rename(temp_path, final_path)
+    return final_path
+
+def compress_stem_mp3(file_path: str) -> None:
+    temp = f"{file_path}.tmp.mp3"
+    subprocess.run(
+        ["ffmpeg", "-i", file_path,
+         "-vn", "-ar", "44100", "-ac", "2", "-b:a", "192k",
+         temp, "-y"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.STDOUT,
+        check=True,
+    )
+    os.replace(temp, file_path)
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Разделение вокала (audio-separator)
+# ──────────────────────────────────────────────────────────────────────────────
+def separate_vocals(mp3_path: str) -> tuple[str, str]:
+    log.info("Запуск сепарации аудио (audio-separator)...")
+    basedir  = os.path.dirname(mp3_path)
+    basename = os.path.splitext(os.path.basename(mp3_path))[0]
+
+    vocals_final       = os.path.join(basedir, f"{basename}_(Vocals).mp3")
+    instrumental_final = os.path.join(basedir, f"{basename}_(Instrumental).mp3")
+
+    separator = Separator(
+        model_file_dir=MODELS_DIR,
+        output_dir=basedir,
+        output_format="MP3",
+        normalization_threshold=0.9,
+    )
+    separator.load_model(model_filename="MDX23C-8KFFT-InstVoc_HQ.ckpt")
+    output_files = separator.separate(mp3_path)
+
+    del separator
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+    found_vocals = None
+    found_instrumental = None
+
+    for item in output_files:
+        out_path = item if os.path.isabs(item) else os.path.join(basedir, item)
+        name_lc  = out_path.lower()
+        if "vocals" in name_lc: found_vocals = out_path
+        elif "instrumental" in name_lc or "no_vocals" in name_lc: found_instrumental = out_path
+
+    if not found_vocals or not found_instrumental:
+        raise RuntimeError("audio-separator не вернул нужные файлы.")
+
+    if found_vocals != vocals_final:
+        if os.path.exists(vocals_final): os.remove(vocals_final)
+        os.rename(found_vocals, vocals_final)
+
+    if found_instrumental != instrumental_final:
+        if os.path.exists(instrumental_final): os.remove(instrumental_final)
+        os.rename(found_instrumental, instrumental_final)
+
+    log.info("Сжатие стемов...")
+    compress_stem_mp3(vocals_final)
+    compress_stem_mp3(instrumental_final)
+
+    return vocals_final, instrumental_final
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Метаданные
+# ──────────────────────────────────────────────────────────────────────────────
+def strip_technical_suffix(text: str) -> str:
+    return _TECHNICAL_SUFFIXES_RE.sub('', text).strip()
+
+def get_audio_metadata(file_path: str, original_filename: str) -> tuple[str, str]:
+    artist, title = "", ""
     if file_path and os.path.exists(file_path):
         try:
             tag = TinyTag.get(file_path)
-            if tag.artist: artist = tag.artist.strip()
-            if tag.title: title = tag.title.strip()
-        except Exception as e:
-            log.warning(f"Could not read tags from {file_path}: {e}")
+            if tag.artist: artist = clean_metadata_string(tag.artist)
+            if tag.title: title = clean_metadata_string(tag.title)
+        except Exception:
+            pass
 
-    # Если теги пустые или файла нет, парсим имя файла
-    if not artist or not title or title == fallback_name:
-        fname = fallback_name if fallback_name else (os.path.basename(file_path) if file_path else "Unknown")
-        fname = os.path.splitext(fname)[0]
-        if " - " in fname:
-            parts = fname.split(" - ", 1)
-            if not artist: artist = parts[0].strip()
-            if not title or title == fallback_name: title = parts[1].strip()
-        else:
-            if not title or title == fallback_name: title = fname.strip()
+    # Если теги есть, возвращаем их
+    if artist and title:
+        return artist, title
 
-    return artist, title
+    # Иначе парсим имя файла
+    clean = original_filename
+    clean = re.sub(r"\.[^.]+$", "", clean)
+    clean = re.sub(r"_+", " ", clean)
+    clean = strip_technical_suffix(clean)
 
+    for sep in (" - ", "-"):
+        parts = clean.split(sep, 1)
+        if len(parts) == 2:
+            p_art = clean_metadata_string(parts[0])
+            p_tit = clean_metadata_string(parts[1])
+            if p_art and p_tit:
+                return p_art or artist, p_tit or title
 
-class AIPipeline:
-    def __init__(self):
-        genius_token = os.getenv("GENIUS_ACCESS_TOKEN")
-        if not genius_token:
-            log.warning("GENIUS_ACCESS_TOKEN not found in .env! Lyrics fetching will fail.")
-            self.genius = None
-        else:
-            self.genius = lyricsgenius.Genius(genius_token, verbose=False, remove_section_headers=True)
+    return artist, clean_metadata_string(clean) or title
 
-    def separate_audio(self, audio_path: str, output_dir: str, base_name: str):
-        """
-        Разделение аудио. Если стемы уже есть на диске - пропускает этот шаг.
-        """
-        final_vocal = os.path.join(output_dir, f"{base_name}_(Vocals).mp3")
-        final_inst = os.path.join(output_dir, f"{base_name}_(Instrumental).mp3")
-        
-        # Умный пропуск: если файлы уже есть, не тратим время и видеокарту
-        if os.path.exists(final_vocal) and os.path.exists(final_inst):
-            log.info(f"Stems already exist for {base_name}. Skipping separation.")
-            return final_vocal, final_inst
-            
-        # Если файлов нет, и оригинала тоже нет — это фатальная ошибка
-        if not audio_path or not os.path.exists(audio_path):
-            raise FileNotFoundError(f"Original audio file not found for {base_name}, and stems are missing!")
+# ──────────────────────────────────────────────────────────────────────────────
+# Genius и безопасная очистка текста (Sanitizer Phase 1)
+# ──────────────────────────────────────────────────────────────────────────────
+def clean_genius_lyrics(raw_text: str) -> str:
+    text = raw_text.strip()
+    
+    # 1. Убираем только первую строку, если это системный заголовок
+    lines = text.split('\n')
+    if lines and ("Lyrics" in lines[0] or "Текст песни" in lines[0] or "Текст" in lines[0]):
+        lines = lines[1:]
+    text = '\n'.join(lines)
 
-        log.info(f"Starting audio separation for: {audio_path}")
-        
-        separator = Separator(
-            output_dir=output_dir,
-            output_format="MP3",
-            mdx_params={"hop_length": 1024, "segment_size": 256, "overlap": 0.25}
-        )
-        separator.load_model(model_filename='UVR-MDX-NET-Inst_HQ_3.onnx')
-        
-        primary_stem_path, secondary_stem_path = separator.separate(audio_path)
-        
-        inst_path = os.path.join(output_dir, primary_stem_path)
-        vocal_path = os.path.join(output_dir, secondary_stem_path)
-        
-        # Переименовываем под стандарты твоего проекта
-        if os.path.exists(final_inst): os.remove(final_inst)
-        if os.path.exists(final_vocal): os.remove(final_vocal)
-            
-        os.rename(inst_path, final_inst)
-        os.rename(vocal_path, final_vocal)
-        
-        log.info(f"Separation complete. Vocal: {final_vocal}")
-        return final_vocal, final_inst
+    # 2. Убираем системный хвост Genius
+    text = re.sub(r'\d*\s*Embed\s*$', '', text, flags=re.IGNORECASE)
+    text = re.sub(r'Contributors.*$', '', text, flags=re.IGNORECASE | re.DOTALL)
+    
+    # 3. Агрессивно убираем технические теги в квадратных скобках ДАЖЕ МНОГОСТРОЧНЫЕ
+    text = re.sub(r'\x5B.*?\x5D', '', text, flags=re.DOTALL)
+    
+    # 4. Убираем бэки в круглых скобках
+    text = re.sub(r'\x28.*?\x29', '', text, flags=re.DOTALL)
+    
+    # 5. Нормализация знаков препинания и отступов
+    text = re.sub(r'\s+([,.:;?!—])', r'\1', text)
+    text = re.sub(r'[ \t]{2,}', ' ', text)
+    text = re.sub(r'\n{3,}', '\n\n', text)
 
-    def fetch_lyrics(self, artist: str, title: str, output_path: str) -> str:
-        """
-        Поиск текста в Genius и сохранение.
-        """
-        log.info(f"Fetching lyrics for: {artist} - {title}")
-        
-        if not self.genius:
-            raise ValueError("Genius API token is missing. Cannot fetch lyrics.")
+    return text.strip()
 
-        song = self.genius.search_song(title, artist)
-        
-        if song and song.lyrics:
-            log.info("Lyrics found successfully on Genius.")
-            lyrics_text = song.lyrics
-            
-            with open(output_path, "w", encoding="utf-8") as f:
-                f.write(lyrics_text)
-                
-            return lyrics_text
-        else:
-            log.error("Lyrics not found on Genius.")
-            raise ValueError(f"Lyrics not found for {artist} - {title}")
+def fetch_lyrics(artist: str, title: str, base_path: str) -> tuple[str | None, str | None, str | None]:
+    lyrics_file = f"{base_path}_(Genius Lyrics).txt"
+    meta_file   = f"{base_path}_meta.json"
 
-    def run_pipeline(self, track_id: str, audio_path: str, artist: str, title: str, output_dir: str, base_name: str):
-        """
-        Главный оркестратор.
-        """
-        log.info(f"=== Starting AI Pipeline for Track: {track_id} ===")
-        
-        # 1. Выделяем вокал (Или пропускаем, если стемы уже есть)
-        vocal_path, inst_path = self.separate_audio(audio_path, output_dir, base_name)
-        
-        # 0. Извлекаем метаданные. Если оригинала нет, читаем прямо из свежего вокала!
-        meta_source_path = audio_path if (audio_path and os.path.exists(audio_path)) else vocal_path
-        if not artist or not title:
-            ext_artist, ext_title = get_audio_metadata(meta_source_path, base_name)
-            artist = artist or ext_artist
-            title = title or ext_title
-        
-        # 2. Ищем текст и сохраняем его
-        lyrics_path = os.path.join(output_dir, f"{base_name}_(Genius Lyrics).txt")
-        raw_lyrics = self.fetch_lyrics(artist, title, lyrics_path)
-        
-        # 3. Фонетическое выравнивание
-        json_output_path = os.path.join(output_dir, f"{base_name}_(Karaoke Lyrics).json")
-        
-        log.info("Initializing Phonetic Aligner...")
-        aligner = KaraokeAligner(model_name="medium") 
-        
-        log.info("Starting phonetic alignment process...")
-        aligner.process_audio(vocal_path, raw_lyrics, json_output_path)
-        
-        # 4. Создаем мета-файл
-        meta_path = os.path.join(output_dir, f"{base_name}_meta.json")
-        with open(meta_path, "w", encoding="utf-8") as f:
-            json.dump({"artist": artist, "title": title, "status": "done"}, f)
+    token = os.getenv("GENIUS_ACCESS_TOKEN")
+    if not token: return None, None, None
 
-        log.info(f"=== Pipeline completed successfully for Track: {track_id} ===")
+    try:
+        genius = lyricsgenius.Genius(token, verbose=False, timeout=15)
+        genius.remove_section_headers = False 
+        song = genius.search_song(title, artist)
         
-        return {
-            "vocal": vocal_path,
-            "instrumental": inst_path,
-            "json": json_output_path,
-            "lyrics": lyrics_path,
-            "artist": artist,
-            "title": title
+        if not song: return None, None, None
+
+        g_artist = clean_metadata_string(song.artist)
+        g_title  = clean_metadata_string(song.title)
+
+        # Вытаскиваем обложки для фронтенда!
+        meta = {
+            "cover": getattr(song, "song_art_image_url", "") or "",
+            "bg":    getattr(song, "header_image_url",   "") or "",
         }
+        with open(meta_file, "w", encoding="utf-8") as f:
+            json.dump(meta, f, ensure_ascii=False)
+
+        track_stem = os.path.basename(base_path)
+        dump_debug_text("0_GeniusRaw", song.lyrics, track_stem)
+
+        cleaned_lyrics = clean_genius_lyrics(song.lyrics)
+        dump_debug_text("0_GeniusCleaned", cleaned_lyrics, track_stem)
+
+        with open(lyrics_file, "w", encoding="utf-8") as f:
+            f.write(cleaned_lyrics)
+
+        return lyrics_file, g_artist, g_title
+    except Exception as e:
+        log.error("Ошибка Genius: %s", e)
+        return None, None, None
+
+def generate_karaoke_subtitles(inst_mp3: str, vocals_mp3: str, lyrics_path: str) -> str | None:
+    basename = os.path.basename(vocals_mp3).replace("_(Vocals).mp3", "")
+    final_json = os.path.join(os.path.dirname(vocals_mp3), f"{basename}_(Karaoke Lyrics).json")
+
+    if not (lyrics_path and os.path.exists(lyrics_path)): return None
+
+    with open(lyrics_path, "r", encoding="utf-8") as f:
+        raw_text = f.read()
+        
+    clean_text = clean_genius_lyrics(raw_text)
+
+    try:
+        # Вызов нашего нового, защищенного движка
+        aligner = KaraokeAligner(model_name="medium")
+        aligner.process_audio(vocals_path=vocals_mp3, raw_lyrics=clean_text, output_json_path=final_json)
+        return final_json
+    except Exception as e:
+        log.error("Ошибка выравнивания: %s", e)
+        log.debug("Traceback:\n%s", traceback.format_exc())
+        return None
