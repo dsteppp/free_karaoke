@@ -11,8 +11,8 @@ log = get_logger("aligner")
 
 class KaraokeAligner:
     """
-    Пайплайн выравнивания "Monotonic Aligner V18" (Acoustic-Textual Cartography).
-    Полный отказ от difflib. Строгая топология времени и скользящее окно.
+    Пайплайн выравнивания "Monotonic Aligner V19 (Platinum Skeleton)".
+    Блочное сшивание N-грамм, Нейронный VAD и Физическая гравитация текста.
     """
 
     def __init__(self, model_name="medium"):
@@ -48,7 +48,7 @@ class KaraokeAligner:
         self._track_stem = os.path.basename(output_json_path).replace("_(Karaoke Lyrics).json", "")
 
         log.info("=" * 50)
-        log.info("Aligner СТАРТ (Monotonic V18): %s", self._track_stem)
+        log.info("Aligner СТАРТ (Platinum V19): %s", self._track_stem)
         log.info("Vocals: %s", vocals_path)
         log.info("Device: %s", self.device)
 
@@ -115,8 +115,8 @@ class KaraokeAligner:
 
         dump_debug("1_WhisperRaw", [{"word": w.word, "start": w.start, "end": w.end} for w in sw_raw_words], self._track_stem)
 
-        # Вызов НОВОГО математического ядра (Строгая хронология)
-        canon_words = self._elastic_sliding_alignment(canon_words, sw_raw_words)
+        # Вызов Платинового Ядра
+        canon_words = self._platinum_sequence_alignment(canon_words, sw_raw_words, audio_duration)
         canon_words = self._apply_surgeons(canon_words)
         final_json = self._finalize_json(canon_words)
         
@@ -138,8 +138,7 @@ class KaraokeAligner:
         words_list = []
         for raw_line in text.splitlines():
             line = raw_line.strip()
-            if not line:
-                continue
+            if not line: continue
                 
             tokens = line.split()
             for idx, token in enumerate(tokens):
@@ -158,25 +157,100 @@ class KaraokeAligner:
                     })
         return words_list
 
-    def _distribute_block(self, words: list, start_idx: int, end_idx: int, t_start: float, t_end: float):
-        """Эластичное распределение массы букв строго внутри заданного окна."""
-        if start_idx > end_idx: return
-        if t_end <= t_start: 
-            t_end = t_start + 0.1 * (end_idx - start_idx + 1)
-            
-        total_chars = sum(max(1, len(words[k]["clean_text"])) for k in range(start_idx, end_idx + 1))
-        gap = t_end - t_start
+    def _extract_vad_mask(self, sw_words: list) -> list:
+        """Извлекает маску голоса из таймкодов Whisper. Склеивает близкие участки."""
+        mask = []
+        for w in sw_words:
+            if w.end - w.start > 0.05:
+                mask.append((w.start, w.end))
+        if not mask: return []
         
-        curr_time = t_start
+        merged = []
+        for m in sorted(mask):
+            if not merged:
+                merged.append(m)
+            else:
+                ps, pe = merged[-1]
+                if m[0] <= pe + 0.5: # Толерантность 0.5с для склейки пауз
+                    merged[-1] = (ps, max(pe, m[1]))
+                else:
+                    merged.append(m)
+        return merged
+
+    def _distribute_fallback(self, words: list, start_idx: int, end_idx: int, t_start: float, t_end: float):
+        """Физическая гравитация: если VAD пуст, умно размещаем слова."""
+        gap = t_end - t_start
+        total_chars = sum(max(1, len(words[k]["clean_text"])) for k in range(start_idx, end_idx + 1))
+        req_dur = total_chars * 0.12 + (end_idx - start_idx + 1) * 0.05
+        
+        is_intro = (start_idx == 0)
+        is_outro = (end_idx == len(words) - 1)
+        
+        stick_left = (not is_intro) and (not words[start_idx - 1]["line_break"])
+        stick_right = (not is_outro) and (not words[end_idx]["line_break"])
+        
+        if is_intro:
+            stick_right, stick_left = True, False
+        if is_outro:
+            stick_left, stick_right = True, False
+            
+        if gap > req_dur * 2.0 and gap > 3.0:
+            if stick_left and not stick_right:
+                actual_gap, curr_t = req_dur, t_start + 0.1
+            elif stick_right and not stick_left:
+                actual_gap, curr_t = req_dur, t_end - req_dur - 0.1
+            else:
+                actual_gap, curr_t = req_dur, t_start + (gap - req_dur) / 2.0
+        else:
+            actual_gap, curr_t = gap, t_start
+            
         for k in range(start_idx, end_idx + 1):
             chars = max(1, len(words[k]["clean_text"]))
-            w_dur = (chars / total_chars) * gap
-            words[k]["start"] = curr_time
-            words[k]["end"] = curr_time + w_dur * 0.95  # 5% зазор между словами
-            curr_time += w_dur
+            w_dur = (chars / total_chars) * actual_gap
+            words[k]["start"] = curr_t
+            words[k]["end"] = curr_t + w_dur * 0.95
+            curr_t += w_dur
 
-    def _elastic_sliding_alignment(self, canon_words: list, sw_words: list) -> list:
-        # 1. Стерилизация сырых данных (запрещаем Whisper ехать в прошлое)
+    def _map_vad_time(self, t: float, vads: list) -> float:
+        accum = 0.0
+        for s, e in vads:
+            dur = e - s
+            if t <= accum + dur:
+                return s + (t - accum)
+            accum += dur
+        return vads[-1][1]
+
+    def _fill_gap_with_vad(self, words: list, start_idx: int, end_idx: int, t_start: float, t_end: float, merged_vad: list):
+        """Нейронный VAD: Заливает текст строго в участки, где есть голос."""
+        if start_idx > end_idx: return
+        if t_end <= t_start: t_end = t_start + 0.1
+        
+        active_vads = []
+        for vs, ve in merged_vad:
+            i_s = max(t_start, vs)
+            i_e = min(t_end, ve)
+            if i_e - i_s > 0.05:
+                active_vads.append((i_s, i_e))
+                
+        if not active_vads:
+            self._distribute_fallback(words, start_idx, end_idx, t_start, t_end)
+            return
+            
+        total_vad_dur = sum(e - s for s, e in active_vads)
+        total_chars = sum(max(1, len(words[k]["clean_text"])) for k in range(start_idx, end_idx + 1))
+        
+        t_cursor = 0.0
+        for k in range(start_idx, end_idx + 1):
+            chars = max(1, len(words[k]["clean_text"]))
+            w_logic_dur = (chars / total_chars) * total_vad_dur
+            
+            words[k]["start"] = self._map_vad_time(t_cursor, active_vads)
+            words[k]["end"] = self._map_vad_time(t_cursor + w_logic_dur * 0.95, active_vads)
+            
+            t_cursor += w_logic_dur
+
+    def _platinum_sequence_alignment(self, canon_words: list, sw_words: list, audio_duration: float) -> list:
+        # 1. Готовим чистые данные Whisper и собираем Маску Голоса
         valid_sw = []
         last_t = 0.0
         for w in sw_words:
@@ -188,112 +262,92 @@ class KaraokeAligner:
                 valid_sw.append({"clean": cl, "start": start_t, "end": end_t})
                 last_t = end_t
                 
-        # 2. Установка Железных Якорей (СКОЛЬЗЯЩЕЕ ОКНО)
-        # Этот блок решает баг "Улетающего припева Доры"
-        log.info("Картография: Установка железных якорей (Forward-Only)...")
-        canon_idx = 0
-        anchors_count = 0
+        merged_vad = self._extract_vad_mask(sw_words)
         
-        for sw in valid_sw:
-            if canon_idx >= len(canon_words): 
-                break
+        # 2. ПОИСК ПЛАТИНОВЫХ ЯКОРЕЙ (Блокировка иллюзий)
+        log.info("Установка Платиновых Якорей...")
+        canon_idx = 0
+        sw_idx = 0
+        anchors_count = 0
+        search_window = 60 # Ищем только вперед (Запрет прыжков припева Доры)
+        
+        while canon_idx < len(canon_words) and sw_idx < len(valid_sw):
+            best_match_len = 0
+            best_c_idx = -1
             
-            sw_c = sw["clean"]
-            
-            # Динамическое окно: ищем совпадение только в пределах следующих 25 слов.
-            # Если слово не найдено, мы его игнорируем (защита от галлюцинаций Whisper).
-            window_size = 25 
-            
-            for i in range(canon_idx, min(canon_idx + window_size, len(canon_words))):
-                if sw_c == canon_words[i]["clean_text"]:
-                    # Защита от ложных якорей на коротких словах (я, и, а)
-                    if len(sw_c) < 3 and (i - canon_idx) > 3:
-                        continue 
-                        
-                    canon_words[i]["start"] = sw["start"]
-                    canon_words[i]["end"] = sw["end"]
-                    canon_idx = i + 1 # Двигаем границу невозврата
-                    anchors_count += 1
-                    break
+            for c in range(canon_idx, min(canon_idx + search_window, len(canon_words))):
+                match_len = 0
+                while (c + match_len < len(canon_words) and 
+                       sw_idx + match_len < len(valid_sw) and 
+                       canon_words[c + match_len]["clean_text"] == valid_sw[sw_idx + match_len]["clean"]):
+                    match_len += 1
+                
+                if match_len > best_match_len:
+                    best_match_len = match_len
+                    best_c_idx = c
                     
-        log.info("Приколото бусин (Якорей): %d из %d", anchors_count, len(canon_words))
+            # ЖЕСТКИЙ ФИЛЬТР: Якорь ставится только если это цепочка слов, или 1 очень длинное слово
+            is_platinum = False
+            if best_match_len >= 3:
+                is_platinum = True
+            elif best_match_len == 2:
+                w1 = canon_words[best_c_idx]["clean_text"]
+                w2 = canon_words[best_c_idx+1]["clean_text"]
+                if len(w1) + len(w2) >= 7: 
+                    is_platinum = True
+            elif best_match_len == 1:
+                w1 = canon_words[best_c_idx]["clean_text"]
+                # Защита от Монеточки и "ничего" Золото: одиночное слово обязано быть >= 8 букв!
+                if len(w1) >= 8: 
+                    is_platinum = True
+                    
+            if is_platinum:
+                for k in range(best_match_len):
+                    canon_words[best_c_idx + k]["start"] = valid_sw[sw_idx + k]["start"]
+                    canon_words[best_c_idx + k]["end"] = valid_sw[sw_idx + k]["end"]
+                
+                canon_idx = best_c_idx + best_match_len
+                sw_idx += best_match_len
+                anchors_count += best_match_len
+            else:
+                sw_idx += 1 # Пропускаем галлюцинацию или болтовню
+                
+        log.info("Установлено неразрушимых якорей: %d из %d", anchors_count, len(canon_words))
         anchors = [i for i, w in enumerate(canon_words) if w["start"] != -1.0]
 
-        # Если нейросеть совсем оглохла
         if not anchors:
-            log.warning("Полная слепота! Равномерная заливка.")
-            self._distribute_block(canon_words, 0, len(canon_words)-1, 1.0, 10.0 + len(canon_words))
+            log.warning("Полная слепота! Используем резервную гравитацию.")
+            self._distribute_fallback(canon_words, 0, len(canon_words)-1, 1.0, audio_duration - 1.0)
             return canon_words
 
-        # 3. Эластичная заливка Интро (Баг Кристины Си)
-        first_a = anchors[0]
-        if first_a > 0:
-            anchor_time = canon_words[first_a]["start"]
-            chars = sum(len(canon_words[i]["clean_text"]) for i in range(first_a))
-            # Вычисляем естественную длину интро
-            req_time = chars * 0.12 + (first_a * 0.05)
-            # Прижимаем вправо к первому слову
-            start_time = max(0.1, anchor_time - req_time - 0.2)
-            self._distribute_block(canon_words, 0, first_a - 1, start_time, anchor_time - 0.05)
-
-        # 4. Эластичная заливка пустот и проигрышей (Баг Золото)
+        # 3. ЗАЛИВКА ПУСТОТ С ИСПОЛЬЗОВАНИЕМ НЕЙРОННОГО VAD
+        # Интро
+        if anchors[0] > 0:
+            self._fill_gap_with_vad(canon_words, 0, anchors[0] - 1, 0.0, canon_words[anchors[0]]["start"], merged_vad)
+            
+        # Куплеты и проигрыши
         for k in range(len(anchors) - 1):
             i1, i2 = anchors[k], anchors[k+1]
-            if i2 - i1 == 1: continue 
+            if i2 - i1 > 1:
+                t1 = canon_words[i1]["end"]
+                t2 = canon_words[i2]["start"]
+                self._fill_gap_with_vad(canon_words, i1 + 1, i2 - 1, t1, t2, merged_vad)
                 
-            t1, t2 = canon_words[i1]["end"], canon_words[i2]["start"]
-            start_idx, end_idx = i1 + 1, i2 - 1
-            
-            if t2 <= t1: t2 = t1 + 0.1
-            gap = t2 - t1
-            
-            chars = sum(len(canon_words[i]["clean_text"]) for i in range(start_idx, end_idx + 1))
-            req_time = chars * 0.12 + ((end_idx - start_idx + 1) * 0.05)
-            
-            # Детектор гитарного соло (если дыра больше 4 секунд и сильно больше нужного времени)
-            if gap > 4.0 and gap > req_time * 2.0:
-                log.debug("Обнаружен проигрыш: gap=%.1fs, req=%.1fs", gap, req_time)
-                # Определяем, куда "прилипнет" текст, основываясь на строках поэзии
-                stick_left = not canon_words[start_idx - 1]["line_break"]
-                stick_right = not canon_words[end_idx]["line_break"]
-                
-                if stick_left and not stick_right:
-                    self._distribute_block(canon_words, start_idx, end_idx, t1 + 0.1, t1 + req_time + 0.1)
-                elif stick_right and not stick_left:
-                    self._distribute_block(canon_words, start_idx, end_idx, t2 - req_time - 0.1, t2 - 0.1)
-                else:
-                    # Если это отдельная строка, прижимаем ее ближе к левому краю, но с отступом
-                    self._distribute_block(canon_words, start_idx, end_idx, t1 + 0.5, t1 + req_time + 0.5)
-            else:
-                # Обычная дыра - эластично натягиваем
-                self._distribute_block(canon_words, start_idx, end_idx, t1 + 0.05, t2 - 0.05)
-
-        # 5. Фантомное Аутро / Fade-out (Баг Ягоды)
-        last_a = anchors[-1]
-        if last_a < len(canon_words) - 1:
-            t1 = canon_words[last_a]["end"]
-            chars = sum(len(canon_words[i]["clean_text"]) for i in range(last_a + 1, len(canon_words)))
-            req_time = chars * 0.15 + ((len(canon_words) - last_a - 1) * 0.1)
-            # Текст просто элегантно уходит в будущее за пределы песни
-            self._distribute_block(canon_words, last_a + 1, len(canon_words) - 1, t1 + 0.2, t1 + req_time + 0.2)
+        # Аутро (Fade-out)
+        if anchors[-1] < len(canon_words) - 1:
+            t_start = canon_words[anchors[-1]]["end"]
+            self._fill_gap_with_vad(canon_words, anchors[-1] + 1, len(canon_words) - 1, t_start, audio_duration + 5.0, merged_vad)
 
         return canon_words
 
     def _apply_surgeons(self, words: list) -> list:
-        """
-        Умный хирург. Понимает вокальную распевку и переносы строк.
-        """
         for idx, cw in enumerate(words):
             c_len = max(1, len(cw["clean_text"]))
             is_line_end = cw["line_break"] or idx == len(words) - 1
-            
-            # Разрешаем словам на концах строк тянуться до 8 секунд (защита от обрывов гласных)
             max_dur = min(c_len * 0.6 + 2.0, 8.0) if is_line_end else min(c_len * 0.3 + 1.0, 4.0)
-            
             if cw["end"] - cw["start"] > max_dur:
                 cw["end"] = cw["start"] + max_dur
 
-        # Гарантийная защита от схлопывания времени
         last_end = 0.0
         for cw in words:
             if cw["start"] < last_end:
