@@ -4,7 +4,7 @@ from app_logger import get_logger
 
 log = get_logger("aligner_acoustics")
 
-# ─── V8: SMART THRESHOLDS (SNIPER И CURTAIN) ────────────────────────────────
+# ─── V8/V9: SMART THRESHOLDS (SNIPER И CURTAIN) ────────────────────────────
 
 def vocal_sniper(audio_data: np.ndarray, sr: int) -> np.ndarray:
     """
@@ -83,45 +83,63 @@ def enforce_curtains(start: float, end: float, curtains: list) -> tuple:
             end = start + 0.1
     return start, max(start + 0.05, end)
 
-# ─── ИНСТРУМЕНТЫ АКУСТИЧЕСКОЙ ТОПОГРАФИИ ─────────────────────────────────────
+# ─── V9: СЕМАНТИЧЕСКИЙ VAD И АКУСТИЧЕСКАЯ ТОПОГРАФИЯ ─────────────────────────
 
 def get_acoustic_maps(audio_data: np.ndarray, sr: int) -> tuple:
     """Генерирует карту голоса (VAD), атаки (Onsets) и функцию проверки гармоник."""
-    log.info("[Orchestra] Генерация акустической топографии (VAD, Onsets, Harmonics)...")
+    log.info("[Orchestra] Генерация акустической топографии (Semantic VAD, Onsets, Harmonics)...")
     hop_length = 512
     times = librosa.frames_to_time(np.arange(len(audio_data)//hop_length + 1), sr=sr, hop_length=hop_length)
 
     rms = librosa.feature.rms(y=audio_data, frame_length=2048, hop_length=hop_length)[0]
     rms_norm = rms / (np.max(rms) + 1e-8)
-    vad_frames = rms_norm > 0.015 
     
-    intervals, in_speech, start_t = [], False, 0.0
-    for t, is_active in zip(times[:len(vad_frames)], vad_frames):
+    # 1. Первичный поиск энергии
+    raw_vad_frames = rms_norm > 0.015 
+    
+    raw_intervals, in_speech, start_t = [], False, 0.0
+    for t, is_active in zip(times[:len(raw_vad_frames)], raw_vad_frames):
         if is_active and not in_speech:
             start_t, in_speech = t, True
         elif not is_active and in_speech:
-            intervals.append((start_t, t))
+            raw_intervals.append((start_t, t))
             in_speech = False
-    if in_speech: intervals.append((start_t, times[-1]))
-        
-    vad_mask = []
-    pad = 0.2  # Soft VAD Padding, чтобы не обрезать шипящие согласные
-    for s, e in intervals:
-        s_pad, e_pad = max(0.0, s - pad), e + pad
-        if not vad_mask: 
-            vad_mask.append((s_pad, e_pad))
-        else:
-            last_s, last_e = vad_mask[-1]
-            if s_pad - last_e < 0.5: 
-                vad_mask[-1] = (last_s, max(last_e, e_pad))
-            elif e_pad - s_pad > 0.1: 
-                vad_mask.append((s_pad, e_pad))
+    if in_speech: raw_intervals.append((start_t, times[-1]))
 
+    # 2. V9: Семантический фильтр (Spectral Flatness)
+    # Плоскость спектра: 0.0 = чистый тон (гласная), 1.0 = белый шум (барабан, вдох)
+    flatness = librosa.feature.spectral_flatness(y=audio_data, hop_length=hop_length)[0]
+    
+    vad_mask = []
+    pad = 0.2  # Soft Padding, чтобы не обрезать глухие согласные (с, ш, х)
+    
+    for s, e in raw_intervals:
+        s_frame = librosa.time_to_frames(s, sr=sr, hop_length=hop_length)
+        e_frame = librosa.time_to_frames(e, sr=sr, hop_length=hop_length)
+        
+        # Если блок достаточно длинный, чтобы его анализировать
+        if s_frame < e_frame and s_frame < len(flatness):
+            chunk_flatness = flatness[s_frame:e_frame]
+            # Если минимальный flatness в куске меньше 0.1, значит там есть хотя бы одна тональная нота
+            if np.min(chunk_flatness) < 0.1:
+                s_pad, e_pad = max(0.0, s - pad), e + pad
+                if not vad_mask: 
+                    vad_mask.append((s_pad, e_pad))
+                else:
+                    last_s, last_e = vad_mask[-1]
+                    if s_pad - last_e < 0.5: 
+                        vad_mask[-1] = (last_s, max(last_e, e_pad))
+                    elif e_pad - s_pad > 0.1: 
+                        vad_mask.append((s_pad, e_pad))
+            else:
+                # В этом куске нет гармоник (это удар рабочего барабана или резкий вдох). Игнорируем.
+                pass
+        
     o_env = librosa.onset.onset_strength(y=audio_data, sr=sr)
     raw_onsets = librosa.onset.onset_detect(onset_envelope=o_env, sr=sr, units='time')
+    # Атаки звука (onsets) берем только из подтвержденных голосовых зон
     onsets = [o_t for o_t in raw_onsets if any(vs <= o_t <= ve for (vs, ve) in vad_mask)]
 
-    flatness = librosa.feature.spectral_flatness(y=audio_data, hop_length=hop_length)[0]
     def is_harmonic(t_start, t_end):
         s_frame = librosa.time_to_frames(t_start, sr=sr, hop_length=hop_length)
         e_frame = librosa.time_to_frames(t_end, sr=sr, hop_length=hop_length)

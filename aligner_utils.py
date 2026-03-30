@@ -92,3 +92,71 @@ def get_safe_bounds(words: list, s_idx: int, e_idx: int, audio_duration: float) 
         t_end = min(t_start + 1.0, audio_duration)
         
     return t_start, t_end
+
+# ─── V9: СУРОВАЯ СИСТЕМА ОЦЕНКИ (HARSH EVALUATOR) ──────────────────────────
+
+def evaluate_alignment_quality(words: list, vad_mask: list, curtains: list) -> float:
+    """
+    V9: Оценивает качество выравнивания, снимая 'розовые очки'.
+    Жестко штрафует за порванные строки (Line Tension) и галлюцинации в тишине.
+    """
+    score = 100.0
+    total = len(words)
+    if total == 0: return 0.0
+
+    unresolved = 0
+    squeezed = 0
+    overstretched = 0
+    torn_lines = 0
+    hallucinations = 0
+
+    for i, w in enumerate(words):
+        if w["start"] == -1.0:
+            unresolved += 1
+            continue
+        
+        dur = w["end"] - w["start"]
+        
+        # 1. Проверка на физическую деформацию
+        if dur < 0.06:
+            squeezed += 1
+        min_dur, max_dur = get_phonetic_bounds(w["clean_text"], w["line_break"])
+        if dur > max_dur * 1.5:
+            overstretched += 1
+
+        # 2. Проверка на галлюцинации (VAD-Overlap)
+        # Слово не может звучать там, где VAD говорит "тишина"
+        overlap = 0.0
+        for vs, ve in vad_mask:
+            o_s = max(w["start"], vs)
+            o_e = min(w["end"], ve)
+            if o_e > o_s:
+                overlap += (o_e - o_s)
+        
+        if dur > 0 and (overlap / dur) < 0.1: # Если менее 10% слова в зоне вокала (это шум)
+            hallucinations += 1
+
+        # 3. Проверка натяжения строки (Закон Гука / Line Tension)
+        if i < total - 1 and not w["line_break"]:
+            next_w = words[i+1]
+            if next_w["start"] != -1.0:
+                gap = next_w["start"] - w["end"]
+                # Если разрыв внутри одной строки больше 2.5 секунд
+                if gap > 2.5:
+                    # Проверяем, нет ли тут легального музыкального проигрыша (Занавеса)
+                    has_curtain = any(c_s >= w["end"] and c_e <= next_w["start"] for c_s, c_e in curtains)
+                    if not has_curtain:
+                        torn_lines += 1
+
+    # Расчет жестоких штрафов
+    score -= (unresolved / total) * 100 * 2.0
+    score -= (squeezed / total) * 100 * 1.0
+    score -= (overstretched / total) * 100 * 0.5
+    
+    # Разрыв внутри строки - это катастрофа (минус 15 баллов за каждый)
+    score -= torn_lines * 15.0
+    
+    # Галлюцинация в тишине - критическая ошибка (минус 10 баллов за каждую)
+    score -= hallucinations * 10.0
+
+    return max(0.0, score)

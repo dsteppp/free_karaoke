@@ -6,14 +6,63 @@ from aligner_utils import get_safe_bounds, get_vowel_weight, get_phonetic_bounds
 
 log = get_logger("aligner_orchestra")
 
-# ─── V8: MACRO-COMPASS (ДЕТЕКТОР ГЛОБАЛЬНОГО РАССИНХРОНА) ───────────────────
+# ─── V9: SEMANTIC SCOUT (ПОИСК БОЛТОВНИ ВНЕ ТЕКСТА ПЕСНИ) ───────────────────
+
+def semantic_scout(audio_data: np.ndarray, model, lang: str, words: list) -> list:
+    """
+    V9: Быстрая слепая транскрибация всего трека.
+    Сравнивает услышанную речь с текстом Genius. 
+    Все участки речи, которых НЕТ в песне (болтовня, выкрики залу),
+    помечаются как Semantic Curtains (Семантические занавесы),
+    чтобы DTW не привязывал к ним настоящие слова песни.
+    """
+    log.info("🕵️‍♂️ [Semantic Scout] Разведка трека на предмет лишней болтовни...")
+    
+    semantic_curtains = []
+    
+    # Берем весь чистый текст Genius для сравнения
+    genius_text = " ".join([w["clean_text"] for w in words])
+    
+    try:
+        # Слепая транскрибация всего аудио (fast mode)
+        result = model.transcribe(audio_data, language=lang)
+        blind_segments = result.segments
+        
+        if not blind_segments:
+            return semantic_curtains
+            
+        for segment in blind_segments:
+            seg_text = segment.text.strip()
+            if not seg_text: continue
+                
+            clean_seg = re.sub(r'[^\w]', '', seg_text.lower())
+            if len(clean_seg) < 3: continue # Игнорируем микро-вздохи
+            
+            # Ищем, есть ли услышанная фраза в тексте Genius
+            match_score = rapidfuzz.fuzz.partial_ratio(clean_seg, genius_text)
+            
+            if match_score < 60:
+                # Если совпадение меньше 60%, значит артист говорит что-то отсебятину
+                log.warning(f"   🎙️ [Scout] Найдена болтовня: '{seg_text}' ({segment.start:.2f}s - {segment.end:.2f}s)")
+                # Создаем Семантический Занавес (плюс небольшой паддинг)
+                start_c = max(0.0, segment.start - 0.2)
+                end_c = segment.end + 0.2
+                semantic_curtains.append((start_c, end_c))
+                
+        return semantic_curtains
+        
+    except Exception as e:
+        log.error(f"   ❌ Ошибка Семантического Скаута: {e}")
+        return []
+
+# ─── V9: MACRO-COMPASS (ДЕТЕКТОР ГЛОБАЛЬНОГО РАССИНХРОНА) ───────────────────
 
 def macro_compass(words: list, s_idx: int, e_idx: int, audio_data: np.ndarray, t_start: float, t_end: float, model, lang: str) -> bool:
     """
-    V8: Слепая транскрибация для поиска реального положения в тексте.
+    V9: Слепая транскрибация для починки 'Порванных строк'.
     Если алгоритм слышит слова из "будущего", он сдвигает указатель текста вперед.
     """
-    if (e_idx - s_idx) < 3: return False 
+    if (e_idx - s_idx) < 2: return False 
     if t_end - t_start < 1.0: return False
     
     log.info(f"🧭 [Macro-Compass] Проверка глобального рассинхрона [{s_idx}-{e_idx}]...")
@@ -29,7 +78,7 @@ def macro_compass(words: list, s_idx: int, e_idx: int, audio_data: np.ndarray, t
         b_texts = [re.sub(r'[^\w]', '', w.word.lower()) for w in blind_words if w.word.strip()]
         if not b_texts: return False
         
-        lookahead_limit = min(len(words), e_idx + 20)
+        lookahead_limit = min(len(words), e_idx + 25)
         best_match_score = 0
         best_match_idx = -1
         
