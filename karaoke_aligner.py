@@ -14,7 +14,7 @@ log = get_logger("aligner")
 
 class KaraokeAligner:
     """
-    Пайплайн выравнивания "Symphony V5 (Time Machine, Attention Masking, The Loom)".
+    Пайплайн выравнивания "Symphony V6 (Ironclad Anchors, Elastic Loom, Context Copier)".
     """
 
     def __init__(self, model_name="medium"):
@@ -67,22 +67,49 @@ class KaraokeAligner:
         return words_list
 
     def _get_vowel_weight(self, word: str, is_line_end: bool) -> float:
+        """V6: Фонетический вес с учетом сложных согласных ('сплошной шрам')."""
         vowels = set("аеёиоуыэюяaeiouy")
         clean = word.lower()
         v_count = sum(1 for c in clean if c in vowels)
+        c_count = len(clean) - v_count
+        
         weight = float(max(1, v_count))
-        if is_line_end: weight *= 2.0 
+        if c_count >= 3:
+            weight += 0.5 * (c_count / 3.0)  # Штраф за нагромождение согласных
+            
+        if is_line_end: 
+            weight *= 2.0 
+            
         return weight
 
     def _get_phonetic_bounds(self, clean_text: str, is_line_end: bool) -> tuple:
         vowels = sum(1 for c in clean_text if c in "аеёиоуыэюяaeiouy")
         consonants = len(clean_text) - vowels
         
-        min_dur = max(0.05, (vowels * 0.06) + (consonants * 0.03))
-        max_dur = max(0.5, (vowels * 0.8) + (consonants * 0.15))
+        min_dur = max(0.05, (vowels * 0.06) + (consonants * 0.04))
+        max_dur = max(0.5, (vowels * 0.8) + (consonants * 0.20))
         if is_line_end: max_dur *= 2.0
         
         return min_dur, max_dur
+
+    def _get_safe_bounds(self, words: list, s_idx: int, e_idx: int, audio_duration: float) -> tuple:
+        """V6: Железные якоря. Ищет границы, никогда не падая в 0.0 из-за одиночных ошибок."""
+        t_start = 0.0
+        for i in range(s_idx - 1, -1, -1):
+            if words[i]["end"] != -1.0:
+                t_start = words[i]["end"] + 0.1
+                break
+                
+        t_end = audio_duration
+        for i in range(e_idx + 1, len(words)):
+            if words[i]["start"] != -1.0:
+                t_end = words[i]["start"] - 0.1
+                break
+                
+        if t_end <= t_start:
+            t_end = min(t_start + 1.0, audio_duration)
+            
+        return t_start, t_end
 
     # ─── ИНСТРУМЕНТЫ АКУСТИЧЕСКОЙ ТОПОГРАФИИ ───────────────────────────────
 
@@ -105,12 +132,17 @@ class KaraokeAligner:
         if in_speech: intervals.append((start_t, times[-1]))
             
         vad_mask = []
+        pad = 0.2  # V6: Soft VAD Padding (чтобы не обрезать шипящие)
         for s, e in intervals:
-            if not vad_mask: vad_mask.append((s, e))
+            s_pad, e_pad = max(0.0, s - pad), e + pad
+            if not vad_mask: 
+                vad_mask.append((s_pad, e_pad))
             else:
                 last_s, last_e = vad_mask[-1]
-                if s - last_e < 0.5: vad_mask[-1] = (last_s, max(last_e, e))
-                elif e - s > 0.1: vad_mask.append((s, e))
+                if s_pad - last_e < 0.5: 
+                    vad_mask[-1] = (last_s, max(last_e, e_pad))
+                elif e_pad - s_pad > 0.1: 
+                    vad_mask.append((s_pad, e_pad))
 
         o_env = librosa.onset.onset_strength(y=audio_data, sr=sr)
         raw_onsets = librosa.onset.onset_detect(onset_envelope=o_env, sr=sr, units='time')
@@ -127,7 +159,7 @@ class KaraokeAligner:
         return vad_mask, onsets, is_harmonic
 
     def _apply_vad_deafness(self, crop_audio: np.ndarray, sr: int, t_start: float, vad_mask: list) -> np.ndarray:
-        """Инструмент V5: Хирургическая глухота (Attention Masking)."""
+        """Инструмент V6: Хирургическая глухота (Attention Masking)."""
         mask = np.zeros_like(crop_audio, dtype=bool)
         times = t_start + np.arange(len(crop_audio)) / sr
         
@@ -273,13 +305,10 @@ class KaraokeAligner:
 
     def _micro_dtw_surgery(self, words: list, gap: tuple, audio_data: np.ndarray, model, lang: str, aggressive: bool, vad_mask: list):
         s_idx, e_idx = gap
+        audio_duration = len(audio_data) / 16000.0
         
-        t_start = words[s_idx - 1]["end"] + 0.1 if s_idx > 0 and words[s_idx - 1]["end"] != -1 else 0.0
-        t_end = len(audio_data) / 16000
-        for k in range(e_idx + 1, len(words)):
-            if words[k]["start"] != -1:
-                t_end = words[k]["start"] - 0.1
-                break
+        # V6: Использование Железных Якорей
+        t_start, t_end = self._get_safe_bounds(words, s_idx, e_idx, audio_duration)
 
         v_weights = sum(self._get_vowel_weight(words[i]["clean_text"], words[i]["line_break"]) for i in range(s_idx, e_idx + 1))
         est_dur = v_weights * 0.4
@@ -291,7 +320,7 @@ class KaraokeAligner:
             elif e_idx == len(words) - 1:
                 t_end = min(t_end, t_start + est_dur * 2.0)
 
-        # ЗАЩИТА ОТ КРАША: Запрещаем пустые/мелкие массивы
+        # ЗАЩИТА ОТ КРАША
         if t_end - t_start < 0.2:
             for k in range(s_idx, e_idx + 1): words[k]["dtw_tried"] = True
             return
@@ -301,7 +330,7 @@ class KaraokeAligner:
         sr = 16000
         crop_audio = audio_data[int(t_start * sr) : int(t_end * sr)]
         
-        if len(crop_audio) < sr * 0.2: # Дополнительная защита numpy
+        if len(crop_audio) < sr * 0.2:
             for k in range(s_idx, e_idx + 1): words[k]["dtw_tried"] = True
             return
 
@@ -379,7 +408,8 @@ class KaraokeAligner:
 
     # ─── ЭТАП 4: ОРКЕСТР (СТРАТЕГИИ ИСЦЕЛЕНИЯ) ──────────────────────────────────
 
-    def _heal_by_chorus(self, words: list, s_idx: int, e_idx: int) -> bool:
+    def _heal_by_chorus(self, words: list, s_idx: int, e_idx: int, vad_mask: list) -> bool:
+        """V6: Context-Aware Copier. Проверяет, не ложатся ли клонируемые слова в тишину."""
         target_cluster = [words[i]["clean_text"] for i in range(s_idx, e_idx + 1)]
         target_len = len(target_cluster)
         if target_len < 4: return False 
@@ -390,19 +420,36 @@ class KaraokeAligner:
             source_cluster = [words[k]["clean_text"] for k in range(i, i + target_len)]
             if source_cluster == target_cluster:
                 if all(words[k]["start"] != -1 for k in range(i, i + target_len)):
-                    log.info(f"[Orchestra] Найден структурный клон (индексы {i}-{i+target_len}). Клонируем ритм!")
-                    
                     src_start = words[i]["start"]
-                    dst_start = words[s_idx - 1]["end"] + 0.3 if s_idx > 0 and words[s_idx - 1]["end"] != -1 else 0.0
+                    dst_start, _ = self._get_safe_bounds(words, s_idx, e_idx, 9999.0)
                     
+                    mapped_timings = []
                     for k in range(target_len):
-                        words[s_idx + k]["start"] = dst_start + (words[i + k]["start"] - src_start)
-                        words[s_idx + k]["end"] = dst_start + (words[i + k]["end"] - src_start)
+                        ns = dst_start + (words[i + k]["start"] - src_start)
+                        ne = dst_start + (words[i + k]["end"] - src_start)
+                        mapped_timings.append((ns, ne))
+                        
+                    overlap = 0.0
+                    total_dur = 0.0
+                    for ms, me in mapped_timings:
+                        dur = me - ms
+                        total_dur += dur
+                        for vs, ve in vad_mask:
+                            o_s, o_e = max(ms, vs), min(me, ve)
+                            if o_e > o_s: overlap += (o_e - o_s)
+                    
+                    if total_dur > 0 and (overlap / total_dur) < 0.4:
+                        log.warning(f"[Orchestra] Клон [{s_idx}-{e_idx}] забракован: попадает в тишину (VAD mismatch).")
+                        continue
+                        
+                    log.info(f"[Orchestra] Найден структурный клон (индексы {i}-{i+target_len}). Клонируем ритм!")
+                    for k in range(target_len):
+                        words[s_idx + k]["start"] = mapped_timings[k][0]
+                        words[s_idx + k]["end"] = mapped_timings[k][1]
                     return True
         return False
 
     def _heal_blind_fuzzy(self, words: list, s_idx: int, e_idx: int, audio_data: np.ndarray, t_start: float, t_end: float, model, lang: str, aggressive: bool, vad_mask: list) -> bool:
-        # ЗАЩИТА ОТ КРАША
         if t_end - t_start < 0.2: return False
         
         log.info(f"[Orchestra] Слепой Маппинг для слов {s_idx}-{e_idx}...")
@@ -445,10 +492,9 @@ class KaraokeAligner:
             return False
 
     def _heal_phonetic_loom(self, words: list, s_idx: int, e_idx: int, t_start: float, t_end: float, vad_mask: list) -> bool:
-        """Инструмент V5: Ткацкий станок. Математическое распределение слогов по VAD."""
+        """Инструмент V6: Эластичный Ткацкий станок. Ограничивает растягивание слов по пустому VAD."""
         log.info(f"[Orchestra] Ткацкий станок (The Loom) для слов {s_idx}-{e_idx}...")
         
-        # Находим активные зоны VAD внутри окна
         valid_vads = []
         for (vs, ve) in vad_mask:
             c_s, c_e = max(t_start, vs), min(t_end, ve)
@@ -457,17 +503,34 @@ class KaraokeAligner:
         if not valid_vads:
             valid_vads = [(t_start, t_end)]
             
-        total_vad_time = sum(e - s for s, e in valid_vads)
         weights = [self._get_vowel_weight(words[k]["clean_text"], words[k]["line_break"]) for k in range(s_idx, e_idx + 1)]
         total_w = sum(weights)
         
+        # 1 единица веса ~ 0.3 секунды
+        required_time = total_w * 0.3
+        total_vad_time = sum(e - s for s, e in valid_vads)
+        
+        if total_vad_time > required_time * 1.5:
+            allowed_time = required_time * 1.2
+            trimmed_vads = []
+            accum = 0.0
+            for vs, ve in valid_vads:
+                dur = ve - vs
+                if accum + dur <= allowed_time:
+                    trimmed_vads.append((vs, ve))
+                    accum += dur
+                else:
+                    trimmed_vads.append((vs, vs + (allowed_time - accum)))
+                    break
+            valid_vads = trimmed_vads
+            total_vad_time = sum(e - s for s, e in valid_vads)
+            
         curr_t = 0.0
         for k in range(s_idx, e_idx + 1):
             w_logic_dur = (weights[k-s_idx] / total_w) * total_vad_time
             
             accum, mapped_s, mapped_e = 0.0, valid_vads[0][0], valid_vads[-1][1]
             
-            # Ищем начало слова
             for (vs, ve) in valid_vads:
                 dur = ve - vs
                 if curr_t <= accum + dur:
@@ -475,7 +538,6 @@ class KaraokeAligner:
                     break
                 accum += dur
                 
-            # Ищем конец слова
             accum = 0.0
             for (vs, ve) in valid_vads:
                 dur = ve - vs
@@ -530,9 +592,8 @@ class KaraokeAligner:
                 j = i
                 while j < n and words[j]["start"] == -1: j += 1
                 
-                t_start = words[i-1]["end"] + 0.1 if i > 0 and words[i-1]["end"] != -1 else 0.5
-                t_end = words[j]["start"] - 0.1 if j < n and words[j]["start"] != -1 else audio_duration - 0.5
-                if t_end <= t_start: t_end = t_start + 0.5
+                # V6: Использование Железных Якорей
+                t_start, t_end = self._get_safe_bounds(words, i, j - 1, audio_duration)
 
                 active_vads = get_available_vad(t_start, t_end)
                 weights = [self._get_vowel_weight(words[k]["clean_text"], words[k]["line_break"]) for k in range(i, j)]
@@ -591,7 +652,6 @@ class KaraokeAligner:
     # ─── QUALITY GATE (ОЦЕНКА КАЧЕСТВА) ─────────────────────────────────────────
 
     def _evaluate_quality(self, words: list) -> float:
-        """Инструмент V5: Машина Времени. Возвращает оценку здоровья трека от 0 до 100."""
         score = 100.0
         total = len(words)
         if total == 0: return 0.0
@@ -613,9 +673,9 @@ class KaraokeAligner:
             if dur > max_dur * 1.5:
                 overstretched += 1
 
-        score -= (unresolved / total) * 100 * 2.0      # Штраф х2 за пустоты
-        score -= (squeezed / total) * 100 * 1.0        # Штраф х1 за сдавленность
-        score -= (overstretched / total) * 100 * 0.5   # Штраф х0.5 за резину
+        score -= (unresolved / total) * 100 * 2.0
+        score -= (squeezed / total) * 100 * 1.0
+        score -= (overstretched / total) * 100 * 0.5
 
         return max(0.0, score)
 
@@ -625,7 +685,7 @@ class KaraokeAligner:
         self._track_stem = os.path.basename(output_json_path).replace("_(Karaoke Lyrics).json", "")
 
         log.info("=" * 50)
-        log.info(f"Aligner СТАРТ (Symphony V5): {self._track_stem}")
+        log.info(f"Aligner СТАРТ (Symphony V6): {self._track_stem}")
         
         canon_words_original = self._prepare_text(raw_lyrics)
         if not canon_words_original:
@@ -642,7 +702,6 @@ class KaraokeAligner:
             vad_mask, onsets, is_harmonic_fn = self._get_acoustic_maps(audio_data, sr)
             model = stable_whisper.load_model(self.model_name, download_root=self.whisper_model_dir, device=self.device)
             
-            # МАШИНА ВРЕМЕНИ: Даем движку 2 попытки
             for pass_idx in range(2):
                 aggressive_mode = (pass_idx == 1)
                 canon_words = copy.deepcopy(canon_words_original)
@@ -651,10 +710,8 @@ class KaraokeAligner:
                     log.warning("⏱️ МАШИНА ВРЕМЕНИ: Оценка низкая. Запуск Aggressive Mode (Pass 2)!")
                     log.warning("Включено: Хирургическая глухота (VAD Masking), Приоритет Ткацкого Станка.")
 
-                # ЭТАП 1: Скелет
                 self._platinum_skeleton(model, audio_data, canon_words, lang)
 
-                # ЭТАП 2: Агентный цикл (Smart Surgeon)
                 for iteration in range(3):
                     bugs = self._audit_json(canon_words)
                     gaps = self._find_gaps(canon_words)
@@ -670,7 +727,6 @@ class KaraokeAligner:
                         for gap in gaps:
                             self._micro_dtw_surgery(canon_words, gap, audio_data, model, lang, aggressive_mode, vad_mask)
                 
-                # ЭТАП 3: TRIBUNAL & ORCHESTRA
                 for iteration in range(2):
                     anomalies = self._run_tribunal(canon_words, is_harmonic_fn)
                     if not anomalies:
@@ -681,29 +737,20 @@ class KaraokeAligner:
                         for k in range(s_idx, e_idx + 1):
                             canon_words[k]["start"] = canon_words[k]["end"] = -1.0
                         
-                        t_start = canon_words[s_idx - 1]["end"] + 0.1 if s_idx > 0 and canon_words[s_idx - 1]["end"] != -1 else 0.0
-                        t_end = audio_duration
-                        for k in range(e_idx + 1, len(canon_words)):
-                            if canon_words[k]["start"] != -1:
-                                t_end = canon_words[k]["start"] - 0.1
-                                break
+                        t_start, t_end = self._get_safe_bounds(canon_words, s_idx, e_idx, audio_duration)
                                 
-                        # Инструментарий Оркестра
-                        if self._heal_by_chorus(canon_words, s_idx, e_idx): continue
+                        if self._heal_by_chorus(canon_words, s_idx, e_idx, vad_mask): continue
                         if self._heal_blind_fuzzy(canon_words, s_idx, e_idx, audio_data, t_start, t_end, model, lang, aggressive_mode, vad_mask): continue
                         
-                        # Выбор оружия последней надежды в зависимости от режима
                         if aggressive_mode:
                             self._heal_phonetic_loom(canon_words, s_idx, e_idx, t_start, t_end, vad_mask)
                         else:
                             if not self._heal_with_onsets(canon_words, s_idx, e_idx, onsets, t_start, t_end):
                                 self._heal_phonetic_loom(canon_words, s_idx, e_idx, t_start, t_end, vad_mask)
                 
-                # ЭТАП 4: Гравитация и Сглаживание
                 self._apply_gravity(canon_words, audio_duration, vad_mask)
                 self._smoothing(canon_words)
 
-                # QUALITY GATE
                 score = self._evaluate_quality(canon_words)
                 log.info(f"📊 Оценка качества после Pass {pass_idx + 1}: {score:.1f}/100")
                 
@@ -721,7 +768,6 @@ class KaraokeAligner:
                 torch.cuda.empty_cache()
                 torch.cuda.ipc_collect()
 
-        # Финализация
         final_json = []
         for w in canon_words:
             final_json.append({
@@ -735,7 +781,7 @@ class KaraokeAligner:
         with open(output_json_path, "w", encoding="utf-8") as f:
             json.dump(final_json, f, ensure_ascii=False, indent=2)
 
-        dump_debug("5_Final_Symphony", final_json, self._track_stem)
+        dump_debug("6_Final_Symphony", final_json, self._track_stem)
         log.info(f"Aligner ГОТОВО → {output_json_path}")
         log.info("=" * 50)
         
