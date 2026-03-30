@@ -3,6 +3,7 @@ import gc
 import re
 import json
 import copy
+import random
 import torch
 import librosa
 import rapidfuzz
@@ -11,7 +12,7 @@ import numpy as np
 
 from app_logger import get_logger, dump_debug
 
-# ─── ИМПОРТЫ ИЗ НАШЕЙ НОВОЙ МОДУЛЬНОЙ СИСТЕМЫ (SYMPHONY V10) ─────────────────
+# ─── ИМПОРТЫ ИЗ НАШЕЙ НОВОЙ МОДУЛЬНОЙ СИСТЕМЫ (SYMPHONY V11) ─────────────────
 from aligner_utils import (
     detect_language, prepare_text, get_vowel_weight, 
     get_phonetic_bounds, get_safe_bounds, evaluate_alignment_quality
@@ -21,17 +22,16 @@ from aligner_acoustics import (
     get_acoustic_maps, apply_vad_deafness
 )
 from aligner_orchestra import (
-    macro_compass, heal_by_motif_matrix, heal_by_chorus, 
-    ctc_inquisitor, heal_blind_fuzzy, heal_phonetic_loom, heal_with_onsets,
-    acoustic_harpoon
+    macro_compass, heal_by_motif_matrix, ctc_inquisitor, 
+    heal_phonetic_loom, semantic_harpoon
 )
 
 log = get_logger("aligner")
 
 class KaraokeAligner:
     """
-    Главный Дирижер "Symphony V10: Reactive Architecture".
-    Использует Ленивую Разведку (Lazy Scout) и Точечную Реставрацию (Targeted Fallback).
+    Главный Дирижер "Symphony V11: Semantic Pivot".
+    Использует Авангард, Семантический Аудит и Точечную Реставрацию (Гарпун).
     """
 
     def __init__(self, model_name="medium"):
@@ -44,9 +44,47 @@ class KaraokeAligner:
         
         self._track_stem = ""
         self.all_curtains = [] 
-        self.has_early_talk = False
 
-    # ─── ЭТАП 1: SKELETON & LAZY SCOUT ──────────────────────────────────────────
+    # ─── ЭТАП 1: СМЫСЛОВОЙ АВАНГАРД И СКЕЛЕТ ────────────────────────────────────
+
+    def _vanguard_protocol(self, model, audio_data: np.ndarray, words: list, lang: str):
+        """
+        V11: Авангард. Ищет первую строчку песни в первых 45 секундах аудио.
+        Если перед ней есть болтовня - ставит на нее абсолютный Занавес.
+        """
+        if not words: return
+        log.info("🛡️ [Vanguard] Поиск истинного начала песни (защита от ранней болтовни)...")
+        sr = 16000
+        crop_dur = min(45.0, len(audio_data) / sr)
+        crop = audio_data[:int(crop_dur * sr)]
+        
+        try:
+            res = model.transcribe(crop, language=lang)
+            blind_words = res.all_words()
+            if not blind_words: return
+            
+            first_line_clean = " ".join([w["clean_text"] for w in words[:4]])
+            b_texts = [re.sub(r'[^\w]', '', w.word.lower()) for w in blind_words]
+            
+            best_score = 0
+            best_t = 0.0
+            
+            # Скользящее окно по транскрибации
+            for i in range(len(b_texts) - 3):
+                chunk = " ".join([t for t in b_texts[i:i+4] if t])
+                score = rapidfuzz.fuzz.partial_ratio(first_line_clean, chunk)
+                if score > best_score:
+                    best_score = score
+                    best_t = blind_words[i].start
+                    
+            if best_score > 75 and best_t > 3.0:
+                log.info(f"   🚩 Истинное начало найдено на {best_t:.2f}s. Установка абсолютного Занавеса на болтовню.")
+                self.all_curtains.append((0.0, best_t - 0.2))
+            else:
+                log.info("   ✅ Ранняя болтовня не обнаружена (либо текст начинается сразу).")
+                
+        except Exception as e:
+            log.warning(f"   ❌ Ошибка Авангарда: {e}")
 
     def _platinum_skeleton(self, model, audio_data: np.ndarray, canon_words: list, lang: str):
         log.info("[Actor] Фаза 1: Сборка жесткого скелета (Platinum)...")
@@ -71,7 +109,7 @@ class KaraokeAligner:
                 start_t = max(last_t, w.start)
                 end_t = max(start_t + 0.05, w.end)
                 
-                # Защита через Занавесы
+                # Защита через Занавесы (включая занавес Авангарда)
                 if any(c_s <= start_t <= c_e for c_s, c_e in self.all_curtains):
                     continue
                     
@@ -113,53 +151,6 @@ class KaraokeAligner:
 
         log.info(f"[Actor] Платиновый скелет установлен: {anchors_count}/{len(canon_words)} слов.")
 
-    def _check_early_talk(self, words: list, vad_mask: list, audio_data: np.ndarray, model, lang: str):
-        """V10: Ленивая Разведка. Проверяет только пугающе долгую тишину в начале."""
-        if not vad_mask: return
-        
-        first_word_start = -1.0
-        for w in words:
-            if w["start"] != -1.0:
-                first_word_start = w["start"]
-                break
-                
-        if first_word_start == -1.0: return
-        
-        first_vad = vad_mask[0][0]
-        # Если голос звучит сильно раньше первого найденного слова
-        if first_word_start - first_vad > 5.0:
-            log.info("🕵️‍♂️ [Lazy Scout] Анализ аномальной голосовой активности до начала текста...")
-            sr = 16000
-            crop = audio_data[int(first_vad * sr) : int((first_word_start - 0.5) * sr)]
-            if len(crop) > sr * 1.5:
-                try:
-                    res = model.transcribe(crop, language=lang)
-                    seg_text = res.text.strip()
-                    # Если нейросеть услышала связный текст (а не просто шум "хм", "а")
-                    if len(seg_text) > 8:
-                        log.warning(f"   🎙️ [Lazy Scout] Найдена болтовня: '{seg_text}'")
-                        self.has_early_talk = True
-                        self.all_curtains.append((first_vad, first_word_start - 0.5))
-                        self.all_curtains = sorted(self.all_curtains, key=lambda x: x[0])
-                except Exception as e:
-                    log.error(f"Lazy Scout error: {e}")
-
-    def _first_blood_protocol(self, words: list, vad_mask: list):
-        if not vad_mask or not words: return
-        
-        if self.has_early_talk:
-            log.info("🩸 [First-Blood] Отключен. В начале трека обнаружена болтовня.")
-            return
-            
-        log.info("🩸 [First-Blood] Проверка абсолютного старта трека (строгий режим)...")
-        first_real_sound = vad_mask[0][0]
-        
-        for i in range(min(5, len(words))):
-            if words[i]["start"] != -1.0:
-                if words[i]["start"] < first_real_sound - 0.5:
-                    log.warning(f"   🔪 [First-Blood] Ложный старт убит: '{words[i]['clean_text']}' на {words[i]['start']:.2f}s")
-                    words[i]["start"] = words[i]["end"] = -1.0
-
     # ─── ЭТАП 2: CRITIC & SURGEON ───────────────────────────────────────────────
 
     def _audit_json(self, words: list) -> list:
@@ -200,8 +191,8 @@ class KaraokeAligner:
         for i in range(n - 1):
             if words[i]["end"] != -1 and words[i+1]["start"] != -1:
                 gap = words[i+1]["start"] - words[i]["end"]
-                # V10: Разрывы строк. Если строка одна, а разрыв > 2.5с
-                if gap > 2.5 and not words[i]["line_break"]:
+                # V11: Увеличен допуск до 3-х секунд
+                if gap > 3.0 and not words[i]["line_break"]:
                     has_curtain = any(c_s >= words[i]["end"] and c_e <= words[i+1]["start"] for c_s, c_e in self.all_curtains)
                     if not has_curtain:
                         log.warning(f"⚖️ [Master Auditor] Порванная строка (TORN_LINE) ({gap:.1f}s) между '{words[i]['clean_text']}' и '{words[i+1]['clean_text']}'.")
@@ -238,7 +229,7 @@ class KaraokeAligner:
                 words[idx]["start"], words[idx]["end"] = -1.0, -1.0
 
     def _find_gaps(self, words: list) -> list:
-        gaps, i, n = len(words) > 0 and [], 0, len(words)
+        gaps, i, n = [], 0, len(words)
         while i < n:
             if words[i]["start"] == -1 and not words[i].get("dtw_tried", False):
                 j = i
@@ -373,7 +364,7 @@ class KaraokeAligner:
                 j = i
                 while j < n and words[j]["start"] == -1: j += 1
                 
-                # V10: Запрет размазывания целых куплетов (Гравитация только для мелких дыр)
+                # V11: Smart Gravity. Отказываемся размазывать куплеты.
                 if j - i > 4:
                     log.warning(f"   🛑 [Smart Gravity] Дыра слишком большая ({j-i} слов). Гравитация отменена.")
                     i = j
@@ -471,7 +462,7 @@ class KaraokeAligner:
         self._track_stem = os.path.basename(output_json_path).replace("_(Karaoke Lyrics).json", "")
 
         log.info("=" * 50)
-        log.info(f"Aligner СТАРТ (Symphony V10 Reactive): {self._track_stem}")
+        log.info(f"Aligner СТАРТ (Symphony V11 Semantic Pivot): {self._track_stem}")
         
         canon_words_original = prepare_text(raw_lyrics)
         if not canon_words_original:
@@ -483,7 +474,7 @@ class KaraokeAligner:
         canon_words = []
         
         try:
-            # V10: Сохраняем сырое аудио для Гарпуна
+            # Сохраняем сырое аудио для Семантического Аудитора и Гарпуна
             audio_data_raw, sr = librosa.load(vocals_path, sr=16000, mono=True)
             audio_duration = len(audio_data_raw) / sr
             
@@ -494,7 +485,27 @@ class KaraokeAligner:
             model = stable_whisper.load_model(self.model_name, download_root=self.whisper_model_dir, device=self.device)
             
             self.all_curtains = sorted(iron_curtains, key=lambda x: x[0])
-            self.has_early_talk = False
+            
+            # V11: Авангард устанавливает Занавес на раннюю болтовню
+            self._vanguard_protocol(model, audio_data_raw, canon_words_original, lang)
+            self.all_curtains = sorted(self.all_curtains, key=lambda x: x[0])
+
+            # V11: Функция для Семантического Аудитора
+            def spot_check_fn(t_start, t_end, target_phrase):
+                log.info(f"   🔍 [Semantic Spot-Check] Проверка фрагмента {t_start:.1f}s - {t_end:.1f}s...")
+                crop = audio_data_raw[int(max(0, t_start)*sr) : int(min(audio_duration, t_end)*sr)]
+                if len(crop) < sr * 0.5: return True 
+                try:
+                    res = model.transcribe(crop, language=lang)
+                    blind_text = re.sub(r'[^\w\s]', '', res.text.lower())
+                    score = rapidfuzz.fuzz.partial_ratio(target_phrase, blind_text)
+                    if score < 50:
+                        log.warning(f"      ❌ Провал проверки! Искали '{target_phrase}', услышали '{blind_text}'")
+                        return False
+                    log.info("      ✅ Проверка пройдена.")
+                    return True
+                except:
+                    return True # При сбое движка не штрафуем
 
             best_words = []
             best_score = -1.0
@@ -508,12 +519,6 @@ class KaraokeAligner:
                     log.warning("Включено: Хирургическая глухота (VAD Masking), Приоритет Ткацкого Станка.")
 
                 self._platinum_skeleton(model, gated_audio_data, canon_words, lang)
-                
-                # V10: Ленивая разведка запускается 1 раз и только для начала трека
-                if pass_idx == 0:
-                    self._check_early_talk(canon_words, vad_mask, audio_data_raw, model, lang)
-                
-                self._first_blood_protocol(canon_words, vad_mask)
 
                 for iteration in range(3):
                     bugs = self._audit_json(canon_words)
@@ -547,21 +552,17 @@ class KaraokeAligner:
                                 continue 
                         
                         if heal_by_motif_matrix(canon_words, s_idx, e_idx, audio_duration): continue
-                        if heal_by_chorus(canon_words, s_idx, e_idx, vad_mask): continue
                         if ctc_inquisitor(canon_words, s_idx, e_idx, gated_audio_data, model, lang, t_start, t_end): continue
-                        if heal_blind_fuzzy(canon_words, s_idx, e_idx, gated_audio_data, t_start, t_end, model, lang, aggressive_mode, vad_mask, apply_vad_deafness): continue
                         
                         if aggressive_mode:
                             heal_phonetic_loom(canon_words, s_idx, e_idx, t_start, t_end, vad_mask)
-                        else:
-                            if not heal_with_onsets(canon_words, s_idx, e_idx, onsets, t_start, t_end):
-                                heal_phonetic_loom(canon_words, s_idx, e_idx, t_start, t_end, vad_mask)
                 
                 self._apply_gravity(canon_words, audio_duration, vad_mask)
                 self._apply_vad_guillotine(canon_words, vad_mask)
                 self._smoothing(canon_words)
 
-                score = evaluate_alignment_quality(canon_words, vad_mask, self.all_curtains)
+                # V11: Оценка с учетом Семантического Аудитора
+                score = evaluate_alignment_quality(canon_words, vad_mask, self.all_curtains, spot_check_fn=spot_check_fn)
                 log.info(f"📊 Оценка качества после Pass {pass_idx + 1}: {score:.1f}/100")
                 
                 if score > best_score:
@@ -575,9 +576,9 @@ class KaraokeAligner:
             canon_words = best_words
             score = best_score
 
-            # ─── V10: ТОЧЕЧНАЯ РЕСТАВРАЦИЯ (TARGETED FALLBACK) ───────────────
+            # ─── V11: ТОЧЕЧНАЯ РЕСТАВРАЦИЯ (СЕМАНТИЧЕСКИЙ ГАРПУН) ────────────
             if score < 85.0:
-                log.warning(f"🚨 [Targeted Fallback] Оценка {score:.1f}/100. Запуск Акустического Гарпуна на сыром звуке!")
+                log.warning(f"🚨 [Targeted Fallback] Оценка {score:.1f}/100. Запуск Семантического Гарпуна на сыром звуке!")
                 
                 # Принудительно рвем плохие связи
                 bugs = self._audit_json(canon_words)
@@ -592,12 +593,11 @@ class KaraokeAligner:
                 
                 for (s_idx, e_idx) in gaps:
                     t_start, t_end = get_safe_bounds(canon_words, s_idx, e_idx, audio_duration)
-                    # Даем гарпуну чуть больше воздуха по краям
                     t_start = max(0.0, t_start - 0.5)
                     t_end = min(audio_duration, t_end + 0.5)
                     
-                    # Гарпун работает с RAW AUDIO (без гейтов и занавесов)
-                    if acoustic_harpoon(canon_words, s_idx, e_idx, audio_data_raw, t_start, t_end, model, lang):
+                    # Гарпун работает с RAW AUDIO
+                    if semantic_harpoon(canon_words, s_idx, e_idx, audio_data_raw, t_start, t_end, model, lang):
                         harpoon_used = True
                 
                 if harpoon_used:
@@ -605,7 +605,7 @@ class KaraokeAligner:
                     self._apply_gravity(canon_words, audio_duration, vad_mask)
                     self._apply_vad_guillotine(canon_words, vad_mask)
                     self._smoothing(canon_words)
-                    score = evaluate_alignment_quality(canon_words, vad_mask, self.all_curtains)
+                    score = evaluate_alignment_quality(canon_words, vad_mask, self.all_curtains) 
                     log.info(f"📊 Оценка качества после Реставрации: {score:.1f}/100")
 
         except Exception as e:
@@ -633,7 +633,7 @@ class KaraokeAligner:
         with open(output_json_path, "w", encoding="utf-8") as f:
             json.dump(final_json, f, ensure_ascii=False, indent=2)
 
-        dump_debug("10_Final_Symphony", final_json, self._track_stem)
+        dump_debug("11_Final_Symphony", final_json, self._track_stem)
         log.info(f"Aligner ГОТОВО → {output_json_path}")
         log.info("=" * 50)
         
