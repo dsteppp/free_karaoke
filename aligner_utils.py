@@ -93,12 +93,12 @@ def get_safe_bounds(words: list, s_idx: int, e_idx: int, audio_duration: float) 
         
     return t_start, t_end
 
-# ─── V9: СУРОВАЯ СИСТЕМА ОЦЕНКИ (HARSH EVALUATOR) ──────────────────────────
+# ─── V10: РЕАКТИВНАЯ СИСТЕМА ОЦЕНКИ (CONTEXT-AWARE EVALUATOR) ────────────────
 
 def evaluate_alignment_quality(words: list, vad_mask: list, curtains: list) -> float:
     """
-    V9: Оценивает качество выравнивания, снимая 'розовые очки'.
-    Жестко штрафует за порванные строки (Line Tension) и галлюцинации в тишине.
+    V10: Оценивает качество, учитывая акустический контекст (Smart Line Tension).
+    Не штрафует за долгие разрывы в строке, если там физически нет голоса.
     """
     score = 100.0
     total = len(words)
@@ -121,11 +121,10 @@ def evaluate_alignment_quality(words: list, vad_mask: list, curtains: list) -> f
         if dur < 0.06:
             squeezed += 1
         min_dur, max_dur = get_phonetic_bounds(w["clean_text"], w["line_break"])
-        if dur > max_dur * 1.5:
+        if dur > max_dur * 1.2: # V10: Ужесточили проверку на растягивание Гравитацией (было 1.5)
             overstretched += 1
 
         # 2. Проверка на галлюцинации (VAD-Overlap)
-        # Слово не может звучать там, где VAD говорит "тишина"
         overlap = 0.0
         for vs, ve in vad_mask:
             o_s = max(w["start"], vs)
@@ -133,30 +132,37 @@ def evaluate_alignment_quality(words: list, vad_mask: list, curtains: list) -> f
             if o_e > o_s:
                 overlap += (o_e - o_s)
         
-        if dur > 0 and (overlap / dur) < 0.1: # Если менее 10% слова в зоне вокала (это шум)
+        if dur > 0 and (overlap / dur) < 0.1:
             hallucinations += 1
 
-        # 3. Проверка натяжения строки (Закон Гука / Line Tension)
+        # 3. V10: Умная проверка натяжения строки (Smart Line Tension)
         if i < total - 1 and not w["line_break"]:
             next_w = words[i+1]
             if next_w["start"] != -1.0:
                 gap = next_w["start"] - w["end"]
+                
                 # Если разрыв внутри одной строки больше 2.5 секунд
                 if gap > 2.5:
-                    # Проверяем, нет ли тут легального музыкального проигрыша (Занавеса)
                     has_curtain = any(c_s >= w["end"] and c_e <= next_w["start"] for c_s, c_e in curtains)
+                    
                     if not has_curtain:
-                        torn_lines += 1
+                        # Проверяем, есть ли вообще голос (VAD) в этой дыре
+                        vad_in_gap = 0.0
+                        for vs, ve in vad_mask:
+                            o_s = max(w["end"], vs)
+                            o_e = min(next_w["start"], ve)
+                            if o_e > o_s: vad_in_gap += (o_e - o_s)
+                            
+                        # Если в дыре звучит голос дольше 1 секунды - строка порвана (потерян текст)
+                        # Если голоса нет (играет соло) - это легальная пауза, прощаем.
+                        if vad_in_gap > 1.0:
+                            torn_lines += 1
 
-    # Расчет жестоких штрафов
+    # Расчет штрафов
     score -= (unresolved / total) * 100 * 2.0
     score -= (squeezed / total) * 100 * 1.0
-    score -= (overstretched / total) * 100 * 0.5
-    
-    # Разрыв внутри строки - это катастрофа (минус 15 баллов за каждый)
+    score -= (overstretched / total) * 100 * 1.0 # V10: Сильнее штрафуем за резину
     score -= torn_lines * 15.0
-    
-    # Галлюцинация в тишине - критическая ошибка (минус 10 баллов за каждую)
     score -= hallucinations * 10.0
 
     return max(0.0, score)

@@ -6,60 +6,65 @@ from aligner_utils import get_safe_bounds, get_vowel_weight, get_phonetic_bounds
 
 log = get_logger("aligner_orchestra")
 
-# ─── V9: SEMANTIC SCOUT (ПОИСК БОЛТОВНИ ВНЕ ТЕКСТА ПЕСНИ) ───────────────────
+# ─── V10: АКУСТИЧЕСКИЙ ГАРПУН (TARGETED FALLBACK) ──────────────────────────
 
-def semantic_scout(audio_data: np.ndarray, model, lang: str, words: list) -> list:
+def acoustic_harpoon(words: list, s_idx: int, e_idx: int, audio_data: np.ndarray, t_start: float, t_end: float, model, lang: str) -> bool:
     """
-    V9: Быстрая слепая транскрибация всего трека.
-    Сравнивает услышанную речь с текстом Genius. 
-    Все участки речи, которых НЕТ в песне (болтовня, выкрики залу),
-    помечаются как Semantic Curtains (Семантические занавесы),
-    чтобы DTW не привязывал к ним настоящие слова песни.
+    V10: Точечная Реставрация. Запускается на безнадежно сломанных участках (дырах).
+    Вырезает сырой кусок аудио, просит голый Whisper выровнять этот кусок
+    без всяких фильтров и масок, и прибивает совпавшие слова намертво.
     """
-    log.info("🕵️‍♂️ [Semantic Scout] Разведка трека на предмет лишней болтовни...")
+    if t_end - t_start < 1.0: return False
     
-    semantic_curtains = []
+    log.info(f"🎯 [Acoustic Harpoon] Точечная реставрация сырым Whisper для слов [{s_idx}-{e_idx}]...")
     
-    # Берем весь чистый текст Genius для сравнения
-    genius_text = " ".join([w["clean_text"] for w in words])
+    sr = 16000
+    crop = audio_data[int(t_start * sr) : int(t_end * sr)]
+    if len(crop) < sr * 0.5: return False
+    
+    text = " ".join([words[i]["word"] for i in range(s_idx, e_idx + 1)])
     
     try:
-        # Слепая транскрибация всего аудио (fast mode)
-        result = model.transcribe(audio_data, language=lang)
-        blind_segments = result.segments
+        # Vanilla Alignment без Fast Mode, на сыром звуке
+        res = model.align(crop, text, language=lang)
+        sw_words = res.all_words()
         
-        if not blind_segments:
-            return semantic_curtains
-            
-        for segment in blind_segments:
-            seg_text = segment.text.strip()
-            if not seg_text: continue
-                
-            clean_seg = re.sub(r'[^\w]', '', seg_text.lower())
-            if len(clean_seg) < 3: continue # Игнорируем микро-вздохи
-            
-            # Ищем, есть ли услышанная фраза в тексте Genius
-            match_score = rapidfuzz.fuzz.partial_ratio(clean_seg, genius_text)
-            
-            if match_score < 60:
-                # Если совпадение меньше 60%, значит артист говорит что-то отсебятину
-                log.warning(f"   🎙️ [Scout] Найдена болтовня: '{seg_text}' ({segment.start:.2f}s - {segment.end:.2f}s)")
-                # Создаем Семантический Занавес (плюс небольшой паддинг)
-                start_c = max(0.0, segment.start - 0.2)
-                end_c = segment.end + 0.2
-                semantic_curtains.append((start_c, end_c))
-                
-        return semantic_curtains
+        valid_words = [w for w in sw_words if w.end - w.start >= 0.05]
         
+        # Если Whisper нашел хотя бы 30% слов - гарпуним их
+        if len(valid_words) >= (e_idx - s_idx + 1) * 0.3:
+            log.info("   ✅ Гарпун нашел утерянные слова. Прибиваем тайминги.")
+            c_ptr = 0
+            healed = 0
+            for k in range(s_idx, e_idx + 1):
+                clean = words[k]["clean_text"]
+                best_score, best_match = 0, -1
+                
+                # Ищем фонетическое совпадение (защита от галлюцинаций)
+                for j in range(c_ptr, min(c_ptr + 4, len(valid_words))):
+                    s_clean = re.sub(r'[^\w]', '', valid_words[j].word.lower())
+                    score = rapidfuzz.fuzz.ratio(clean, s_clean)
+                    if score > best_score:
+                        best_score, best_match = score, j
+                
+                if best_match != -1 and best_score > 75:
+                    words[k]["start"] = t_start + valid_words[best_match].start
+                    words[k]["end"] = t_start + valid_words[best_match].end
+                    words[k]["dtw_tried"] = True # Помечаем, что слово зафиксировано
+                    c_ptr = best_match + 1
+                    healed += 1
+                    
+            return healed > 0
     except Exception as e:
-        log.error(f"   ❌ Ошибка Семантического Скаута: {e}")
-        return []
+        log.warning(f"   ❌ Гарпун промахнулся: {e}")
+        
+    return False
 
-# ─── V9: MACRO-COMPASS (ДЕТЕКТОР ГЛОБАЛЬНОГО РАССИНХРОНА) ───────────────────
+# ─── V10: MACRO-COMPASS (ДЕТЕКТОР ГЛОБАЛЬНОГО РАССИНХРОНА) ───────────────────
 
 def macro_compass(words: list, s_idx: int, e_idx: int, audio_data: np.ndarray, t_start: float, t_end: float, model, lang: str) -> bool:
     """
-    V9: Слепая транскрибация для починки 'Порванных строк'.
+    V9/V10: Слепая транскрибация для починки 'Порванных строк'.
     Если алгоритм слышит слова из "будущего", он сдвигает указатель текста вперед.
     """
     if (e_idx - s_idx) < 2: return False 
@@ -71,6 +76,7 @@ def macro_compass(words: list, s_idx: int, e_idx: int, audio_data: np.ndarray, t
     if len(crop) < sr * 0.2: return False
     
     try:
+        # Слепая транскрибация (без текста)
         result = model.transcribe(crop, language=lang)
         blind_words = result.all_words()
         if not blind_words: return False
