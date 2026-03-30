@@ -4,15 +4,20 @@ import re
 import json
 import torch
 import librosa
+import numpy as np
 import stable_whisper
+import rapidfuzz
 from app_logger import get_logger, dump_debug
 
 log = get_logger("aligner")
 
 class KaraokeAligner:
     """
-    Пайплайн выравнивания "Musical Logic V21 (Platinum Physics)".
-    Внедрена проверка физической возможности артикуляции для защиты от ложных эхо-таймингов.
+    Пайплайн выравнивания "Self-Healing Agent V1".
+    Использует концепцию Actor-Critic: 
+    1. Драфт-выравнивание (Actor)
+    2. Поиск аномалий: BlackHole, Overstretch, Orphan (Critic)
+    3. Локальная хирургия: Micro-DTW, Hard VAD, Vowel Gravity (Surgeon)
     """
 
     def __init__(self, model_name="medium"):
@@ -25,6 +30,8 @@ class KaraokeAligner:
         
         self._track_stem = ""
 
+    # ─── БАЗОВЫЕ УТИЛИТЫ ────────────────────────────────────────────────────────
+    
     def _detect_language(self, text: str) -> str:
         cyrillic = len(re.findall(r'[\u0400-\u04FFёЁ]', text))
         hangul = len(re.findall(r'[\uac00-\ud7a3]', text))
@@ -33,96 +40,6 @@ class KaraokeAligner:
         if hangul > 10: return "ko" 
         if cyrillic > latin * 0.3: return "ru" 
         return "en"     
-
-    def _is_align_bad(self, sw_words: list, threshold=0.08) -> bool:
-        if not sw_words: return True
-        bad_count = sum(1 for w in sw_words if (w.end - w.start) < 0.05)
-        ratio = bad_count / len(sw_words)
-        log.info("Валидатор DTW: %d/%d бракованных слов (%.1f%%)", bad_count, len(sw_words), ratio * 100)
-        return ratio > threshold
-
-    def process_audio(self, vocals_path: str, raw_lyrics: str, output_json_path: str):
-        self._track_stem = os.path.basename(output_json_path).replace("_(Karaoke Lyrics).json", "")
-
-        log.info("=" * 50)
-        log.info("Aligner СТАРТ (Musical V21): %s", self._track_stem)
-        log.info("Vocals: %s", vocals_path)
-        log.info("Device: %s", self.device)
-
-        canon_words = self._prepare_text(raw_lyrics)
-        text_for_whisper = " ".join([w["word"] for w in canon_words])
-        log.info("Текст Genius: %d слов", len(canon_words))
-
-        if not canon_words:
-            log.warning("Текст пуст! Выход.")
-            with open(output_json_path, "w", encoding="utf-8") as f:
-                json.dump([], f)
-            return output_json_path
-
-        lang = self._detect_language(raw_lyrics)
-        log.info("Определен язык: %s", lang)
-
-        model = None
-        sw_raw_words = []
-        audio_duration = 0.0
-
-        try:
-            log.info("Загрузка аудио в ОЗУ (librosa, sr=16000)...")
-            audio_data, sr = librosa.load(vocals_path, sr=16000, mono=True)
-            audio_duration = len(audio_data) / sr
-            log.info("Аудио загружено: %.2f сек. Запуск Whisper (%s)...", audio_duration, self.device)
-
-            model = stable_whisper.load_model(self.model_name, download_root=self.whisper_model_dir, device=self.device)
-            
-            log.info("Фаза 1: Акустическое выравнивание (DTW)...")
-            try:
-                result = model.align(audio_data, text_for_whisper, language=lang)
-                sw_raw_words = result.all_words()
-                
-                if self._is_align_bad(sw_raw_words):
-                    log.warning("DTW забракован! Текст не совпадает с аудио. Запуск Фазы 2...")
-                    raise ValueError("Bad Align Quality")
-                    
-            except Exception:
-                log.warning("Фаза 2: Слепая Транскрибация (Transcribe-First)...")
-                result = model.transcribe(audio_data, language=lang)
-                sw_raw_words = result.all_words()
-
-        except RuntimeError as e:
-            if "out of memory" in str(e).lower() and self.device != "cpu":
-                log.warning("Ускоритель не справился! Мягкий фолбэк на CPU...")
-                if model: del model
-                if torch.cuda.is_available(): torch.cuda.empty_cache()
-                self.device = "cpu"
-                model = stable_whisper.load_model(self.model_name, download_root=self.whisper_model_dir, device="cpu")
-                
-                result = model.transcribe(audio_data, language=lang)
-                sw_raw_words = result.all_words()
-            else:
-                raise e
-        finally:
-            if model: del model
-            if 'audio_data' in locals(): del audio_data
-            gc.collect()
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-                torch.cuda.ipc_collect()
-            log.info("Whisper выгружен, память очищена.")
-
-        dump_debug("1_WhisperRaw", [{"word": w.word, "start": w.start, "end": w.end} for w in sw_raw_words], self._track_stem)
-
-        canon_words = self._platinum_sequence_alignment(canon_words, sw_raw_words, audio_duration)
-        canon_words = self._apply_surgeons(canon_words)
-        final_json = self._finalize_json(canon_words)
-        
-        with open(output_json_path, "w", encoding="utf-8") as f:
-            json.dump(final_json, f, ensure_ascii=False, indent=2)
-
-        dump_debug("2_Final", final_json, self._track_stem)
-        log.info("Aligner ГОТОВО → %s (%d слов)", output_json_path, len(final_json))
-        log.info("=" * 50)
-        
-        return output_json_path
 
     def _prepare_text(self, text: str) -> list:
         text = re.sub(r'[\x5B\x28].*?[\x5D\x29]', '', text)
@@ -153,7 +70,6 @@ class KaraokeAligner:
         return words_list
 
     def _get_vowel_weight(self, word: str, is_line_end: bool) -> float:
-        """Музыкальная гравитация: тянутся только гласные."""
         vowels = set("аеёиоуыэюяaeiouy")
         clean = word.lower()
         v_count = sum(1 for c in clean if c in vowels)
@@ -162,239 +78,361 @@ class KaraokeAligner:
             weight *= 2.5 
         return weight
 
-    def _extract_vad_mask(self, sw_words: list) -> list:
-        """Нейронный VAD с обрезкой галлюцинаций (шлейфов тишины)."""
-        mask = []
-        for w in sw_words:
-            dur = w.end - w.start
-            if dur > 0.05:
-                # Ограничиваем 3 секундами, чтобы галлюцинации Whisper не маркировали тишину как голос
-                e = min(w.end, w.start + 3.0)
-                mask.append((w.start, e))
-        if not mask: return []
+    # ─── ФИЗИКА (HARD VAD) ──────────────────────────────────────────────────────
+
+    def _compute_hard_vad(self, audio_data: np.ndarray, sr: int, hop_length=512) -> list:
+        """Акустический сонар. Ищет реальные границы голоса по энергии (RMS)."""
+        log.info("[Сонар] Вычисление Hard VAD маски...")
+        rms = librosa.feature.rms(y=audio_data, frame_length=2048, hop_length=hop_length)[0]
+        rms_norm = rms / (np.max(rms) + 1e-8)
         
+        threshold = 0.015 # 1.5% от пиковой энергии
+        vad_frames = rms_norm > threshold
+        times = librosa.frames_to_time(np.arange(len(rms)), sr=sr, hop_length=hop_length)
+        
+        intervals = []
+        in_speech = False
+        start_t = 0.0
+        
+        for t, is_active in zip(times, vad_frames):
+            if is_active and not in_speech:
+                start_t = t
+                in_speech = True
+            elif not is_active and in_speech:
+                intervals.append((start_t, t))
+                in_speech = False
+        if in_speech:
+            intervals.append((start_t, times[-1]))
+            
         merged = []
-        for m in sorted(mask):
+        for s, e in intervals:
             if not merged:
-                merged.append(m)
+                merged.append((s, e))
             else:
-                ps, pe = merged[-1]
-                if m[0] <= pe + 0.5:
-                    merged[-1] = (ps, max(pe, m[1]))
+                last_s, last_e = merged[-1]
+                if s - last_e < 0.4: # Склеиваем паузы до 400мс
+                    merged[-1] = (last_s, max(last_e, e))
                 else:
-                    merged.append(m)
+                    if e - s > 0.1: # Игнорируем щелчки короче 100мс
+                        merged.append((s, e))
+                        
         return merged
 
-    def _distribute_fallback(self, words: list, start_idx: int, end_idx: int, t_start: float, t_end: float):
-        """Физическое распределение (для инструменталов, фейдаутов и потерянных куплетов)."""
-        if start_idx > end_idx: return
-        gap = t_end - t_start
-        if gap <= 0: gap = 0.1
+    # ─── АГЕНТСКАЯ АРХИТЕКТУРА ──────────────────────────────────────────────────
+
+    def _draft_alignment(self, model, audio_data: np.ndarray, canon_words: list, lang: str):
+        """Первичный слепок реальности (Actor)."""
+        text_for_whisper = " ".join([w["word"] for w in canon_words])
+        try:
+            result = model.align(audio_data, text_for_whisper, language=lang)
+            sw_words = result.all_words()
+        except Exception as e:
+            log.warning(f"[Actor] DTW Align упал ({e}). Фолбэк на transcribe...")
+            result = model.transcribe(audio_data, language=lang)
+            sw_words = result.all_words()
+
+        # Маппинг WhisperRaw -> Canon
+        # Используем нечеткий поиск, так как Whisper мог разбить слова иначе
+        s_texts = [re.sub(r'[^\w]', '', w.word.lower()) for w in sw_words]
         
-        weights = [self._get_vowel_weight(words[k]["clean_text"], words[k]["line_break"]) for k in range(start_idx, end_idx + 1)]
-        total_weight = sum(weights)
-        word_count = end_idx - start_idx + 1
-        
-        # Физически оптимальное время (0.3с на 1 ед. массы)
-        opt_dur = total_weight * 0.3
-        
-        is_intro = (start_idx == 0)
-        is_outro = (end_idx == len(words) - 1)
-        
-        stick_left = (not is_intro) and (not words[start_idx - 1]["line_break"])
-        stick_right = (not is_outro) and (not words[end_idx]["line_break"])
-        
-        if is_intro: stick_right, stick_left = True, False
-        if is_outro: stick_left, stick_right = True, False
-        
-        if gap > opt_dur * 1.5 and gap > 4.0:
-            if word_count >= 8:
-                # Потерян целый блок (куплет). Равномерно заполняем дыру с отступами 10%
-                actual_gap = gap * 0.8
-                curr_t = t_start + gap * 0.1
-            elif stick_left and not stick_right:
-                actual_gap, curr_t = opt_dur, t_start + 0.1
-            elif stick_right and not stick_left:
-                actual_gap, curr_t = opt_dur, t_end - opt_dur - 0.1
-            else:
-                actual_gap, curr_t = opt_dur, t_start + (gap - opt_dur) / 2.0
-        else:
-            actual_gap, curr_t = gap, t_start
+        s_idx = 0
+        for i, c_w in enumerate(canon_words):
+            if s_idx >= len(sw_words): break
             
-        for i, k in enumerate(range(start_idx, end_idx + 1)):
-            w_dur = (weights[i] / total_weight) * actual_gap
-            words[k]["start"] = curr_t
-            words[k]["end"] = curr_t + w_dur * 0.95
-            curr_t += w_dur
+            best_match = -1
+            best_score = 0
+            
+            # Ищем совпадение в скользящем окне
+            for j in range(s_idx, min(s_idx + 15, len(sw_words))):
+                if not s_texts[j]: continue
+                score = rapidfuzz.fuzz.ratio(c_w["clean_text"], s_texts[j])
+                if score > best_score and score > 75:
+                    best_score = score
+                    best_match = j
+                    if score == 100: break
+            
+            if best_match != -1:
+                # Отбраковываем откровенный мусор шепота
+                dur = sw_words[best_match].end - sw_words[best_match].start
+                if dur > 0.02:
+                    canon_words[i]["start"] = sw_words[best_match].start
+                    canon_words[i]["end"] = sw_words[best_match].end
+                    s_idx = best_match + 1
 
-    def _map_vad_time(self, t: float, vads: list) -> float:
-        accum = 0.0
-        for s, e in vads:
-            dur = e - s
-            if t <= accum + dur:
-                return s + (t - accum)
-            accum += dur
-        return vads[-1][1]
-
-    def _fill_gap_with_vad(self, words: list, start_idx: int, end_idx: int, t_start: float, t_end: float, merged_vad: list):
-        if start_idx > end_idx: return
-        if t_end <= t_start: t_end = t_start + 0.1
+    def _audit_json(self, words: list) -> list:
+        """Аудитор (Critic). Сканирует массив на предмет физических аномалий."""
+        bugs = []
+        n = len(words)
         
-        active_vads = []
-        for vs, ve in merged_vad:
-            i_s = max(t_start, vs)
-            i_e = min(t_end, ve)
-            if i_e - i_s > 0.05:
-                active_vads.append((i_s, i_e))
+        i = 0
+        while i < n:
+            w = words[i]
+            if w["start"] == -1 or w["end"] == -1:
+                i += 1
+                continue
                 
-        weights = [self._get_vowel_weight(words[k]["clean_text"], words[k]["line_break"]) for k in range(start_idx, end_idx + 1)]
-        total_weight = sum(weights)
+            dur = w["end"] - w["start"]
+            
+            # 1. BLACK_HOLE (Сингулярность или сжатие)
+            if dur < 0.05:
+                j = i
+                while j < n and words[j]["start"] != -1 and (words[j]["end"] - words[j]["start"]) < 0.1:
+                    j += 1
+                bugs.append({"type": "BLACK_HOLE", "start_idx": i, "end_idx": j - 1})
+                i = j
+                continue
+
+            # 2. OVERSTRETCH (Резина на месте тишины)
+            vowel_w = self._get_vowel_weight(w["clean_text"], w["line_break"])
+            max_phys_dur = vowel_w * 0.8 + 0.5 
+            if dur > max_phys_dur and dur > 2.0:
+                bugs.append({"type": "OVERSTRETCH", "idx": i})
+
+            # 3. ORPHAN (Оторванная галлюцинация)
+            if i < n - 1:
+                w_next = words[i+1]
+                if w_next["start"] != -1:
+                    gap = w_next["start"] - w["end"]
+                    if gap > 8.0 and not w["line_break"]:
+                        bugs.append({"type": "ORPHAN", "idx": i})
+            
+            i += 1
+            
+        return bugs
+
+    # ─── ХИРУРГИЯ ───────────────────────────────────────────────────────────────
+
+    def _fix_orphan(self, words: list, bug: dict):
+        """Хирург В: Сброс фейкового якоря."""
+        idx = bug["idx"]
+        log.debug(f"[Surgeon] Удаление Orphan-якоря: '{words[idx]['clean_text']}'")
+        words[idx]["start"] = -1.0
+        words[idx]["end"] = -1.0
+
+    def _fix_overstretch(self, words: list, bug: dict, vad_mask: list):
+        """Хирург Б: Обрубание хвостов по Hard VAD."""
+        idx = bug["idx"]
+        w = words[idx]
         
-        # Минимальное физическое время на артикуляцию (0.15с на 1 ед. массы)
-        min_phys_time = total_weight * 0.15
-        total_vad_dur = sum(e - s for s, e in active_vads)
+        active_chunk = None
+        for (vs, ve) in vad_mask:
+            if vs - 0.5 <= w["start"] <= ve + 0.5:
+                active_chunk = (vs, ve)
+                break
+                
+        old_end = w["end"]
+        if active_chunk:
+            new_end = min(w["end"], active_chunk[1] + 0.1)
+            if new_end < w["end"]:
+                w["end"] = new_end
         
-        # Если VAD-зона катастрофически мала для такого объема текста, VAD игнорируется (защита от сжатия)
-        if not active_vads or total_vad_dur < min_phys_time:
-            self._distribute_fallback(words, start_idx, end_idx, t_start, t_end)
+        # Безусловный лимит
+        vowel_w = self._get_vowel_weight(w["clean_text"], w["line_break"])
+        limit = w["start"] + vowel_w * 1.0 + 1.0
+        if w["end"] > limit:
+            w["end"] = limit
+            
+        log.debug(f"[Surgeon] Overstretch '{w['clean_text']}': {old_end:.1f}s -> {w['end']:.1f}s")
+
+    def _fix_black_hole(self, words: list, bug: dict, audio_data: np.ndarray, model, lang: str):
+        """Хирург А: Micro-DTW на локальном участке аудио."""
+        s_idx = bug["start_idx"]
+        e_idx = bug["end_idx"]
+        
+        # Ищем границы хирургического окна
+        t_start = 0.0
+        for k in range(s_idx - 1, -1, -1):
+            if words[k]["end"] != -1:
+                t_start = words[k]["end"]
+                break
+                
+        t_end = len(audio_data) / 16000
+        for k in range(e_idx + 1, len(words)):
+            if words[k]["start"] != -1:
+                t_end = words[k]["start"]
+                break
+
+        v_weights = sum(self._get_vowel_weight(words[i]["clean_text"], words[i]["line_break"]) for i in range(s_idx, e_idx + 1))
+        min_req = v_weights * 0.15
+        
+        # Если окно слишком узкое, отпускаем слова в гравитацию (-1)
+        if t_end - t_start < min_req or t_end - t_start < 1.0:
+            log.debug(f"[Surgeon] BlackHole {s_idx}-{e_idx}: Сброс в гравитацию (Окно {t_end-t_start:.1f}s мало)")
+            for i in range(s_idx, e_idx + 1):
+                words[i]["start"] = -1.0
+                words[i]["end"] = -1.0
             return
-            
-        t_cursor = 0.0
-        for i, k in enumerate(range(start_idx, end_idx + 1)):
-            w_logic_dur = (weights[i] / total_weight) * total_vad_dur
-            words[k]["start"] = self._map_vad_time(t_cursor, active_vads)
-            words[k]["end"] = self._map_vad_time(t_cursor + w_logic_dur * 0.95, active_vads)
-            t_cursor += w_logic_dur
 
-    def _platinum_sequence_alignment(self, canon_words: list, sw_words: list, audio_duration: float) -> list:
-        valid_sw = []
-        last_t = 0.0
-        for w in sw_words:
-            if (w.end - w.start) < 0.05: continue
-            cl = re.sub(r'[^\w]', '', w.word.lower())
-            if cl:
-                start_t = max(last_t, w.start)
-                end_t = max(start_t + 0.05, w.end)
-                valid_sw.append({"clean": cl, "start": start_t, "end": end_t})
-                last_t = end_t
-                
-        merged_vad = self._extract_vad_mask(sw_words)
+        log.debug(f"[Surgeon] BlackHole {s_idx}-{e_idx}: Micro-DTW окно [{t_start:.2f}s - {t_end:.2f}s]")
+        sr = 16000
+        crop_audio = audio_data[int(t_start * sr) : int(t_end * sr)]
+        crop_text = " ".join([words[i]["word"] for i in range(s_idx, e_idx + 1)])
         
-        log.info("V21: Установка Платиновых Якорей + Физическая проверка скорости...")
-        canon_idx = 0
-        sw_idx = 0
-        last_anchored_canon_idx = -1
-        last_anchored_time = 0.0
-        anchors_count = 0
-        search_window = 60
-        
-        while canon_idx < len(canon_words) and sw_idx < len(valid_sw):
-            best_match_len = 0
-            best_c_idx = -1
+        try:
+            res = model.align(crop_audio, crop_text, language=lang)
+            c_sw = res.all_words()
             
-            for c in range(canon_idx, min(canon_idx + search_window, len(canon_words))):
-                match_len = 0
-                while (c + match_len < len(canon_words) and 
-                       sw_idx + match_len < len(valid_sw) and 
-                       canon_words[c + match_len]["clean_text"] == valid_sw[sw_idx + match_len]["clean"]):
-                    match_len += 1
+            s_texts = [re.sub(r'[^\w]', '', w.word.lower()) for w in c_sw]
+            c_ptr = 0
+            for k in range(s_idx, e_idx + 1):
+                c_clean = words[k]["clean_text"]
+                best_score, best_match = 0, -1
                 
-                if match_len > best_match_len:
-                    best_match_len = match_len
-                    best_c_idx = c
-                    
-            is_platinum = False
-            if last_anchored_canon_idx == -1:
-                if best_match_len >= 3: is_platinum = True
-            else:
-                if best_match_len >= 3: is_platinum = True
-                elif best_match_len == 2:
-                    w1 = canon_words[best_c_idx]["clean_text"]
-                    w2 = canon_words[best_c_idx+1]["clean_text"]
-                    if len(w1) + len(w2) >= 7: is_platinum = True
-                elif best_match_len == 1:
-                    w1 = canon_words[best_c_idx]["clean_text"]
-                    if len(w1) >= 8: is_platinum = True
-
-            # ФИЗИЧЕСКАЯ ПРОВЕРКА (Закон Архимеда для музыки)
-            # Отвергаем эхо и бэк-вокалы, если они заставляют текст "лететь" со скоростью света
-            if is_platinum:
-                if last_anchored_canon_idx == -1:
-                    prev_words = canon_words[0:best_c_idx]
-                    avail_time = valid_sw[sw_idx]["start"]
+                for j in range(c_ptr, min(c_ptr + 5, len(s_texts))):
+                    score = rapidfuzz.fuzz.ratio(c_clean, s_texts[j])
+                    if score > best_score and score > 70:
+                        best_score, best_match = score, j
+                        if score == 100: break
+                
+                if best_match != -1:
+                    words[k]["start"] = t_start + c_sw[best_match].start
+                    words[k]["end"] = t_start + c_sw[best_match].end
+                    c_ptr = best_match + 1
                 else:
-                    prev_words = canon_words[last_anchored_canon_idx + 1 : best_c_idx]
-                    avail_time = valid_sw[sw_idx]["start"] - last_anchored_time
-                    
-                if prev_words:
-                    v_weights = sum(self._get_vowel_weight(w["clean_text"], w["line_break"]) for w in prev_words)
-                    min_req_time = v_weights * 0.16 # Физический предел артикуляции певца
-                    
-                    if avail_time < min_req_time:
-                        log.debug("Отвергнут якорь '%s': невозможно спеть текст за %.1fс (нужно мин %.1fс)", 
-                                  valid_sw[sw_idx]['clean'], avail_time, min_req_time)
-                        is_platinum = False
-                        
-            if is_platinum:
-                for k in range(best_match_len):
-                    canon_words[best_c_idx + k]["start"] = valid_sw[sw_idx + k]["start"]
-                    canon_words[best_c_idx + k]["end"] = valid_sw[sw_idx + k]["end"]
+                    words[k]["start"] = -1.0
+                    words[k]["end"] = -1.0
+        except Exception as e:
+            log.warning(f"[Surgeon] Micro-DTW упал ({e}). Сброс.")
+            for i in range(s_idx, e_idx + 1):
+                words[i]["start"] = -1.0
+                words[i]["end"] = -1.0
+
+    # ─── ГРАВИТАЦИЯ (ПОЛИРОВКА) ─────────────────────────────────────────────────
+
+    def _apply_gravity(self, words: list, audio_duration: float, vad_mask: list):
+        """Заполняет слепые зоны (-1) математически, прижимаясь к Hard VAD."""
+        n = len(words)
+        
+        def map_to_vad(t_req, t_max):
+            if not vad_mask: return t_req
+            for (vs, ve) in vad_mask:
+                if vs <= t_req <= ve: return t_req
+                if t_req < vs: return min(vs, t_max)
+            return t_req
+
+        i = 0
+        while i < n:
+            if words[i]["start"] == -1:
+                j = i
+                while j < n and words[j]["start"] == -1:
+                    j += 1
                 
-                last_anchored_canon_idx = best_c_idx + best_match_len - 1
-                last_anchored_time = valid_sw[sw_idx + best_match_len - 1]["end"]
+                t_start = 0.5
+                if i > 0 and words[i-1]["end"] != -1:
+                    t_start = words[i-1]["end"] + 0.1
+                    
+                t_end = audio_duration - 0.5
+                if j < n and words[j]["start"] != -1:
+                    t_end = words[j]["start"] - 0.1
+
+                if t_end <= t_start: t_end = t_start + 0.5
+
+                weights = [self._get_vowel_weight(words[k]["clean_text"], words[k]["line_break"]) for k in range(i, j)]
+                total_w = sum(weights)
                 
-                canon_idx = best_c_idx + best_match_len
-                sw_idx += best_match_len
-                anchors_count += best_match_len
+                opt_dur = total_w * 0.3
+                actual_dur = min(t_end - t_start, opt_dur)
+                
+                if i == 0: 
+                    t_start = max(t_start, t_end - actual_dur)
+                
+                curr_t = t_start
+                for k in range(i, j):
+                    w_ratio = weights[k-i] / total_w
+                    w_dur = w_ratio * actual_dur
+                    
+                    st = map_to_vad(curr_t, t_end)
+                    en = st + w_dur * 0.95
+                    
+                    words[k]["start"] = st
+                    words[k]["end"] = en
+                    curr_t = en
+                
+                i = j
             else:
-                sw_idx += 1
-                
-        log.info("Установлено якорей после физ. проверок: %d из %d", anchors_count, len(canon_words))
-        anchors = [i for i, w in enumerate(canon_words) if w["start"] != -1.0]
-
-        if not anchors:
-            log.warning("Полная слепота! Используем резервную гравитацию.")
-            self._distribute_fallback(canon_words, 0, len(canon_words)-1, 1.0, audio_duration - 1.0)
-            return canon_words
-
-        # Заливка Интро
-        if anchors[0] > 0:
-            self._fill_gap_with_vad(canon_words, 0, anchors[0] - 1, 0.0, canon_words[anchors[0]]["start"], merged_vad)
-            
-        # Заливка куплетов и проигрышей
-        for k in range(len(anchors) - 1):
-            i1, i2 = anchors[k], anchors[k+1]
-            if i2 - i1 > 1:
-                t1 = canon_words[i1]["end"]
-                t2 = canon_words[i2]["start"]
-                self._fill_gap_with_vad(canon_words, i1 + 1, i2 - 1, t1, t2, merged_vad)
-                
-        # Заливка Аутро
-        if anchors[-1] < len(canon_words) - 1:
-            t_start = canon_words[anchors[-1]]["end"]
-            fake_end_time = max(t_start + 10.0, audio_duration + 10.0)
-            self._distribute_fallback(canon_words, anchors[-1] + 1, len(canon_words) - 1, t_start + 0.5, fake_end_time)
-
-        return canon_words
+                i += 1
 
     def _apply_surgeons(self, words: list) -> list:
-        for idx, cw in enumerate(words):
-            v_weight = self._get_vowel_weight(cw["clean_text"], cw["line_break"])
-            max_dur = v_weight * 1.0 + 1.0 
-            if cw["end"] - cw["start"] > max_dur:
-                cw["end"] = cw["start"] + max_dur
-
-        last_end = 0.0
-        for cw in words:
-            if cw["start"] < last_end:
-                cw["start"] = last_end + 0.01
-            if cw["end"] < cw["start"] + 0.05:
-                cw["end"] = cw["start"] + 0.05
-            last_end = cw["end"]
-                
+        """Сглаживание микро-наложений."""
+        last_e = 0.0
+        for w in words:
+            if w["start"] < last_e:
+                w["start"] = last_e + 0.01
+            if w["end"] <= w["start"]:
+                w["end"] = w["start"] + 0.1
+            last_e = w["end"]
         return words
 
-    def _finalize_json(self, canon_words: list) -> list:
+    # ─── MAIN LOOP ──────────────────────────────────────────────────────────────
+
+    def process_audio(self, vocals_path: str, raw_lyrics: str, output_json_path: str):
+        self._track_stem = os.path.basename(output_json_path).replace("_(Karaoke Lyrics).json", "")
+
+        log.info("=" * 50)
+        log.info(f"Aligner СТАРТ (Self-Healing Agent V1): {self._track_stem}")
+        
+        canon_words = self._prepare_text(raw_lyrics)
+        if not canon_words:
+            log.warning("Текст пуст! Выход.")
+            with open(output_json_path, "w", encoding="utf-8") as f: json.dump([], f)
+            return output_json_path
+
+        lang = self._detect_language(raw_lyrics)
+        log.info(f"Язык: {lang}. Слов: {len(canon_words)}")
+
+        model = None
+        try:
+            log.info("Загрузка аудио (16kHz)...")
+            audio_data, sr = librosa.load(vocals_path, sr=16000, mono=True)
+            audio_duration = len(audio_data) / sr
+            
+            vad_mask = self._compute_hard_vad(audio_data, sr)
+            
+            log.info(f"Запуск Whisper ({self.device})...")
+            model = stable_whisper.load_model(self.model_name, download_root=self.whisper_model_dir, device=self.device)
+            
+            # ЭТАП 1: Драфт (Actor)
+            log.info("[Agent] Этап 1: Создание первичного слепка (Draft)...")
+            self._draft_alignment(model, audio_data, canon_words, lang)
+
+            # ЭТАП 2: Цикл самоисцеления (Critic & Surgeon)
+            max_iters = 3
+            for iteration in range(max_iters):
+                bugs = self._audit_json(canon_words)
+                
+                if not bugs:
+                    log.info(f"[Critic] Итерация {iteration+1}: Аудит пройден. JSON идеален!")
+                    break
+                    
+                log.warning(f"[Critic] Итерация {iteration+1}: Найдено {len(bugs)} аномалий. Запуск хирургов...")
+                
+                for bug in bugs:
+                    if bug["type"] == "ORPHAN":
+                        self._fix_orphan(canon_words, bug)
+                    elif bug["type"] == "OVERSTRETCH":
+                        self._fix_overstretch(canon_words, bug, vad_mask)
+                    elif bug["type"] == "BLACK_HOLE":
+                        self._fix_black_hole(canon_words, bug, audio_data, model, lang)
+            
+            # ЭТАП 3: Финальная полировка (Гравитация)
+            log.info("[Agent] Этап 3: Гравитационная заливка слепых зон...")
+            self._apply_gravity(canon_words, audio_duration, vad_mask)
+            self._apply_surgeons(canon_words)
+
+        except RuntimeError as e:
+            if "out of memory" in str(e).lower() and self.device != "cpu":
+                log.error("Ускоритель упал по OOM. Перезапустите сервер с флагом CPU.")
+            raise e
+        finally:
+            if model: del model
+            if 'audio_data' in locals(): del audio_data
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                torch.cuda.ipc_collect()
+            log.info("Whisper выгружен, память очищена.")
+
+        # Финализация
         final_json = []
         for w in canon_words:
             final_json.append({
@@ -404,4 +442,12 @@ class KaraokeAligner:
                 "line_break": w["line_break"],
                 "letters": [] 
             })
-        return final_json
+            
+        with open(output_json_path, "w", encoding="utf-8") as f:
+            json.dump(final_json, f, ensure_ascii=False, indent=2)
+
+        dump_debug("2_Final_SelfHealed", final_json, self._track_stem)
+        log.info(f"Aligner ГОТОВО → {output_json_path}")
+        log.info("=" * 50)
+        
+        return output_json_path
