@@ -6,7 +6,7 @@ OUTPUT="PROJECT_BACK.txt"
 > "$OUTPUT"
 
 # Задаем папки для исключения по умолчанию
-EXCLUDE_DIRS=("cache" ".venv" "models" "library")
+EXCLUDE_DIRS=("cache" ".venv" "models" "library" ".git" "__pycache__")
 
 # Сообщаем пользователю о базовых исключениях и запрашиваем дополнительные
 echo "По умолчанию из сканирования исключены папки: ${EXCLUDE_DIRS[*]}"

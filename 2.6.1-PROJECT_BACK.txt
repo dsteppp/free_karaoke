@@ -1052,1123 +1052,6 @@ async def global_exception_handler(request: Request, exc: Exception):
 
 
 ================================================================================
-ФАЙЛ: ./.git/COMMIT_EDITMSG
-================================================================================
-
-# Please enter the commit message for your changes. Lines starting
-# with '#' will be ignored, and an empty message aborts the commit.
-#
-# On branch main
-# Your branch is up to date with 'origin/main'.
-#
-# Changes to be committed:
-#	modified:   huey_queue.db-shm
-#	modified:   huey_queue.db-wal
-#
-
-
-================================================================================
-ФАЙЛ: ./.git/info/exclude
-================================================================================
-# git ls-files --others --exclude-from=.git/info/exclude
-# Lines that start with '#' are comments.
-# For a project mostly in C, the following would be a good set of
-# exclude patterns (uncomment them if you want to use them):
-# *.[oa]
-# *~
-
-
-================================================================================
-ФАЙЛ: ./.git/hooks/push-to-checkout.sample
-================================================================================
-#!/bin/sh
-
-# An example hook script to update a checked-out tree on a git push.
-#
-# This hook is invoked by git-receive-pack(1) when it reacts to git
-# push and updates reference(s) in its repository, and when the push
-# tries to update the branch that is currently checked out and the
-# receive.denyCurrentBranch configuration variable is set to
-# updateInstead.
-#
-# By default, such a push is refused if the working tree and the index
-# of the remote repository has any difference from the currently
-# checked out commit; when both the working tree and the index match
-# the current commit, they are updated to match the newly pushed tip
-# of the branch. This hook is to be used to override the default
-# behaviour; however the code below reimplements the default behaviour
-# as a starting point for convenient modification.
-#
-# The hook receives the commit with which the tip of the current
-# branch is going to be updated:
-commit=$1
-
-# It can exit with a non-zero status to refuse the push (when it does
-# so, it must not modify the index or the working tree).
-die () {
-	echo >&2 "$*"
-	exit 1
-}
-
-# Or it can make any necessary changes to the working tree and to the
-# index to bring them to the desired state when the tip of the current
-# branch is updated to the new commit, and exit with a zero status.
-#
-# For example, the hook can simply run git read-tree -u -m HEAD "$1"
-# in order to emulate git fetch that is run in the reverse direction
-# with git push, as the two-tree form of git read-tree -u -m is
-# essentially the same as git switch or git checkout that switches
-# branches while keeping the local changes in the working tree that do
-# not interfere with the difference between the branches.
-
-# The below is a more-or-less exact translation to shell of the C code
-# for the default behaviour for git's push-to-checkout hook defined in
-# the push_to_deploy() function in builtin/receive-pack.c.
-#
-# Note that the hook will be executed from the repository directory,
-# not from the working tree, so if you want to perform operations on
-# the working tree, you will have to adapt your code accordingly, e.g.
-# by adding "cd .." or using relative paths.
-
-if ! git update-index -q --ignore-submodules --refresh
-then
-	die "Up-to-date check failed"
-fi
-
-if ! git diff-files --quiet --ignore-submodules --
-then
-	die "Working directory has unstaged changes"
-fi
-
-# This is a rough translation of:
-#
-#   head_has_history() ? "HEAD" : EMPTY_TREE_SHA1_HEX
-if git cat-file -e HEAD 2>/dev/null
-then
-	head=HEAD
-else
-	head=$(git hash-object -t tree --stdin </dev/null)
-fi
-
-if ! git diff-index --quiet --cached --ignore-submodules $head --
-then
-	die "Working directory has staged changes"
-fi
-
-if ! git read-tree -u -m "$commit"
-then
-	die "Could not update working tree to new HEAD"
-fi
-
-
-================================================================================
-ФАЙЛ: ./.git/hooks/update.sample
-================================================================================
-#!/bin/sh
-#
-# An example hook script to block unannotated tags from entering.
-# Called by "git receive-pack" with arguments: refname sha1-old sha1-new
-#
-# To enable this hook, rename this file to "update".
-#
-# Config
-# ------
-# hooks.allowunannotated
-#   This boolean sets whether unannotated tags will be allowed into the
-#   repository.  By default they won't be.
-# hooks.allowdeletetag
-#   This boolean sets whether deleting tags will be allowed in the
-#   repository.  By default they won't be.
-# hooks.allowmodifytag
-#   This boolean sets whether a tag may be modified after creation. By default
-#   it won't be.
-# hooks.allowdeletebranch
-#   This boolean sets whether deleting branches will be allowed in the
-#   repository.  By default they won't be.
-# hooks.denycreatebranch
-#   This boolean sets whether remotely creating branches will be denied
-#   in the repository.  By default this is allowed.
-#
-
-# --- Command line
-refname="$1"
-oldrev="$2"
-newrev="$3"
-
-# --- Safety check
-if [ -z "$GIT_DIR" ]; then
-	echo "Don't run this script from the command line." >&2
-	echo " (if you want, you could supply GIT_DIR then run" >&2
-	echo "  $0 <ref> <oldrev> <newrev>)" >&2
-	exit 1
-fi
-
-if [ -z "$refname" -o -z "$oldrev" -o -z "$newrev" ]; then
-	echo "usage: $0 <ref> <oldrev> <newrev>" >&2
-	exit 1
-fi
-
-# --- Config
-allowunannotated=$(git config --type=bool hooks.allowunannotated)
-allowdeletebranch=$(git config --type=bool hooks.allowdeletebranch)
-denycreatebranch=$(git config --type=bool hooks.denycreatebranch)
-allowdeletetag=$(git config --type=bool hooks.allowdeletetag)
-allowmodifytag=$(git config --type=bool hooks.allowmodifytag)
-
-# check for no description
-projectdesc=$(sed -e '1q' "$GIT_DIR/description")
-case "$projectdesc" in
-"Unnamed repository"* | "")
-	echo "*** Project description file hasn't been set" >&2
-	exit 1
-	;;
-esac
-
-# --- Check types
-# if $newrev is 0000...0000, it's a commit to delete a ref.
-zero=$(git hash-object --stdin </dev/null | tr '[0-9a-f]' '0')
-if [ "$newrev" = "$zero" ]; then
-	newrev_type=delete
-else
-	newrev_type=$(git cat-file -t $newrev)
-fi
-
-case "$refname","$newrev_type" in
-	refs/tags/*,commit)
-		# un-annotated tag
-		short_refname=${refname##refs/tags/}
-		if [ "$allowunannotated" != "true" ]; then
-			echo "*** The un-annotated tag, $short_refname, is not allowed in this repository" >&2
-			echo "*** Use 'git tag [ -a | -s ]' for tags you want to propagate." >&2
-			exit 1
-		fi
-		;;
-	refs/tags/*,delete)
-		# delete tag
-		if [ "$allowdeletetag" != "true" ]; then
-			echo "*** Deleting a tag is not allowed in this repository" >&2
-			exit 1
-		fi
-		;;
-	refs/tags/*,tag)
-		# annotated tag
-		if [ "$allowmodifytag" != "true" ] && git rev-parse $refname > /dev/null 2>&1
-		then
-			echo "*** Tag '$refname' already exists." >&2
-			echo "*** Modifying a tag is not allowed in this repository." >&2
-			exit 1
-		fi
-		;;
-	refs/heads/*,commit)
-		# branch
-		if [ "$oldrev" = "$zero" -a "$denycreatebranch" = "true" ]; then
-			echo "*** Creating a branch is not allowed in this repository" >&2
-			exit 1
-		fi
-		;;
-	refs/heads/*,delete)
-		# delete branch
-		if [ "$allowdeletebranch" != "true" ]; then
-			echo "*** Deleting a branch is not allowed in this repository" >&2
-			exit 1
-		fi
-		;;
-	refs/remotes/*,commit)
-		# tracking branch
-		;;
-	refs/remotes/*,delete)
-		# delete tracking branch
-		if [ "$allowdeletebranch" != "true" ]; then
-			echo "*** Deleting a tracking branch is not allowed in this repository" >&2
-			exit 1
-		fi
-		;;
-	*)
-		# Anything else (is there anything else?)
-		echo "*** Update hook: unknown type of update to ref $refname of type $newrev_type" >&2
-		exit 1
-		;;
-esac
-
-# --- Finished
-exit 0
-
-
-================================================================================
-ФАЙЛ: ./.git/hooks/sendemail-validate.sample
-================================================================================
-#!/bin/sh
-
-# An example hook script to validate a patch (and/or patch series) before
-# sending it via email.
-#
-# The hook should exit with non-zero status after issuing an appropriate
-# message if it wants to prevent the email(s) from being sent.
-#
-# To enable this hook, rename this file to "sendemail-validate".
-#
-# By default, it will only check that the patch(es) can be applied on top of
-# the default upstream branch without conflicts in a secondary worktree. After
-# validation (successful or not) of the last patch of a series, the worktree
-# will be deleted.
-#
-# The following config variables can be set to change the default remote and
-# remote ref that are used to apply the patches against:
-#
-#   sendemail.validateRemote (default: origin)
-#   sendemail.validateRemoteRef (default: HEAD)
-#
-# Replace the TODO placeholders with appropriate checks according to your
-# needs.
-
-validate_cover_letter () {
-	file="$1"
-	# TODO: Replace with appropriate checks (e.g. spell checking).
-	true
-}
-
-validate_patch () {
-	file="$1"
-	# Ensure that the patch applies without conflicts.
-	git am -3 "$file" || return
-	# TODO: Replace with appropriate checks for this patch
-	# (e.g. checkpatch.pl).
-	true
-}
-
-validate_series () {
-	# TODO: Replace with appropriate checks for the whole series
-	# (e.g. quick build, coding style checks, etc.).
-	true
-}
-
-# main -------------------------------------------------------------------------
-
-if test "$GIT_SENDEMAIL_FILE_COUNTER" = 1
-then
-	remote=$(git config --default origin --get sendemail.validateRemote) &&
-	ref=$(git config --default HEAD --get sendemail.validateRemoteRef) &&
-	worktree=$(mktemp --tmpdir -d sendemail-validate.XXXXXXX) &&
-	git worktree add -fd --checkout "$worktree" "refs/remotes/$remote/$ref" &&
-	git config --replace-all sendemail.validateWorktree "$worktree"
-else
-	worktree=$(git config --get sendemail.validateWorktree)
-fi || {
-	echo "sendemail-validate: error: failed to prepare worktree" >&2
-	exit 1
-}
-
-unset GIT_DIR GIT_WORK_TREE
-cd "$worktree" &&
-
-if grep -q "^diff --git " "$1"
-then
-	validate_patch "$1"
-else
-	validate_cover_letter "$1"
-fi &&
-
-if test "$GIT_SENDEMAIL_FILE_COUNTER" = "$GIT_SENDEMAIL_FILE_TOTAL"
-then
-	git config --unset-all sendemail.validateWorktree &&
-	trap 'git worktree remove -ff "$worktree"' EXIT &&
-	validate_series
-fi
-
-
-================================================================================
-ФАЙЛ: ./.git/hooks/commit-msg.sample
-================================================================================
-#!/bin/sh
-#
-# An example hook script to check the commit log message.
-# Called by "git commit" with one argument, the name of the file
-# that has the commit message.  The hook should exit with non-zero
-# status after issuing an appropriate message if it wants to stop the
-# commit.  The hook is allowed to edit the commit message file.
-#
-# To enable this hook, rename this file to "commit-msg".
-
-# Uncomment the below to add a Signed-off-by line to the message.
-# Doing this in a hook is a bad idea in general, but the prepare-commit-msg
-# hook is more suited to it.
-#
-# SOB=$(git var GIT_AUTHOR_IDENT | sed -n 's/^\(.*>\).*$/Signed-off-by: \1/p')
-# grep -qs "^$SOB" "$1" || echo "$SOB" >> "$1"
-
-# This example catches duplicate Signed-off-by lines.
-
-test "" = "$(grep '^Signed-off-by: ' "$1" |
-	 sort | uniq -c | sed -e '/^[ 	]*1[ 	]/d')" || {
-	echo >&2 Duplicate Signed-off-by lines.
-	exit 1
-}
-
-
-================================================================================
-ФАЙЛ: ./.git/hooks/pre-receive.sample
-================================================================================
-#!/bin/sh
-#
-# An example hook script to make use of push options.
-# The example simply echoes all push options that start with 'echoback='
-# and rejects all pushes when the "reject" push option is used.
-#
-# To enable this hook, rename this file to "pre-receive".
-
-if test -n "$GIT_PUSH_OPTION_COUNT"
-then
-	i=0
-	while test "$i" -lt "$GIT_PUSH_OPTION_COUNT"
-	do
-		eval "value=\$GIT_PUSH_OPTION_$i"
-		case "$value" in
-		echoback=*)
-			echo "echo from the pre-receive-hook: ${value#*=}" >&2
-			;;
-		reject)
-			exit 1
-		esac
-		i=$((i + 1))
-	done
-fi
-
-
-================================================================================
-ФАЙЛ: ./.git/hooks/applypatch-msg.sample
-================================================================================
-#!/bin/sh
-#
-# An example hook script to check the commit log message taken by
-# applypatch from an e-mail message.
-#
-# The hook should exit with non-zero status after issuing an
-# appropriate message if it wants to stop the commit.  The hook is
-# allowed to edit the commit message file.
-#
-# To enable this hook, rename this file to "applypatch-msg".
-
-. git-sh-setup
-commitmsg="$(git rev-parse --git-path hooks/commit-msg)"
-test -x "$commitmsg" && exec "$commitmsg" ${1+"$@"}
-:
-
-
-================================================================================
-ФАЙЛ: ./.git/hooks/pre-rebase.sample
-================================================================================
-#!/bin/sh
-#
-# Copyright (c) 2006, 2008 Junio C Hamano
-#
-# The "pre-rebase" hook is run just before "git rebase" starts doing
-# its job, and can prevent the command from running by exiting with
-# non-zero status.
-#
-# The hook is called with the following parameters:
-#
-# $1 -- the upstream the series was forked from.
-# $2 -- the branch being rebased (or empty when rebasing the current branch).
-#
-# This sample shows how to prevent topic branches that are already
-# merged to 'next' branch from getting rebased, because allowing it
-# would result in rebasing already published history.
-
-publish=next
-basebranch="$1"
-if test "$#" = 2
-then
-	topic="refs/heads/$2"
-else
-	topic=`git symbolic-ref HEAD` ||
-	exit 0 ;# we do not interrupt rebasing detached HEAD
-fi
-
-case "$topic" in
-refs/heads/??/*)
-	;;
-*)
-	exit 0 ;# we do not interrupt others.
-	;;
-esac
-
-# Now we are dealing with a topic branch being rebased
-# on top of master.  Is it OK to rebase it?
-
-# Does the topic really exist?
-git show-ref -q "$topic" || {
-	echo >&2 "No such branch $topic"
-	exit 1
-}
-
-# Is topic fully merged to master?
-not_in_master=`git rev-list --pretty=oneline ^master "$topic"`
-if test -z "$not_in_master"
-then
-	echo >&2 "$topic is fully merged to master; better remove it."
-	exit 1 ;# we could allow it, but there is no point.
-fi
-
-# Is topic ever merged to next?  If so you should not be rebasing it.
-only_next_1=`git rev-list ^master "^$topic" ${publish} | sort`
-only_next_2=`git rev-list ^master           ${publish} | sort`
-if test "$only_next_1" = "$only_next_2"
-then
-	not_in_topic=`git rev-list "^$topic" master`
-	if test -z "$not_in_topic"
-	then
-		echo >&2 "$topic is already up to date with master"
-		exit 1 ;# we could allow it, but there is no point.
-	else
-		exit 0
-	fi
-else
-	not_in_next=`git rev-list --pretty=oneline ^${publish} "$topic"`
-	/usr/bin/perl -e '
-		my $topic = $ARGV[0];
-		my $msg = "* $topic has commits already merged to public branch:\n";
-		my (%not_in_next) = map {
-			/^([0-9a-f]+) /;
-			($1 => 1);
-		} split(/\n/, $ARGV[1]);
-		for my $elem (map {
-				/^([0-9a-f]+) (.*)$/;
-				[$1 => $2];
-			} split(/\n/, $ARGV[2])) {
-			if (!exists $not_in_next{$elem->[0]}) {
-				if ($msg) {
-					print STDERR $msg;
-					undef $msg;
-				}
-				print STDERR " $elem->[1]\n";
-			}
-		}
-	' "$topic" "$not_in_next" "$not_in_master"
-	exit 1
-fi
-
-<<\DOC_END
-
-This sample hook safeguards topic branches that have been
-published from being rewound.
-
-The workflow assumed here is:
-
- * Once a topic branch forks from "master", "master" is never
-   merged into it again (either directly or indirectly).
-
- * Once a topic branch is fully cooked and merged into "master",
-   it is deleted.  If you need to build on top of it to correct
-   earlier mistakes, a new topic branch is created by forking at
-   the tip of the "master".  This is not strictly necessary, but
-   it makes it easier to keep your history simple.
-
- * Whenever you need to test or publish your changes to topic
-   branches, merge them into "next" branch.
-
-The script, being an example, hardcodes the publish branch name
-to be "next", but it is trivial to make it configurable via
-$GIT_DIR/config mechanism.
-
-With this workflow, you would want to know:
-
-(1) ... if a topic branch has ever been merged to "next".  Young
-    topic branches can have stupid mistakes you would rather
-    clean up before publishing, and things that have not been
-    merged into other branches can be easily rebased without
-    affecting other people.  But once it is published, you would
-    not want to rewind it.
-
-(2) ... if a topic branch has been fully merged to "master".
-    Then you can delete it.  More importantly, you should not
-    build on top of it -- other people may already want to
-    change things related to the topic as patches against your
-    "master", so if you need further changes, it is better to
-    fork the topic (perhaps with the same name) afresh from the
-    tip of "master".
-
-Let's look at this example:
-
-		   o---o---o---o---o---o---o---o---o---o "next"
-		  /       /           /           /
-		 /   a---a---b A     /           /
-		/   /               /           /
-	       /   /   c---c---c---c B         /
-	      /   /   /             \         /
-	     /   /   /   b---b C     \       /
-	    /   /   /   /             \     /
-    ---o---o---o---o---o---o---o---o---o---o---o "master"
-
-
-A, B and C are topic branches.
-
- * A has one fix since it was merged up to "next".
-
- * B has finished.  It has been fully merged up to "master" and "next",
-   and is ready to be deleted.
-
- * C has not merged to "next" at all.
-
-We would want to allow C to be rebased, refuse A, and encourage
-B to be deleted.
-
-To compute (1):
-
-	git rev-list ^master ^topic next
-	git rev-list ^master        next
-
-	if these match, topic has not merged in next at all.
-
-To compute (2):
-
-	git rev-list master..topic
-
-	if this is empty, it is fully merged to "master".
-
-DOC_END
-
-
-================================================================================
-ФАЙЛ: ./.git/hooks/pre-push.sample
-================================================================================
-#!/bin/sh
-
-# An example hook script to verify what is about to be pushed.  Called by "git
-# push" after it has checked the remote status, but before anything has been
-# pushed.  If this script exits with a non-zero status nothing will be pushed.
-#
-# This hook is called with the following parameters:
-#
-# $1 -- Name of the remote to which the push is being done
-# $2 -- URL to which the push is being done
-#
-# If pushing without using a named remote those arguments will be equal.
-#
-# Information about the commits which are being pushed is supplied as lines to
-# the standard input in the form:
-#
-#   <local ref> <local oid> <remote ref> <remote oid>
-#
-# This sample shows how to prevent push of commits where the log message starts
-# with "WIP" (work in progress).
-
-remote="$1"
-url="$2"
-
-zero=$(git hash-object --stdin </dev/null | tr '[0-9a-f]' '0')
-
-while read local_ref local_oid remote_ref remote_oid
-do
-	if test "$local_oid" = "$zero"
-	then
-		# Handle delete
-		:
-	else
-		if test "$remote_oid" = "$zero"
-		then
-			# New branch, examine all commits
-			range="$local_oid"
-		else
-			# Update to existing branch, examine new commits
-			range="$remote_oid..$local_oid"
-		fi
-
-		# Check for WIP commit
-		commit=$(git rev-list -n 1 --grep '^WIP' "$range")
-		if test -n "$commit"
-		then
-			echo >&2 "Found WIP commit in $local_ref, not pushing"
-			exit 1
-		fi
-	fi
-done
-
-exit 0
-
-
-================================================================================
-ФАЙЛ: ./.git/hooks/pre-applypatch.sample
-================================================================================
-#!/bin/sh
-#
-# An example hook script to verify what is about to be committed
-# by applypatch from an e-mail message.
-#
-# The hook should exit with non-zero status after issuing an
-# appropriate message if it wants to stop the commit.
-#
-# To enable this hook, rename this file to "pre-applypatch".
-
-. git-sh-setup
-precommit="$(git rev-parse --git-path hooks/pre-commit)"
-test -x "$precommit" && exec "$precommit" ${1+"$@"}
-:
-
-
-================================================================================
-ФАЙЛ: ./.git/hooks/prepare-commit-msg.sample
-================================================================================
-#!/bin/sh
-#
-# An example hook script to prepare the commit log message.
-# Called by "git commit" with the name of the file that has the
-# commit message, followed by the description of the commit
-# message's source.  The hook's purpose is to edit the commit
-# message file.  If the hook fails with a non-zero status,
-# the commit is aborted.
-#
-# To enable this hook, rename this file to "prepare-commit-msg".
-
-# This hook includes three examples. The first one removes the
-# "# Please enter the commit message..." help message.
-#
-# The second includes the output of "git diff --name-status -r"
-# into the message, just before the "git status" output.  It is
-# commented because it doesn't cope with --amend or with squashed
-# commits.
-#
-# The third example adds a Signed-off-by line to the message, that can
-# still be edited.  This is rarely a good idea.
-
-COMMIT_MSG_FILE=$1
-COMMIT_SOURCE=$2
-SHA1=$3
-
-/usr/bin/perl -i.bak -ne 'print unless(m/^. Please enter the commit message/..m/^#$/)' "$COMMIT_MSG_FILE"
-
-# case "$COMMIT_SOURCE,$SHA1" in
-#  ,|template,)
-#    /usr/bin/perl -i.bak -pe '
-#       print "\n" . `git diff --cached --name-status -r`
-# 	 if /^#/ && $first++ == 0' "$COMMIT_MSG_FILE" ;;
-#  *) ;;
-# esac
-
-# SOB=$(git var GIT_COMMITTER_IDENT | sed -n 's/^\(.*>\).*$/Signed-off-by: \1/p')
-# git interpret-trailers --in-place --trailer "$SOB" "$COMMIT_MSG_FILE"
-# if test -z "$COMMIT_SOURCE"
-# then
-#   /usr/bin/perl -i.bak -pe 'print "\n" if !$first_line++' "$COMMIT_MSG_FILE"
-# fi
-
-
-================================================================================
-ФАЙЛ: ./.git/hooks/pre-commit.sample
-================================================================================
-#!/bin/sh
-#
-# An example hook script to verify what is about to be committed.
-# Called by "git commit" with no arguments.  The hook should
-# exit with non-zero status after issuing an appropriate message if
-# it wants to stop the commit.
-#
-# To enable this hook, rename this file to "pre-commit".
-
-if git rev-parse --verify HEAD >/dev/null 2>&1
-then
-	against=HEAD
-else
-	# Initial commit: diff against an empty tree object
-	against=$(git hash-object -t tree /dev/null)
-fi
-
-# If you want to allow non-ASCII filenames set this variable to true.
-allownonascii=$(git config --type=bool hooks.allownonascii)
-
-# Redirect output to stderr.
-exec 1>&2
-
-# Cross platform projects tend to avoid non-ASCII filenames; prevent
-# them from being added to the repository. We exploit the fact that the
-# printable range starts at the space character and ends with tilde.
-if [ "$allownonascii" != "true" ] &&
-	# Note that the use of brackets around a tr range is ok here, (it's
-	# even required, for portability to Solaris 10's /usr/bin/tr), since
-	# the square bracket bytes happen to fall in the designated range.
-	test $(git diff-index --cached --name-only --diff-filter=A -z $against |
-	  LC_ALL=C tr -d '[ -~]\0' | wc -c) != 0
-then
-	cat <<\EOF
-Error: Attempt to add a non-ASCII file name.
-
-This can cause problems if you want to work with people on other platforms.
-
-To be portable it is advisable to rename the file.
-
-If you know what you are doing you can disable this check using:
-
-  git config hooks.allownonascii true
-EOF
-	exit 1
-fi
-
-# If there are whitespace errors, print the offending file names and fail.
-exec git diff-index --check --cached $against --
-
-
-================================================================================
-ФАЙЛ: ./.git/hooks/fsmonitor-watchman.sample
-================================================================================
-#!/usr/bin/perl
-
-use strict;
-use warnings;
-use IPC::Open2;
-
-# An example hook script to integrate Watchman
-# (https://facebook.github.io/watchman/) with git to speed up detecting
-# new and modified files.
-#
-# The hook is passed a version (currently 2) and last update token
-# formatted as a string and outputs to stdout a new update token and
-# all files that have been modified since the update token. Paths must
-# be relative to the root of the working tree and separated by a single NUL.
-#
-# To enable this hook, rename this file to "query-watchman" and set
-# 'git config core.fsmonitor .git/hooks/query-watchman'
-#
-my ($version, $last_update_token) = @ARGV;
-
-# Uncomment for debugging
-# print STDERR "$0 $version $last_update_token\n";
-
-# Check the hook interface version
-if ($version ne 2) {
-	die "Unsupported query-fsmonitor hook version '$version'.\n" .
-	    "Falling back to scanning...\n";
-}
-
-my $git_work_tree = get_working_dir();
-
-my $retry = 1;
-
-my $json_pkg;
-eval {
-	require JSON::XS;
-	$json_pkg = "JSON::XS";
-	1;
-} or do {
-	require JSON::PP;
-	$json_pkg = "JSON::PP";
-};
-
-launch_watchman();
-
-sub launch_watchman {
-	my $o = watchman_query();
-	if (is_work_tree_watched($o)) {
-		output_result($o->{clock}, @{$o->{files}});
-	}
-}
-
-sub output_result {
-	my ($clockid, @files) = @_;
-
-	# Uncomment for debugging watchman output
-	# open (my $fh, ">", ".git/watchman-output.out");
-	# binmode $fh, ":utf8";
-	# print $fh "$clockid\n@files\n";
-	# close $fh;
-
-	binmode STDOUT, ":utf8";
-	print $clockid;
-	print "\0";
-	local $, = "\0";
-	print @files;
-}
-
-sub watchman_clock {
-	my $response = qx/watchman clock "$git_work_tree"/;
-	die "Failed to get clock id on '$git_work_tree'.\n" .
-		"Falling back to scanning...\n" if $? != 0;
-
-	return $json_pkg->new->utf8->decode($response);
-}
-
-sub watchman_query {
-	my $pid = open2(\*CHLD_OUT, \*CHLD_IN, 'watchman -j --no-pretty')
-	or die "open2() failed: $!\n" .
-	"Falling back to scanning...\n";
-
-	# In the query expression below we're asking for names of files that
-	# changed since $last_update_token but not from the .git folder.
-	#
-	# To accomplish this, we're using the "since" generator to use the
-	# recency index to select candidate nodes and "fields" to limit the
-	# output to file names only. Then we're using the "expression" term to
-	# further constrain the results.
-	my $last_update_line = "";
-	if (substr($last_update_token, 0, 1) eq "c") {
-		$last_update_token = "\"$last_update_token\"";
-		$last_update_line = qq[\n"since": $last_update_token,];
-	}
-	my $query = <<"	END";
-		["query", "$git_work_tree", {$last_update_line
-			"fields": ["name"],
-			"expression": ["not", ["dirname", ".git"]]
-		}]
-	END
-
-	# Uncomment for debugging the watchman query
-	# open (my $fh, ">", ".git/watchman-query.json");
-	# print $fh $query;
-	# close $fh;
-
-	print CHLD_IN $query;
-	close CHLD_IN;
-	my $response = do {local $/; <CHLD_OUT>};
-
-	# Uncomment for debugging the watch response
-	# open ($fh, ">", ".git/watchman-response.json");
-	# print $fh $response;
-	# close $fh;
-
-	die "Watchman: command returned no output.\n" .
-	"Falling back to scanning...\n" if $response eq "";
-	die "Watchman: command returned invalid output: $response\n" .
-	"Falling back to scanning...\n" unless $response =~ /^\{/;
-
-	return $json_pkg->new->utf8->decode($response);
-}
-
-sub is_work_tree_watched {
-	my ($output) = @_;
-	my $error = $output->{error};
-	if ($retry > 0 and $error and $error =~ m/unable to resolve root .* directory (.*) is not watched/) {
-		$retry--;
-		my $response = qx/watchman watch "$git_work_tree"/;
-		die "Failed to make watchman watch '$git_work_tree'.\n" .
-		    "Falling back to scanning...\n" if $? != 0;
-		$output = $json_pkg->new->utf8->decode($response);
-		$error = $output->{error};
-		die "Watchman: $error.\n" .
-		"Falling back to scanning...\n" if $error;
-
-		# Uncomment for debugging watchman output
-		# open (my $fh, ">", ".git/watchman-output.out");
-		# close $fh;
-
-		# Watchman will always return all files on the first query so
-		# return the fast "everything is dirty" flag to git and do the
-		# Watchman query just to get it over with now so we won't pay
-		# the cost in git to look up each individual file.
-		my $o = watchman_clock();
-		$error = $output->{error};
-
-		die "Watchman: $error.\n" .
-		"Falling back to scanning...\n" if $error;
-
-		output_result($o->{clock}, ("/"));
-		$last_update_token = $o->{clock};
-
-		eval { launch_watchman() };
-		return 0;
-	}
-
-	die "Watchman: $error.\n" .
-	"Falling back to scanning...\n" if $error;
-
-	return 1;
-}
-
-sub get_working_dir {
-	my $working_dir;
-	if ($^O =~ 'msys' || $^O =~ 'cygwin') {
-		$working_dir = Win32::GetCwd();
-		$working_dir =~ tr/\\/\//;
-	} else {
-		require Cwd;
-		$working_dir = Cwd::cwd();
-	}
-
-	return $working_dir;
-}
-
-
-================================================================================
-ФАЙЛ: ./.git/hooks/post-update.sample
-================================================================================
-#!/bin/sh
-#
-# An example hook script to prepare a packed repository for use over
-# dumb transports.
-#
-# To enable this hook, rename this file to "post-update".
-
-exec git update-server-info
-
-
-================================================================================
-ФАЙЛ: ./.git/hooks/pre-merge-commit.sample
-================================================================================
-#!/bin/sh
-#
-# An example hook script to verify what is about to be committed.
-# Called by "git merge" with no arguments.  The hook should
-# exit with non-zero status after issuing an appropriate message to
-# stderr if it wants to stop the merge commit.
-#
-# To enable this hook, rename this file to "pre-merge-commit".
-
-. git-sh-setup
-test -x "$GIT_DIR/hooks/pre-commit" &&
-        exec "$GIT_DIR/hooks/pre-commit"
-:
-
-
-================================================================================
-ФАЙЛ: ./.git/refs/heads/main
-================================================================================
-c7e9bc35f688260fd76a0a2f8a9effe95f456dc0
-
-
-================================================================================
-ФАЙЛ: ./.git/refs/remotes/origin/main
-================================================================================
-c7e9bc35f688260fd76a0a2f8a9effe95f456dc0
-
-
-================================================================================
-ФАЙЛ: ./.git/refs/remotes/origin/HEAD
-================================================================================
-ref: refs/remotes/origin/main
-
-
-================================================================================
-ФАЙЛ: ./.git/FETCH_HEAD
-================================================================================
-c7e9bc35f688260fd76a0a2f8a9effe95f456dc0		branch 'main' of https://github.com/dsteppp/free_karaoke
-
-
-================================================================================
-ФАЙЛ: ./.git/config
-================================================================================
-[core]
-	repositoryformatversion = 0
-	filemode = true
-	bare = false
-	logallrefupdates = true
-[remote "origin"]
-	url = https://github.com/dsteppp/free_karaoke.git
-	fetch = +refs/heads/*:refs/remotes/origin/*
-[branch "main"]
-	remote = origin
-	merge = refs/heads/main
-	vscode-merge-base = origin/main
-
-
-================================================================================
-ФАЙЛ: ./.git/ORIG_HEAD
-================================================================================
-c7e9bc35f688260fd76a0a2f8a9effe95f456dc0
-
-
-================================================================================
-ФАЙЛ: ./.git/description
-================================================================================
-Unnamed repository; edit this file 'description' to name the repository.
-
-
-================================================================================
-ФАЙЛ: ./.git/logs/refs/heads/main
-================================================================================
-0000000000000000000000000000000000000000 94ecaab62d1d84688f78f0b3e6c375cc4b544ee1 Dmitriy Bukharin <dmn-stepen@yandex.ru> 1773794075 +0300	commit (initial): Initial commit: AI-Karaoke Pro v4.6
-94ecaab62d1d84688f78f0b3e6c375cc4b544ee1 94ecaab62d1d84688f78f0b3e6c375cc4b544ee1 Dmitriy Bukharin <dmn-stepen@yandex.ru> 1773794084 +0300	Branch: renamed refs/heads/master to refs/heads/main
-94ecaab62d1d84688f78f0b3e6c375cc4b544ee1 b5b4dd1f58c186641c3e5c6ea20e15f29aa4341d Dmitriy Bukharin <dmn-stepen@yandex.ru> 1773794527 +0300	commit: V_0
-b5b4dd1f58c186641c3e5c6ea20e15f29aa4341d 810d9d2ddb07cb278686a479d7ec869f11a038a7 dsteppp <dmn-stepen@yandex.ru> 1773865756 +0300	commit: V_0.1
-810d9d2ddb07cb278686a479d7ec869f11a038a7 e08b4b3bfd2e073fa507c941053c52157b925e04 dsteppp <dsb@talty.ru> 1774265050 +0300	commit: V_0.1.1
-e08b4b3bfd2e073fa507c941053c52157b925e04 a62a806d61792baae337a535c3bc7d0793ef36e9 dsteppp <dmn-stepen@yandex.ru> 1774805972 +0300	commit: V_1.0 - new engine
-a62a806d61792baae337a535c3bc7d0793ef36e9 fc3ff47ffa4c57d8f5dc0d0645c03618a5a539d8 dsteppp <dmn-stepen@yandex.ru> 1774806319 +0300	commit: V_1.1 - run fix
-fc3ff47ffa4c57d8f5dc0d0645c03618a5a539d8 18c74b361cdc10a19cbabe650474bb3c75f22bea dsteppp <dmn-stepen@yandex.ru> 1774806632 +0300	commit: V_1.2 - lib fix
-18c74b361cdc10a19cbabe650474bb3c75f22bea 28a734679c9913f3212f0fd3b93a00c921bc4450 dsteppp <dmn-stepen@yandex.ru> 1774809058 +0300	commit: V_2.0 - add old stuff
-28a734679c9913f3212f0fd3b93a00c921bc4450 627da2fc90a7822d8435b886b0a7b81d899cbb02 dsteppp <dmn-stepen@yandex.ru> 1774809227 +0300	commit: V_2.1 - tasks fix
-627da2fc90a7822d8435b886b0a7b81d899cbb02 0c7599affb01fb7524e7c856ecd9c51761863b50 dsteppp <dmn-stepen@yandex.ru> 1774812873 +0300	commit: V_2.2 - reinstall fix
-0c7599affb01fb7524e7c856ecd9c51761863b50 da03d6ebe6ca1c9ca13d903c3dced6bb36a0e582 dsteppp <dmn-stepen@yandex.ru> 1774816298 +0300	commit: V_2.3 - reinstall fix
-da03d6ebe6ca1c9ca13d903c3dced6bb36a0e582 1b18bf69bba9f7df601909bf86695bb9f9d804ff dsteppp <dmn-stepen@yandex.ru> 1774817665 +0300	commit: V_2.3.1 - reinstall fix done
-1b18bf69bba9f7df601909bf86695bb9f9d804ff 7faab0a3b20ecd3b4534816853643b32dd750671 dsteppp <dmn-stepen@yandex.ru> 1774821344 +0300	commit: V_2.3.2 - new aligner
-7faab0a3b20ecd3b4534816853643b32dd750671 e1919844a45aca1b8f4a9a70defa919599ae0854 dsteppp <dmn-stepen@yandex.ru> 1774821863 +0300	commit: V_2.4 - new aligner
-e1919844a45aca1b8f4a9a70defa919599ae0854 9308f9b341a7baf8cf3190658d8a0df54a5c1477 dsteppp <dmn-stepen@yandex.ru> 1774822707 +0300	commit: V_2.4.1 - new aligner logic add
-9308f9b341a7baf8cf3190658d8a0df54a5c1477 e7dfebb2a5dc95621b0d0ca7b23bf4112f5610c7 dsteppp <dmn-stepen@yandex.ru> 1774823547 +0300	commit: 2.4.2 - aligner logic add
-e7dfebb2a5dc95621b0d0ca7b23bf4112f5610c7 fb3bf804fe288da97d982a23b199e376eb8f3398 dsteppp <dmn-stepen@yandex.ru> 1774851450 +0300	commit: 2.4.3 - aligner fix
-fb3bf804fe288da97d982a23b199e376eb8f3398 3937bf3e84c39bd0620c1475a34502f1fd99c343 dsteppp <dmn-stepen@yandex.ru> 1774865024 +0300	commit: 2.5 - aligner new logic add
-3937bf3e84c39bd0620c1475a34502f1fd99c343 adb921a4758ffbc415f594e89df64c1b1afa4ba8 dsteppp <dmn-stepen@yandex.ru> 1774866291 +0300	commit: 2.5.1 - aligner new logic add
-adb921a4758ffbc415f594e89df64c1b1afa4ba8 c7e9bc35f688260fd76a0a2f8a9effe95f456dc0 dsteppp <dmn-stepen@yandex.ru> 1774867268 +0300	commit: 2.5.2 - aligner logic add
-
-
-================================================================================
-ФАЙЛ: ./.git/logs/refs/remotes/origin/main
-================================================================================
-0000000000000000000000000000000000000000 2dec8cc378dfb51aa4cc3590eb88e5d3820106e3 Dmitriy Bukharin <dmn-stepen@yandex.ru> 1773794304 +0300	pull --tags: storing head
-2dec8cc378dfb51aa4cc3590eb88e5d3820106e3 94ecaab62d1d84688f78f0b3e6c375cc4b544ee1 Dmitriy Bukharin <dmn-stepen@yandex.ru> 1773794473 +0300	update by push
-94ecaab62d1d84688f78f0b3e6c375cc4b544ee1 b5b4dd1f58c186641c3e5c6ea20e15f29aa4341d Dmitriy Bukharin <dmn-stepen@yandex.ru> 1773794529 +0300	update by push
-b5b4dd1f58c186641c3e5c6ea20e15f29aa4341d 810d9d2ddb07cb278686a479d7ec869f11a038a7 dsteppp <dmn-stepen@yandex.ru> 1773865763 +0300	update by push
-810d9d2ddb07cb278686a479d7ec869f11a038a7 e08b4b3bfd2e073fa507c941053c52157b925e04 dsteppp <dsb@talty.ru> 1774265053 +0300	update by push
-e08b4b3bfd2e073fa507c941053c52157b925e04 a62a806d61792baae337a535c3bc7d0793ef36e9 dsteppp <dmn-stepen@yandex.ru> 1774805974 +0300	update by push
-a62a806d61792baae337a535c3bc7d0793ef36e9 fc3ff47ffa4c57d8f5dc0d0645c03618a5a539d8 dsteppp <dmn-stepen@yandex.ru> 1774806321 +0300	update by push
-fc3ff47ffa4c57d8f5dc0d0645c03618a5a539d8 18c74b361cdc10a19cbabe650474bb3c75f22bea dsteppp <dmn-stepen@yandex.ru> 1774806634 +0300	update by push
-18c74b361cdc10a19cbabe650474bb3c75f22bea 28a734679c9913f3212f0fd3b93a00c921bc4450 dsteppp <dmn-stepen@yandex.ru> 1774809066 +0300	update by push
-28a734679c9913f3212f0fd3b93a00c921bc4450 627da2fc90a7822d8435b886b0a7b81d899cbb02 dsteppp <dmn-stepen@yandex.ru> 1774809229 +0300	update by push
-627da2fc90a7822d8435b886b0a7b81d899cbb02 0c7599affb01fb7524e7c856ecd9c51761863b50 dsteppp <dmn-stepen@yandex.ru> 1774812877 +0300	update by push
-0c7599affb01fb7524e7c856ecd9c51761863b50 da03d6ebe6ca1c9ca13d903c3dced6bb36a0e582 dsteppp <dmn-stepen@yandex.ru> 1774816300 +0300	update by push
-da03d6ebe6ca1c9ca13d903c3dced6bb36a0e582 1b18bf69bba9f7df601909bf86695bb9f9d804ff dsteppp <dmn-stepen@yandex.ru> 1774817667 +0300	update by push
-1b18bf69bba9f7df601909bf86695bb9f9d804ff 7faab0a3b20ecd3b4534816853643b32dd750671 dsteppp <dmn-stepen@yandex.ru> 1774821346 +0300	update by push
-7faab0a3b20ecd3b4534816853643b32dd750671 e1919844a45aca1b8f4a9a70defa919599ae0854 dsteppp <dmn-stepen@yandex.ru> 1774821865 +0300	update by push
-e1919844a45aca1b8f4a9a70defa919599ae0854 9308f9b341a7baf8cf3190658d8a0df54a5c1477 dsteppp <dmn-stepen@yandex.ru> 1774822709 +0300	update by push
-9308f9b341a7baf8cf3190658d8a0df54a5c1477 e7dfebb2a5dc95621b0d0ca7b23bf4112f5610c7 dsteppp <dmn-stepen@yandex.ru> 1774823551 +0300	update by push
-e7dfebb2a5dc95621b0d0ca7b23bf4112f5610c7 fb3bf804fe288da97d982a23b199e376eb8f3398 dsteppp <dmn-stepen@yandex.ru> 1774851452 +0300	update by push
-fb3bf804fe288da97d982a23b199e376eb8f3398 3937bf3e84c39bd0620c1475a34502f1fd99c343 dsteppp <dmn-stepen@yandex.ru> 1774865026 +0300	update by push
-3937bf3e84c39bd0620c1475a34502f1fd99c343 adb921a4758ffbc415f594e89df64c1b1afa4ba8 dsteppp <dmn-stepen@yandex.ru> 1774866293 +0300	update by push
-adb921a4758ffbc415f594e89df64c1b1afa4ba8 c7e9bc35f688260fd76a0a2f8a9effe95f456dc0 dsteppp <dmn-stepen@yandex.ru> 1774867271 +0300	update by push
-
-
-================================================================================
-ФАЙЛ: ./.git/logs/refs/remotes/origin/HEAD
-================================================================================
-0000000000000000000000000000000000000000 2dec8cc378dfb51aa4cc3590eb88e5d3820106e3 Dmitriy Bukharin <dmn-stepen@yandex.ru> 1773794304 +0300	fetch
-
-
-================================================================================
-ФАЙЛ: ./.git/logs/HEAD
-================================================================================
-0000000000000000000000000000000000000000 94ecaab62d1d84688f78f0b3e6c375cc4b544ee1 Dmitriy Bukharin <dmn-stepen@yandex.ru> 1773794075 +0300	commit (initial): Initial commit: AI-Karaoke Pro v4.6
-94ecaab62d1d84688f78f0b3e6c375cc4b544ee1 0000000000000000000000000000000000000000 Dmitriy Bukharin <dmn-stepen@yandex.ru> 1773794084 +0300	Branch: renamed refs/heads/master to refs/heads/main
-0000000000000000000000000000000000000000 94ecaab62d1d84688f78f0b3e6c375cc4b544ee1 Dmitriy Bukharin <dmn-stepen@yandex.ru> 1773794084 +0300	Branch: renamed refs/heads/master to refs/heads/main
-94ecaab62d1d84688f78f0b3e6c375cc4b544ee1 b5b4dd1f58c186641c3e5c6ea20e15f29aa4341d Dmitriy Bukharin <dmn-stepen@yandex.ru> 1773794527 +0300	commit: V_0
-b5b4dd1f58c186641c3e5c6ea20e15f29aa4341d 810d9d2ddb07cb278686a479d7ec869f11a038a7 dsteppp <dmn-stepen@yandex.ru> 1773865756 +0300	commit: V_0.1
-810d9d2ddb07cb278686a479d7ec869f11a038a7 e08b4b3bfd2e073fa507c941053c52157b925e04 dsteppp <dsb@talty.ru> 1774265050 +0300	commit: V_0.1.1
-e08b4b3bfd2e073fa507c941053c52157b925e04 a62a806d61792baae337a535c3bc7d0793ef36e9 dsteppp <dmn-stepen@yandex.ru> 1774805972 +0300	commit: V_1.0 - new engine
-a62a806d61792baae337a535c3bc7d0793ef36e9 fc3ff47ffa4c57d8f5dc0d0645c03618a5a539d8 dsteppp <dmn-stepen@yandex.ru> 1774806319 +0300	commit: V_1.1 - run fix
-fc3ff47ffa4c57d8f5dc0d0645c03618a5a539d8 18c74b361cdc10a19cbabe650474bb3c75f22bea dsteppp <dmn-stepen@yandex.ru> 1774806632 +0300	commit: V_1.2 - lib fix
-18c74b361cdc10a19cbabe650474bb3c75f22bea 28a734679c9913f3212f0fd3b93a00c921bc4450 dsteppp <dmn-stepen@yandex.ru> 1774809058 +0300	commit: V_2.0 - add old stuff
-28a734679c9913f3212f0fd3b93a00c921bc4450 627da2fc90a7822d8435b886b0a7b81d899cbb02 dsteppp <dmn-stepen@yandex.ru> 1774809227 +0300	commit: V_2.1 - tasks fix
-627da2fc90a7822d8435b886b0a7b81d899cbb02 0c7599affb01fb7524e7c856ecd9c51761863b50 dsteppp <dmn-stepen@yandex.ru> 1774812873 +0300	commit: V_2.2 - reinstall fix
-0c7599affb01fb7524e7c856ecd9c51761863b50 da03d6ebe6ca1c9ca13d903c3dced6bb36a0e582 dsteppp <dmn-stepen@yandex.ru> 1774816298 +0300	commit: V_2.3 - reinstall fix
-da03d6ebe6ca1c9ca13d903c3dced6bb36a0e582 1b18bf69bba9f7df601909bf86695bb9f9d804ff dsteppp <dmn-stepen@yandex.ru> 1774817665 +0300	commit: V_2.3.1 - reinstall fix done
-1b18bf69bba9f7df601909bf86695bb9f9d804ff 7faab0a3b20ecd3b4534816853643b32dd750671 dsteppp <dmn-stepen@yandex.ru> 1774821344 +0300	commit: V_2.3.2 - new aligner
-7faab0a3b20ecd3b4534816853643b32dd750671 e1919844a45aca1b8f4a9a70defa919599ae0854 dsteppp <dmn-stepen@yandex.ru> 1774821863 +0300	commit: V_2.4 - new aligner
-e1919844a45aca1b8f4a9a70defa919599ae0854 9308f9b341a7baf8cf3190658d8a0df54a5c1477 dsteppp <dmn-stepen@yandex.ru> 1774822707 +0300	commit: V_2.4.1 - new aligner logic add
-9308f9b341a7baf8cf3190658d8a0df54a5c1477 e7dfebb2a5dc95621b0d0ca7b23bf4112f5610c7 dsteppp <dmn-stepen@yandex.ru> 1774823547 +0300	commit: 2.4.2 - aligner logic add
-e7dfebb2a5dc95621b0d0ca7b23bf4112f5610c7 fb3bf804fe288da97d982a23b199e376eb8f3398 dsteppp <dmn-stepen@yandex.ru> 1774851450 +0300	commit: 2.4.3 - aligner fix
-fb3bf804fe288da97d982a23b199e376eb8f3398 3937bf3e84c39bd0620c1475a34502f1fd99c343 dsteppp <dmn-stepen@yandex.ru> 1774865024 +0300	commit: 2.5 - aligner new logic add
-3937bf3e84c39bd0620c1475a34502f1fd99c343 adb921a4758ffbc415f594e89df64c1b1afa4ba8 dsteppp <dmn-stepen@yandex.ru> 1774866291 +0300	commit: 2.5.1 - aligner new logic add
-adb921a4758ffbc415f594e89df64c1b1afa4ba8 c7e9bc35f688260fd76a0a2f8a9effe95f456dc0 dsteppp <dmn-stepen@yandex.ru> 1774867268 +0300	commit: 2.5.2 - aligner logic add
-
-
-================================================================================
-ФАЙЛ: ./.git/HEAD
-================================================================================
-ref: refs/heads/main
-
-
-================================================================================
-ФАЙЛ: ./.git/gk/config
-================================================================================
-[branch "main"]
-	gk-last-accessed = 2026-03-30T10:51:37.670Z
-	gk-last-modified = 2026-03-30T10:51:37.670Z
-
-
-================================================================================
 ФАЙЛ: ./database.py
 ================================================================================
 import uuid
@@ -2528,7 +1411,7 @@ log = get_logger("aligner")
 
 class KaraokeAligner:
     """
-    Пайплайн выравнивания "Ensemble Agent V3 (Smart Surgeon)".
+    Пайплайн выравнивания "Symphony V4 (Smart Surgeon + The Tribunal & Orchestra)".
     """
 
     def __init__(self, model_name="medium"):
@@ -2541,7 +1424,7 @@ class KaraokeAligner:
         
         self._track_stem = ""
 
-    # ─── БАЗОВЫЕ УТИЛИТЫ ────────────────────────────────────────────────────────
+    # ─── БАЗОВЫЕ УТИЛИТЫ И ЛИНГВИСТИКА ──────────────────────────────────────────
     
     def _detect_language(self, text: str) -> str:
         cyrillic = len(re.findall(r'[\u0400-\u04FFёЁ]', text))
@@ -2581,6 +1464,7 @@ class KaraokeAligner:
         return words_list
 
     def _get_vowel_weight(self, word: str, is_line_end: bool) -> float:
+        """Классический метод V3 для расчёта веса гласных."""
         vowels = set("аеёиоуыэюяaeiouy")
         clean = word.lower()
         v_count = sum(1 for c in clean if c in vowels)
@@ -2588,17 +1472,31 @@ class KaraokeAligner:
         if is_line_end: weight *= 2.0 
         return weight
 
-    def _compute_hard_vad(self, audio_data: np.ndarray, sr: int, hop_length=512) -> list:
-        log.info("[Physics] Сканирование Hard VAD (RMS Energy)...")
+    def _get_phonetic_bounds(self, clean_text: str, is_line_end: bool) -> tuple:
+        """Инструмент №3: Лингвистический Калькулятор (Физиологические лимиты для Трибунала)."""
+        vowels = sum(1 for c in clean_text if c in "аеёиоуыэюяaeiouy")
+        consonants = len(clean_text) - vowels
+        
+        min_dur = max(0.05, (vowels * 0.06) + (consonants * 0.03))
+        max_dur = max(0.5, (vowels * 0.8) + (consonants * 0.15))
+        if is_line_end: max_dur *= 2.0
+        
+        return min_dur, max_dur
+
+    # ─── ИНСТРУМЕНТЫ АКУСТИЧЕСКОЙ ТОПОГРАФИИ (V4) ───────────────────────────────
+
+    def _get_acoustic_maps(self, audio_data: np.ndarray, sr: int) -> tuple:
+        log.info("[Orchestra] Генерация акустической топографии (VAD, Onsets, Harmonics)...")
+        hop_length = 512
+        times = librosa.frames_to_time(np.arange(len(audio_data)//hop_length + 1), sr=sr, hop_length=hop_length)
+
+        # 1. Hard VAD (Энергия - старый надежный метод, перенесен сюда)
         rms = librosa.feature.rms(y=audio_data, frame_length=2048, hop_length=hop_length)[0]
         rms_norm = rms / (np.max(rms) + 1e-8)
-        
-        threshold = 0.015 
-        vad_frames = rms_norm > threshold
-        times = librosa.frames_to_time(np.arange(len(rms)), sr=sr, hop_length=hop_length)
+        vad_frames = rms_norm > 0.015 
         
         intervals, in_speech, start_t = [], False, 0.0
-        for t, is_active in zip(times, vad_frames):
+        for t, is_active in zip(times[:len(vad_frames)], vad_frames):
             if is_active and not in_speech:
                 start_t, in_speech = t, True
             elif not is_active and in_speech:
@@ -2606,16 +1504,32 @@ class KaraokeAligner:
                 in_speech = False
         if in_speech: intervals.append((start_t, times[-1]))
             
-        merged = []
+        vad_mask = []
         for s, e in intervals:
-            if not merged: merged.append((s, e))
+            if not vad_mask: vad_mask.append((s, e))
             else:
-                last_s, last_e = merged[-1]
-                if s - last_e < 0.5: merged[-1] = (last_s, max(last_e, e))
-                elif e - s > 0.1: merged.append((s, e))
-        return merged
+                last_s, last_e = vad_mask[-1]
+                if s - last_e < 0.5: vad_mask[-1] = (last_s, max(last_e, e))
+                elif e - s > 0.1: vad_mask.append((s, e))
 
-    # ─── ЭТАП 1: SKELETON ───────────────────────────────────────────────────────
+        # 2. Инструмент №1: Транзиенты (Удары)
+        o_env = librosa.onset.onset_strength(y=audio_data, sr=sr)
+        raw_onsets = librosa.onset.onset_detect(onset_envelope=o_env, sr=sr, units='time')
+        onsets = [o_t for o_t in raw_onsets if any(vs <= o_t <= ve for (vs, ve) in vad_mask)]
+
+        # 3. Инструмент №2: Трекер Мелодии (Spectral Flatness)
+        flatness = librosa.feature.spectral_flatness(y=audio_data, hop_length=hop_length)[0]
+        
+        def is_harmonic(t_start, t_end):
+            s_frame = librosa.time_to_frames(t_start, sr=sr, hop_length=hop_length)
+            e_frame = librosa.time_to_frames(t_end, sr=sr, hop_length=hop_length)
+            if s_frame >= e_frame or s_frame >= len(flatness): return False
+            chunk = flatness[s_frame:e_frame]
+            return np.median(chunk) < 0.05
+
+        return vad_mask, onsets, is_harmonic
+
+    # ─── ЭТАП 1: SKELETON (V3) ──────────────────────────────────────────────────
 
     def _platinum_skeleton(self, model, audio_data: np.ndarray, canon_words: list, lang: str):
         log.info("[Actor] Фаза 1: Сборка жесткого скелета (Platinum V21)...")
@@ -2656,7 +1570,6 @@ class KaraokeAligner:
                 if match_len > best_match_len:
                     best_match_len, best_c_idx = match_len, c
                     
-            # УЖЕСТОЧЕННЫЙ ПЛАТИНОВЫЙ КРИТЕРИЙ
             is_platinum = False
             if best_match_len >= 4: is_platinum = True
             elif best_match_len == 3:
@@ -2678,13 +1591,12 @@ class KaraokeAligner:
 
         log.info(f"[Actor] Платиновый скелет установлен: {anchors_count}/{len(canon_words)} слов.")
 
-    # ─── ЭТАП 2: CRITIC & SURGEON ───────────────────────────────────────────────
+    # ─── ЭТАП 2: CRITIC & SURGEON (Оригинальная логика V3) ──────────────────────
 
     def _audit_json(self, words: list) -> list:
         bugs = []
         n = len(words)
         
-        # Поиск кластеров (Островов) для выявления галлюцинаций
         clusters = []
         curr_cluster = []
         for i in range(n):
@@ -2695,9 +1607,8 @@ class KaraokeAligner:
                 curr_cluster = []
         if curr_cluster: clusters.append(curr_cluster)
 
-        # 1. ISLAND OF LIES (Острова Лжи)
         for cluster in clusters:
-            if len(cluster) <= 3: # Мелкий островок
+            if len(cluster) <= 3:
                 first, last = cluster[0], cluster[-1]
                 gap_left = words[first]["start"] - words[first-1]["end"] if first > 0 and words[first-1]["end"] != -1 else 15.0
                 gap_right = words[last+1]["start"] - words[last]["end"] if last < n-1 and words[last+1]["start"] != -1 else 15.0
@@ -2705,17 +1616,14 @@ class KaraokeAligner:
                 if gap_left > 8.0 and gap_right > 8.0:
                     bugs.append({"type": "ISLAND_OF_LIES", "cluster": cluster})
 
-        # Поиск локальных багов
         for i in range(n):
             w = words[i]
             if w["start"] == -1: continue
             dur = w["end"] - w["start"]
             
-            # 2. BLACK_HOLE (Сингулярность или сжатие)
             if dur <= 0.05 or (i > 0 and words[i-1]["end"] != -1 and w["start"] < words[i-1]["start"]):
                 bugs.append({"type": "BLACK_HOLE", "idx": i})
             
-            # 3. OVERSTRETCH (Резина)
             vowel_w = self._get_vowel_weight(w["clean_text"], w["line_break"])
             if dur > (vowel_w * 0.8 + 0.5) and dur > 1.8:
                 bugs.append({"type": "OVERSTRETCH", "idx": i})
@@ -2740,7 +1648,6 @@ class KaraokeAligner:
                 idx = bug["idx"]
                 w = words[idx]
                 old_end = w["end"]
-                # Жесткий математический срез (отсекаем хвосты на соло)
                 vowel_w = self._get_vowel_weight(w["clean_text"], w["line_break"])
                 w["end"] = w["start"] + vowel_w * 0.8 + 0.5
                 log.warning(f"[Surgeon] Хвост OVERSTRETCH жестко обрублен: '{w['clean_text']}' ({old_end:.1f}s -> {w['end']:.1f}s)")
@@ -2759,7 +1666,6 @@ class KaraokeAligner:
     def _micro_dtw_surgery(self, words: list, gap: tuple, audio_data: np.ndarray, model, lang: str):
         s_idx, e_idx = gap
         
-        # SMART WINDOWS: Умные границы окон
         t_start = words[s_idx - 1]["end"] + 0.1 if s_idx > 0 and words[s_idx - 1]["end"] != -1 else 0.0
         t_end = len(audio_data) / 16000
         for k in range(e_idx + 1, len(words)):
@@ -2767,25 +1673,21 @@ class KaraokeAligner:
                 t_end = words[k]["start"] - 0.1
                 break
 
-        # Считаем примерное физическое время для этого текста
         v_weights = sum(self._get_vowel_weight(words[i]["clean_text"], words[i]["line_break"]) for i in range(s_idx, e_idx + 1))
         est_dur = v_weights * 0.4
         
-        # ЗАЩИТА ИНТРО/АУТРО (Отсечение болтовни и длинных соло)
         window_len = t_end - t_start
-        if window_len > est_dur * 3.0: # Окно слишком огромное!
-            if s_idx == 0: # Это интро
+        if window_len > est_dur * 3.0:
+            if s_idx == 0:
                 t_start = max(t_start, t_end - est_dur * 2.0)
-                log.debug(f"[Smart Window] Интро сжато. Новое начало: {t_start:.1f}s")
-            elif e_idx == len(words) - 1: # Это аутро
+            elif e_idx == len(words) - 1:
                 t_end = min(t_end, t_start + est_dur * 2.0)
-                log.debug(f"[Smart Window] Аутро сжато. Новый конец: {t_end:.1f}s")
 
         if t_end <= t_start + 0.5:
             for k in range(s_idx, e_idx + 1): words[k]["dtw_tried"] = True
             return
 
-        log.info(f"[Surgeon] Micro-DTW для слов [{s_idx}-{e_idx}] в УМНОМ окне {t_start:.1f}s - {t_end:.1f}s")
+        log.info(f"[Surgeon] Micro-DTW для слов [{s_idx}-{e_idx}] в окне {t_start:.1f}s - {t_end:.1f}s")
         
         sr = 16000
         crop_audio = audio_data[int(t_start * sr) : int(t_end * sr)]
@@ -2808,7 +1710,6 @@ class KaraokeAligner:
                         best_score, best_match = score, j
                         if score == 100: break
                 
-                # Защита от мусора внутри Micro-DTW
                 if best_match != -1:
                     dur = c_sw[best_match].end - c_sw[best_match].start
                     if 0.05 < dur < 2.0:
@@ -2819,7 +1720,134 @@ class KaraokeAligner:
             log.warning(f"[Surgeon] Micro-DTW не справился ({e}).")
             for k in range(s_idx, e_idx + 1): words[k]["dtw_tried"] = True
 
-    # ─── ЭТАП 3: ФИЗИКА И ГРАВИТАЦИЯ (ПОСЛЕДНЯЯ НАДЕЖДА) ────────────────────────
+    # ─── ЭТАП 3: ФИНАЛЬНЫЙ ТРИБУНАЛ (V4) ────────────────────────────────────────
+
+    def _run_tribunal(self, words: list, is_harmonic_fn) -> list:
+        """Инспектор V4. Ищет то, с чем не справился Surgeon."""
+        quarantine_zones = []
+        n = len(words)
+        i = 0
+        
+        while i < n:
+            # 1. Дыры, которые Surgeon не смог закрыть
+            if words[i]["start"] == -1:
+                j = i
+                while j < n and words[j]["start"] == -1: j += 1
+                quarantine_zones.append((i, j - 1, "UNRESOLVED_GAP"))
+                i = j
+                continue
+                
+            dur = words[i]["end"] - words[i]["start"]
+            min_dur, max_dur = self._get_phonetic_bounds(words[i]["clean_text"], words[i]["line_break"])
+            
+            # 2. Ловим OVERSTRETCH через Трекер Мелодии
+            if dur > max_dur and dur > 2.0:
+                if not is_harmonic_fn(words[i]["start"] + max_dur, words[i]["end"]):
+                    log.warning(f"[Tribunal] Резина найдена на '{words[i]['clean_text']}'. Обрезаем (Шум/Эхо).")
+                    words[i]["end"] = words[i]["start"] + max_dur
+            
+            # 3. Ловим BLACK HOLE через Лингвистику (Спрессованная каша)
+            if words[i]["start"] != -1:
+                j = i
+                cluster_min_dur = 0.0
+                while j < n and words[j]["start"] != -1 and (words[j]["end"] - words[i]["start"] < 1.5):
+                    mn, _ = self._get_phonetic_bounds(words[j]["clean_text"], words[j]["line_break"])
+                    cluster_min_dur += mn
+                    j += 1
+                
+                real_dur = words[j-1]["end"] - words[i]["start"] if j > i else 0
+                if (j - i) >= 3 and real_dur < (cluster_min_dur * 0.7):
+                    quarantine_zones.append((i, j - 1, "PHYSICAL_IMPOSSIBILITY"))
+                    i = j
+                    continue
+            i += 1
+            
+        return quarantine_zones
+
+    # ─── ЭТАП 4: ОРКЕСТР (СТРАТЕГИИ ИСЦЕЛЕНИЯ V4) ───────────────────────────────
+
+    def _heal_by_chorus(self, words: list, s_idx: int, e_idx: int) -> bool:
+        """Инструмент №4: Кросс-Корреляционный Радар"""
+        target_cluster = [words[i]["clean_text"] for i in range(s_idx, e_idx + 1)]
+        target_len = len(target_cluster)
+        if target_len < 4: return False 
+        
+        for i in range(len(words) - target_len):
+            if s_idx <= i <= e_idx: continue 
+            
+            source_cluster = [words[k]["clean_text"] for k in range(i, i + target_len)]
+            if source_cluster == target_cluster:
+                if all(words[k]["start"] != -1 for k in range(i, i + target_len)):
+                    log.info(f"[Orchestra] Найден структурный клон (индексы {i}-{i+target_len}). Клонируем ритм!")
+                    
+                    src_start = words[i]["start"]
+                    dst_start = words[s_idx - 1]["end"] + 0.3 if s_idx > 0 and words[s_idx - 1]["end"] != -1 else 0.0
+                    
+                    for k in range(target_len):
+                        words[s_idx + k]["start"] = dst_start + (words[i + k]["start"] - src_start)
+                        words[s_idx + k]["end"] = dst_start + (words[i + k]["end"] - src_start)
+                    return True
+        return False
+
+    def _heal_blind_fuzzy(self, words: list, s_idx: int, e_idx: int, audio_data: np.ndarray, t_start: float, t_end: float, model, lang: str) -> bool:
+        """Слепая транскрибация галлюцинаций"""
+        log.info(f"[Orchestra] Слепой Маппинг для слов {s_idx}-{e_idx}...")
+        try:
+            crop_audio = audio_data[int(t_start * 16000) : int(t_end * 16000)]
+            result = model.transcribe(crop_audio, language=lang)
+            blind_words = result.all_words()
+            
+            if not blind_words: return False
+
+            b_texts = [re.sub(r'[^\w]', '', w.word.lower()) for w in blind_words]
+            healed = 0
+            b_ptr = 0
+            
+            for k in range(s_idx, e_idx + 1):
+                clean = words[k]["clean_text"]
+                best_score, best_idx = 0, -1
+                for j in range(b_ptr, min(b_ptr + 5, len(b_texts))):
+                    if not b_texts[j]: continue
+                    score = rapidfuzz.fuzz.ratio(clean, b_texts[j])
+                    if score > best_score:
+                        best_score, best_idx = score, j
+                
+                if best_idx != -1 and best_score > 60:
+                    bw = blind_words[best_idx]
+                    words[k]["start"] = t_start + bw.start
+                    words[k]["end"] = t_start + bw.end
+                    b_ptr = best_idx + 1
+                    healed += 1
+            
+            return healed > (e_idx - s_idx) * 0.4
+        except Exception as e:
+            log.warning(f"[Orchestra] Слепой маппинг не удался: {e}")
+            return False
+
+    def _heal_with_onsets(self, words: list, s_idx: int, e_idx: int, onsets: list, t_start: float, t_end: float) -> bool:
+        """Инструмент №1: Прибиваем слова к физическим ударам"""
+        log.info(f"[Orchestra] Ритмический Магнит для слов {s_idx}-{e_idx}...")
+        local_onsets = [o for o in onsets if t_start <= o <= t_end]
+        word_count = (e_idx - s_idx) + 1
+        
+        if len(local_onsets) < word_count * 0.4:
+            return False
+            
+        curr_onset_idx = 0
+        for k in range(s_idx, e_idx + 1):
+            if curr_onset_idx < len(local_onsets):
+                start_time = local_onsets[curr_onset_idx]
+                words[k]["start"] = start_time
+                _, max_dur = self._get_phonetic_bounds(words[k]["clean_text"], words[k]["line_break"])
+                words[k]["end"] = start_time + min(0.4, max_dur)
+                
+                step = max(1, len(local_onsets) // word_count)
+                curr_onset_idx += step
+            else:
+                break
+        return True
+
+    # ─── ЭТАП 5: ФИЗИКА И ГРАВИТАЦИЯ (V3 Оригинал) ──────────────────────────────
 
     def _apply_gravity(self, words: list, audio_duration: float, vad_mask: list):
         log.info("[Physics] Гравитационная заливка слепых зон...")
@@ -2849,7 +1877,6 @@ class KaraokeAligner:
                 total_vad_time = sum(e - s for s, e in active_vads)
                 
                 if total_vad_time < 0.5:
-                    # КАРАНТИН: если голоса нет, сжимаем текст в плотный кусок, не размазывая по соло
                     safe_start = t_start
                     if i == 0 and active_vads: safe_start = active_vads[-1][0] 
                     elif j == n and active_vads: safe_start = active_vads[0][0]
@@ -2861,7 +1888,6 @@ class KaraokeAligner:
                         words[k]["end"] = curr_t + w_dur * 0.9
                         curr_t += w_dur
                 else:
-                    # Распределение строго внутри кусков, где есть VAD
                     curr_t = 0.0
                     for k in range(i, j):
                         w_logic_dur = (weights[k-i] / total_w) * total_vad_time
@@ -2890,7 +1916,6 @@ class KaraokeAligner:
                 i += 1
 
     def _smoothing(self, words: list):
-        """Финальная защита от наложения таймингов."""
         last_e = 0.0
         for w in words:
             if w["start"] < last_e:
@@ -2899,13 +1924,13 @@ class KaraokeAligner:
                 w["end"] = w["start"] + 0.1
             last_e = w["end"]
 
-    # ─── MAIN ───────────────────────────────────────────────────────────────────
+    # ─── MAIN ORCHESTRATOR ──────────────────────────────────────────────────────
 
     def process_audio(self, vocals_path: str, raw_lyrics: str, output_json_path: str):
         self._track_stem = os.path.basename(output_json_path).replace("_(Karaoke Lyrics).json", "")
 
         log.info("=" * 50)
-        log.info(f"Aligner СТАРТ (Smart Surgeon V3): {self._track_stem}")
+        log.info(f"Aligner СТАРТ (Symphony V4): {self._track_stem}")
         
         canon_words = self._prepare_text(raw_lyrics)
         if not canon_words:
@@ -2918,30 +1943,59 @@ class KaraokeAligner:
             audio_data, sr = librosa.load(vocals_path, sr=16000, mono=True)
             audio_duration = len(audio_data) / sr
             
-            vad_mask = self._compute_hard_vad(audio_data, sr)
+            # Топография
+            vad_mask, onsets, is_harmonic_fn = self._get_acoustic_maps(audio_data, sr)
+            
             model = stable_whisper.load_model(self.model_name, download_root=self.whisper_model_dir, device=self.device)
             
             # ЭТАП 1: Скелет (Platinum Logic)
             self._platinum_skeleton(model, audio_data, canon_words, lang)
 
-            # ЭТАП 2: Агентный цикл
+            # ЭТАП 2: Агентный цикл V3 (Smart Surgeon)
             for iteration in range(3):
                 bugs = self._audit_json(canon_words)
                 gaps = self._find_gaps(canon_words)
                 
                 if not bugs and not gaps:
-                    log.info(f"[Critic] Итерация {iteration+1}: Аудит пройден. Скелет идеален.")
+                    log.info(f"[Critic V3] Итерация {iteration+1}: Аудит пройден.")
                     break
                     
                 if bugs:
-                    log.warning(f"[Critic] Итерация {iteration+1}: Найдено {len(bugs)} аномалий. Вызов хирурга...")
+                    log.warning(f"[Critic V3] Итерация {iteration+1}: Найдено {len(bugs)} багов. Вызов хирурга...")
                     self._fix_bugs(canon_words, bugs)
                 
                 if gaps:
                     for gap in gaps:
                         self._micro_dtw_surgery(canon_words, gap, audio_data, model, lang)
             
-            # ЭТАП 3: Гравитация и Сглаживание
+            # ЭТАП 3: TRIBUNAL & ORCHESTRA V4
+            for iteration in range(2):
+                anomalies = self._run_tribunal(canon_words, is_harmonic_fn)
+                if not anomalies:
+                    break
+                    
+                log.warning(f"[Tribunal V4] Итерация {iteration+1}: Найдено {len(anomalies)} критических аномалий! Запуск Оркестра...")
+                
+                for s_idx, e_idx, reason in anomalies:
+                    log.info(f"   -> Карантин [{s_idx}-{e_idx}]: {reason}. Сброс таймингов.")
+                    for k in range(s_idx, e_idx + 1):
+                        canon_words[k]["start"] = canon_words[k]["end"] = -1.0
+                    
+                    t_start = canon_words[s_idx - 1]["end"] + 0.1 if s_idx > 0 and canon_words[s_idx - 1]["end"] != -1 else 0.0
+                    t_end = audio_duration
+                    for k in range(e_idx + 1, len(canon_words)):
+                        if canon_words[k]["start"] != -1:
+                            t_end = canon_words[k]["start"] - 0.1
+                            break
+                            
+                    # Стратегия А: Структурный Клон (Chorus Copier)
+                    if self._heal_by_chorus(canon_words, s_idx, e_idx): continue
+                    # Стратегия B: Слепой Маппинг галлюцинаций
+                    if self._heal_blind_fuzzy(canon_words, s_idx, e_idx, audio_data, t_start, t_end, model, lang): continue
+                    # Стратегия C: Ритмический Магнит (Onsets)
+                    self._heal_with_onsets(canon_words, s_idx, e_idx, onsets, t_start, t_end)
+            
+            # ЭТАП 4: Гравитация и Сглаживание
             self._apply_gravity(canon_words, audio_duration, vad_mask)
             self._smoothing(canon_words)
 
@@ -2970,7 +2024,7 @@ class KaraokeAligner:
         with open(output_json_path, "w", encoding="utf-8") as f:
             json.dump(final_json, f, ensure_ascii=False, indent=2)
 
-        dump_debug("2_Final_SmartSurgeon", final_json, self._track_stem)
+        dump_debug("4_Final_Symphony", final_json, self._track_stem)
         log.info(f"Aligner ГОТОВО → {output_json_path}")
         log.info("=" * 50)
         

@@ -2,6 +2,7 @@ import os
 import gc
 import re
 import json
+import copy
 import torch
 import librosa
 import numpy as np
@@ -13,7 +14,7 @@ log = get_logger("aligner")
 
 class KaraokeAligner:
     """
-    Пайплайн выравнивания "Symphony V4 (Smart Surgeon + The Tribunal & Orchestra)".
+    Пайплайн выравнивания "Symphony V5 (Time Machine, Attention Masking, The Loom)".
     """
 
     def __init__(self, model_name="medium"):
@@ -66,7 +67,6 @@ class KaraokeAligner:
         return words_list
 
     def _get_vowel_weight(self, word: str, is_line_end: bool) -> float:
-        """Классический метод V3 для расчёта веса гласных."""
         vowels = set("аеёиоуыэюяaeiouy")
         clean = word.lower()
         v_count = sum(1 for c in clean if c in vowels)
@@ -75,7 +75,6 @@ class KaraokeAligner:
         return weight
 
     def _get_phonetic_bounds(self, clean_text: str, is_line_end: bool) -> tuple:
-        """Инструмент №3: Лингвистический Калькулятор (Физиологические лимиты для Трибунала)."""
         vowels = sum(1 for c in clean_text if c in "аеёиоуыэюяaeiouy")
         consonants = len(clean_text) - vowels
         
@@ -85,14 +84,13 @@ class KaraokeAligner:
         
         return min_dur, max_dur
 
-    # ─── ИНСТРУМЕНТЫ АКУСТИЧЕСКОЙ ТОПОГРАФИИ (V4) ───────────────────────────────
+    # ─── ИНСТРУМЕНТЫ АКУСТИЧЕСКОЙ ТОПОГРАФИИ ───────────────────────────────
 
     def _get_acoustic_maps(self, audio_data: np.ndarray, sr: int) -> tuple:
         log.info("[Orchestra] Генерация акустической топографии (VAD, Onsets, Harmonics)...")
         hop_length = 512
         times = librosa.frames_to_time(np.arange(len(audio_data)//hop_length + 1), sr=sr, hop_length=hop_length)
 
-        # 1. Hard VAD (Энергия - старый надежный метод, перенесен сюда)
         rms = librosa.feature.rms(y=audio_data, frame_length=2048, hop_length=hop_length)[0]
         rms_norm = rms / (np.max(rms) + 1e-8)
         vad_frames = rms_norm > 0.015 
@@ -114,14 +112,11 @@ class KaraokeAligner:
                 if s - last_e < 0.5: vad_mask[-1] = (last_s, max(last_e, e))
                 elif e - s > 0.1: vad_mask.append((s, e))
 
-        # 2. Инструмент №1: Транзиенты (Удары)
         o_env = librosa.onset.onset_strength(y=audio_data, sr=sr)
         raw_onsets = librosa.onset.onset_detect(onset_envelope=o_env, sr=sr, units='time')
         onsets = [o_t for o_t in raw_onsets if any(vs <= o_t <= ve for (vs, ve) in vad_mask)]
 
-        # 3. Инструмент №2: Трекер Мелодии (Spectral Flatness)
         flatness = librosa.feature.spectral_flatness(y=audio_data, hop_length=hop_length)[0]
-        
         def is_harmonic(t_start, t_end):
             s_frame = librosa.time_to_frames(t_start, sr=sr, hop_length=hop_length)
             e_frame = librosa.time_to_frames(t_end, sr=sr, hop_length=hop_length)
@@ -131,10 +126,21 @@ class KaraokeAligner:
 
         return vad_mask, onsets, is_harmonic
 
-    # ─── ЭТАП 1: SKELETON (V3) ──────────────────────────────────────────────────
+    def _apply_vad_deafness(self, crop_audio: np.ndarray, sr: int, t_start: float, vad_mask: list) -> np.ndarray:
+        """Инструмент V5: Хирургическая глухота (Attention Masking)."""
+        mask = np.zeros_like(crop_audio, dtype=bool)
+        times = t_start + np.arange(len(crop_audio)) / sr
+        
+        for vs, ve in vad_mask:
+            mask |= (times >= vs) & (times <= ve)
+            
+        # Заглушаем на 90% всё, что не попадает в VAD
+        return np.where(mask, crop_audio, crop_audio * 0.1)
+
+    # ─── ЭТАП 1: SKELETON ───────────────────────────────────────────────────────
 
     def _platinum_skeleton(self, model, audio_data: np.ndarray, canon_words: list, lang: str):
-        log.info("[Actor] Фаза 1: Сборка жесткого скелета (Platinum V21)...")
+        log.info("[Actor] Фаза 1: Сборка жесткого скелета (Platinum)...")
         text_for_whisper = " ".join([w["word"] for w in canon_words])
         
         try:
@@ -193,7 +199,7 @@ class KaraokeAligner:
 
         log.info(f"[Actor] Платиновый скелет установлен: {anchors_count}/{len(canon_words)} слов.")
 
-    # ─── ЭТАП 2: CRITIC & SURGEON (Оригинальная логика V3) ──────────────────────
+    # ─── ЭТАП 2: CRITIC & SURGEON ───────────────────────────────────────────────
 
     def _audit_json(self, words: list) -> list:
         bugs = []
@@ -265,7 +271,7 @@ class KaraokeAligner:
             else: i += 1
         return gaps
 
-    def _micro_dtw_surgery(self, words: list, gap: tuple, audio_data: np.ndarray, model, lang: str):
+    def _micro_dtw_surgery(self, words: list, gap: tuple, audio_data: np.ndarray, model, lang: str, aggressive: bool, vad_mask: list):
         s_idx, e_idx = gap
         
         t_start = words[s_idx - 1]["end"] + 0.1 if s_idx > 0 and words[s_idx - 1]["end"] != -1 else 0.0
@@ -285,7 +291,8 @@ class KaraokeAligner:
             elif e_idx == len(words) - 1:
                 t_end = min(t_end, t_start + est_dur * 2.0)
 
-        if t_end <= t_start + 0.5:
+        # ЗАЩИТА ОТ КРАША: Запрещаем пустые/мелкие массивы
+        if t_end - t_start < 0.2:
             for k in range(s_idx, e_idx + 1): words[k]["dtw_tried"] = True
             return
 
@@ -293,6 +300,14 @@ class KaraokeAligner:
         
         sr = 16000
         crop_audio = audio_data[int(t_start * sr) : int(t_end * sr)]
+        
+        if len(crop_audio) < sr * 0.2: # Дополнительная защита numpy
+            for k in range(s_idx, e_idx + 1): words[k]["dtw_tried"] = True
+            return
+
+        if aggressive and vad_mask:
+            crop_audio = self._apply_vad_deafness(crop_audio, sr, t_start, vad_mask)
+
         crop_text = " ".join([words[i]["word"] for i in range(s_idx, e_idx + 1)])
         
         try:
@@ -322,16 +337,14 @@ class KaraokeAligner:
             log.warning(f"[Surgeon] Micro-DTW не справился ({e}).")
             for k in range(s_idx, e_idx + 1): words[k]["dtw_tried"] = True
 
-    # ─── ЭТАП 3: ФИНАЛЬНЫЙ ТРИБУНАЛ (V4) ────────────────────────────────────────
+    # ─── ЭТАП 3: ФИНАЛЬНЫЙ ТРИБУНАЛ ─────────────────────────────────────────────
 
     def _run_tribunal(self, words: list, is_harmonic_fn) -> list:
-        """Инспектор V4. Ищет то, с чем не справился Surgeon."""
         quarantine_zones = []
         n = len(words)
         i = 0
         
         while i < n:
-            # 1. Дыры, которые Surgeon не смог закрыть
             if words[i]["start"] == -1:
                 j = i
                 while j < n and words[j]["start"] == -1: j += 1
@@ -342,13 +355,11 @@ class KaraokeAligner:
             dur = words[i]["end"] - words[i]["start"]
             min_dur, max_dur = self._get_phonetic_bounds(words[i]["clean_text"], words[i]["line_break"])
             
-            # 2. Ловим OVERSTRETCH через Трекер Мелодии
             if dur > max_dur and dur > 2.0:
                 if not is_harmonic_fn(words[i]["start"] + max_dur, words[i]["end"]):
                     log.warning(f"[Tribunal] Резина найдена на '{words[i]['clean_text']}'. Обрезаем (Шум/Эхо).")
                     words[i]["end"] = words[i]["start"] + max_dur
             
-            # 3. Ловим BLACK HOLE через Лингвистику (Спрессованная каша)
             if words[i]["start"] != -1:
                 j = i
                 cluster_min_dur = 0.0
@@ -366,10 +377,9 @@ class KaraokeAligner:
             
         return quarantine_zones
 
-    # ─── ЭТАП 4: ОРКЕСТР (СТРАТЕГИИ ИСЦЕЛЕНИЯ V4) ───────────────────────────────
+    # ─── ЭТАП 4: ОРКЕСТР (СТРАТЕГИИ ИСЦЕЛЕНИЯ) ──────────────────────────────────
 
     def _heal_by_chorus(self, words: list, s_idx: int, e_idx: int) -> bool:
-        """Инструмент №4: Кросс-Корреляционный Радар"""
         target_cluster = [words[i]["clean_text"] for i in range(s_idx, e_idx + 1)]
         target_len = len(target_cluster)
         if target_len < 4: return False 
@@ -391,11 +401,19 @@ class KaraokeAligner:
                     return True
         return False
 
-    def _heal_blind_fuzzy(self, words: list, s_idx: int, e_idx: int, audio_data: np.ndarray, t_start: float, t_end: float, model, lang: str) -> bool:
-        """Слепая транскрибация галлюцинаций"""
+    def _heal_blind_fuzzy(self, words: list, s_idx: int, e_idx: int, audio_data: np.ndarray, t_start: float, t_end: float, model, lang: str, aggressive: bool, vad_mask: list) -> bool:
+        # ЗАЩИТА ОТ КРАША
+        if t_end - t_start < 0.2: return False
+        
         log.info(f"[Orchestra] Слепой Маппинг для слов {s_idx}-{e_idx}...")
         try:
-            crop_audio = audio_data[int(t_start * 16000) : int(t_end * 16000)]
+            sr = 16000
+            crop_audio = audio_data[int(t_start * sr) : int(t_end * sr)]
+            if len(crop_audio) < sr * 0.2: return False
+
+            if aggressive and vad_mask:
+                crop_audio = self._apply_vad_deafness(crop_audio, sr, t_start, vad_mask)
+
             result = model.transcribe(crop_audio, language=lang)
             blind_words = result.all_words()
             
@@ -426,9 +444,53 @@ class KaraokeAligner:
             log.warning(f"[Orchestra] Слепой маппинг не удался: {e}")
             return False
 
+    def _heal_phonetic_loom(self, words: list, s_idx: int, e_idx: int, t_start: float, t_end: float, vad_mask: list) -> bool:
+        """Инструмент V5: Ткацкий станок. Математическое распределение слогов по VAD."""
+        log.info(f"[Orchestra] Ткацкий станок (The Loom) для слов {s_idx}-{e_idx}...")
+        
+        # Находим активные зоны VAD внутри окна
+        valid_vads = []
+        for (vs, ve) in vad_mask:
+            c_s, c_e = max(t_start, vs), min(t_end, ve)
+            if c_e - c_s > 0.05: valid_vads.append((c_s, c_e))
+            
+        if not valid_vads:
+            valid_vads = [(t_start, t_end)]
+            
+        total_vad_time = sum(e - s for s, e in valid_vads)
+        weights = [self._get_vowel_weight(words[k]["clean_text"], words[k]["line_break"]) for k in range(s_idx, e_idx + 1)]
+        total_w = sum(weights)
+        
+        curr_t = 0.0
+        for k in range(s_idx, e_idx + 1):
+            w_logic_dur = (weights[k-s_idx] / total_w) * total_vad_time
+            
+            accum, mapped_s, mapped_e = 0.0, valid_vads[0][0], valid_vads[-1][1]
+            
+            # Ищем начало слова
+            for (vs, ve) in valid_vads:
+                dur = ve - vs
+                if curr_t <= accum + dur:
+                    mapped_s = vs + (curr_t - accum)
+                    break
+                accum += dur
+                
+            # Ищем конец слова
+            accum = 0.0
+            for (vs, ve) in valid_vads:
+                dur = ve - vs
+                if curr_t + w_logic_dur * 0.95 <= accum + dur:
+                    mapped_e = vs + (curr_t + w_logic_dur * 0.95 - accum)
+                    break
+                accum += dur
+                
+            words[k]["start"] = mapped_s
+            words[k]["end"] = mapped_e
+            curr_t += w_logic_dur
+            
+        return True
+
     def _heal_with_onsets(self, words: list, s_idx: int, e_idx: int, onsets: list, t_start: float, t_end: float) -> bool:
-        """Инструмент №1: Прибиваем слова к физическим ударам"""
-        log.info(f"[Orchestra] Ритмический Магнит для слов {s_idx}-{e_idx}...")
         local_onsets = [o for o in onsets if t_start <= o <= t_end]
         word_count = (e_idx - s_idx) + 1
         
@@ -449,7 +511,7 @@ class KaraokeAligner:
                 break
         return True
 
-    # ─── ЭТАП 5: ФИЗИКА И ГРАВИТАЦИЯ (V3 Оригинал) ──────────────────────────────
+    # ─── ЭТАП 5: ФИЗИКА И ГРАВИТАЦИЯ ────────────────────────────────────────────
 
     def _apply_gravity(self, words: list, audio_duration: float, vad_mask: list):
         log.info("[Physics] Гравитационная заливка слепых зон...")
@@ -526,80 +588,127 @@ class KaraokeAligner:
                 w["end"] = w["start"] + 0.1
             last_e = w["end"]
 
+    # ─── QUALITY GATE (ОЦЕНКА КАЧЕСТВА) ─────────────────────────────────────────
+
+    def _evaluate_quality(self, words: list) -> float:
+        """Инструмент V5: Машина Времени. Возвращает оценку здоровья трека от 0 до 100."""
+        score = 100.0
+        total = len(words)
+        if total == 0: return 0.0
+
+        unresolved = 0
+        squeezed = 0
+        overstretched = 0
+
+        for w in words:
+            if w["start"] == -1.0:
+                unresolved += 1
+                continue
+            
+            dur = w["end"] - w["start"]
+            if dur < 0.06:
+                squeezed += 1
+            
+            min_dur, max_dur = self._get_phonetic_bounds(w["clean_text"], w["line_break"])
+            if dur > max_dur * 1.5:
+                overstretched += 1
+
+        score -= (unresolved / total) * 100 * 2.0      # Штраф х2 за пустоты
+        score -= (squeezed / total) * 100 * 1.0        # Штраф х1 за сдавленность
+        score -= (overstretched / total) * 100 * 0.5   # Штраф х0.5 за резину
+
+        return max(0.0, score)
+
     # ─── MAIN ORCHESTRATOR ──────────────────────────────────────────────────────
 
     def process_audio(self, vocals_path: str, raw_lyrics: str, output_json_path: str):
         self._track_stem = os.path.basename(output_json_path).replace("_(Karaoke Lyrics).json", "")
 
         log.info("=" * 50)
-        log.info(f"Aligner СТАРТ (Symphony V4): {self._track_stem}")
+        log.info(f"Aligner СТАРТ (Symphony V5): {self._track_stem}")
         
-        canon_words = self._prepare_text(raw_lyrics)
-        if not canon_words:
+        canon_words_original = self._prepare_text(raw_lyrics)
+        if not canon_words_original:
             with open(output_json_path, "w", encoding="utf-8") as f: json.dump([], f)
             return output_json_path
 
         lang = self._detect_language(raw_lyrics)
         model = None
+        canon_words = []
+        
         try:
             audio_data, sr = librosa.load(vocals_path, sr=16000, mono=True)
             audio_duration = len(audio_data) / sr
-            
-            # Топография
             vad_mask, onsets, is_harmonic_fn = self._get_acoustic_maps(audio_data, sr)
-            
             model = stable_whisper.load_model(self.model_name, download_root=self.whisper_model_dir, device=self.device)
             
-            # ЭТАП 1: Скелет (Platinum Logic)
-            self._platinum_skeleton(model, audio_data, canon_words, lang)
+            # МАШИНА ВРЕМЕНИ: Даем движку 2 попытки
+            for pass_idx in range(2):
+                aggressive_mode = (pass_idx == 1)
+                canon_words = copy.deepcopy(canon_words_original)
+                
+                if aggressive_mode:
+                    log.warning("⏱️ МАШИНА ВРЕМЕНИ: Оценка низкая. Запуск Aggressive Mode (Pass 2)!")
+                    log.warning("Включено: Хирургическая глухота (VAD Masking), Приоритет Ткацкого Станка.")
 
-            # ЭТАП 2: Агентный цикл V3 (Smart Surgeon)
-            for iteration in range(3):
-                bugs = self._audit_json(canon_words)
-                gaps = self._find_gaps(canon_words)
+                # ЭТАП 1: Скелет
+                self._platinum_skeleton(model, audio_data, canon_words, lang)
+
+                # ЭТАП 2: Агентный цикл (Smart Surgeon)
+                for iteration in range(3):
+                    bugs = self._audit_json(canon_words)
+                    gaps = self._find_gaps(canon_words)
+                    
+                    if not bugs and not gaps:
+                        log.info(f"[Critic] Итерация {iteration+1}: Аудит пройден.")
+                        break
+                        
+                    if bugs:
+                        self._fix_bugs(canon_words, bugs)
+                    
+                    if gaps:
+                        for gap in gaps:
+                            self._micro_dtw_surgery(canon_words, gap, audio_data, model, lang, aggressive_mode, vad_mask)
                 
-                if not bugs and not gaps:
-                    log.info(f"[Critic V3] Итерация {iteration+1}: Аудит пройден.")
+                # ЭТАП 3: TRIBUNAL & ORCHESTRA
+                for iteration in range(2):
+                    anomalies = self._run_tribunal(canon_words, is_harmonic_fn)
+                    if not anomalies:
+                        break
+                        
+                    for s_idx, e_idx, reason in anomalies:
+                        log.info(f"   -> Карантин [{s_idx}-{e_idx}]: {reason}. Сброс таймингов.")
+                        for k in range(s_idx, e_idx + 1):
+                            canon_words[k]["start"] = canon_words[k]["end"] = -1.0
+                        
+                        t_start = canon_words[s_idx - 1]["end"] + 0.1 if s_idx > 0 and canon_words[s_idx - 1]["end"] != -1 else 0.0
+                        t_end = audio_duration
+                        for k in range(e_idx + 1, len(canon_words)):
+                            if canon_words[k]["start"] != -1:
+                                t_end = canon_words[k]["start"] - 0.1
+                                break
+                                
+                        # Инструментарий Оркестра
+                        if self._heal_by_chorus(canon_words, s_idx, e_idx): continue
+                        if self._heal_blind_fuzzy(canon_words, s_idx, e_idx, audio_data, t_start, t_end, model, lang, aggressive_mode, vad_mask): continue
+                        
+                        # Выбор оружия последней надежды в зависимости от режима
+                        if aggressive_mode:
+                            self._heal_phonetic_loom(canon_words, s_idx, e_idx, t_start, t_end, vad_mask)
+                        else:
+                            if not self._heal_with_onsets(canon_words, s_idx, e_idx, onsets, t_start, t_end):
+                                self._heal_phonetic_loom(canon_words, s_idx, e_idx, t_start, t_end, vad_mask)
+                
+                # ЭТАП 4: Гравитация и Сглаживание
+                self._apply_gravity(canon_words, audio_duration, vad_mask)
+                self._smoothing(canon_words)
+
+                # QUALITY GATE
+                score = self._evaluate_quality(canon_words)
+                log.info(f"📊 Оценка качества после Pass {pass_idx + 1}: {score:.1f}/100")
+                
+                if score >= 85.0:
                     break
-                    
-                if bugs:
-                    log.warning(f"[Critic V3] Итерация {iteration+1}: Найдено {len(bugs)} багов. Вызов хирурга...")
-                    self._fix_bugs(canon_words, bugs)
-                
-                if gaps:
-                    for gap in gaps:
-                        self._micro_dtw_surgery(canon_words, gap, audio_data, model, lang)
-            
-            # ЭТАП 3: TRIBUNAL & ORCHESTRA V4
-            for iteration in range(2):
-                anomalies = self._run_tribunal(canon_words, is_harmonic_fn)
-                if not anomalies:
-                    break
-                    
-                log.warning(f"[Tribunal V4] Итерация {iteration+1}: Найдено {len(anomalies)} критических аномалий! Запуск Оркестра...")
-                
-                for s_idx, e_idx, reason in anomalies:
-                    log.info(f"   -> Карантин [{s_idx}-{e_idx}]: {reason}. Сброс таймингов.")
-                    for k in range(s_idx, e_idx + 1):
-                        canon_words[k]["start"] = canon_words[k]["end"] = -1.0
-                    
-                    t_start = canon_words[s_idx - 1]["end"] + 0.1 if s_idx > 0 and canon_words[s_idx - 1]["end"] != -1 else 0.0
-                    t_end = audio_duration
-                    for k in range(e_idx + 1, len(canon_words)):
-                        if canon_words[k]["start"] != -1:
-                            t_end = canon_words[k]["start"] - 0.1
-                            break
-                            
-                    # Стратегия А: Структурный Клон (Chorus Copier)
-                    if self._heal_by_chorus(canon_words, s_idx, e_idx): continue
-                    # Стратегия B: Слепой Маппинг галлюцинаций
-                    if self._heal_blind_fuzzy(canon_words, s_idx, e_idx, audio_data, t_start, t_end, model, lang): continue
-                    # Стратегия C: Ритмический Магнит (Onsets)
-                    self._heal_with_onsets(canon_words, s_idx, e_idx, onsets, t_start, t_end)
-            
-            # ЭТАП 4: Гравитация и Сглаживание
-            self._apply_gravity(canon_words, audio_duration, vad_mask)
-            self._smoothing(canon_words)
 
         except Exception as e:
             log.error(f"Ошибка Aligner: {e}")
@@ -626,7 +735,7 @@ class KaraokeAligner:
         with open(output_json_path, "w", encoding="utf-8") as f:
             json.dump(final_json, f, ensure_ascii=False, indent=2)
 
-        dump_debug("4_Final_Symphony", final_json, self._track_stem)
+        dump_debug("5_Final_Symphony", final_json, self._track_stem)
         log.info(f"Aligner ГОТОВО → {output_json_path}")
         log.info("=" * 50)
         
