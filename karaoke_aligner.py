@@ -11,8 +11,8 @@ log = get_logger("aligner")
 
 class KaraokeAligner:
     """
-    Пайплайн выравнивания "Musical Logic V20 (Platinum Skeleton)".
-    Основан на Гравитации Гласных, Платиновых цепочках и отсечении иллюзий.
+    Пайплайн выравнивания "Musical Logic V21 (Platinum Physics)".
+    Внедрена проверка физической возможности артикуляции для защиты от ложных эхо-таймингов.
     """
 
     def __init__(self, model_name="medium"):
@@ -45,7 +45,7 @@ class KaraokeAligner:
         self._track_stem = os.path.basename(output_json_path).replace("_(Karaoke Lyrics).json", "")
 
         log.info("=" * 50)
-        log.info("Aligner СТАРТ (Musical V20): %s", self._track_stem)
+        log.info("Aligner СТАРТ (Musical V21): %s", self._track_stem)
         log.info("Vocals: %s", vocals_path)
         log.info("Device: %s", self.device)
 
@@ -111,7 +111,6 @@ class KaraokeAligner:
 
         dump_debug("1_WhisperRaw", [{"word": w.word, "start": w.start, "end": w.end} for w in sw_raw_words], self._track_stem)
 
-        # Вызов Платинового Ядра V20
         canon_words = self._platinum_sequence_alignment(canon_words, sw_raw_words, audio_duration)
         canon_words = self._apply_surgeons(canon_words)
         final_json = self._finalize_json(canon_words)
@@ -154,20 +153,24 @@ class KaraokeAligner:
         return words_list
 
     def _get_vowel_weight(self, word: str, is_line_end: bool) -> float:
-        """Музыкальная логика: тянутся только гласные. Конец строки тянется сильнее."""
+        """Музыкальная гравитация: тянутся только гласные."""
         vowels = set("аеёиоуыэюяaeiouy")
         clean = word.lower()
         v_count = sum(1 for c in clean if c in vowels)
         weight = float(max(1, v_count))
         if is_line_end:
-            weight *= 2.5 # Вокалист всегда тянет последнюю ноту фразы
+            weight *= 2.5 
         return weight
 
     def _extract_vad_mask(self, sw_words: list) -> list:
+        """Нейронный VAD с обрезкой галлюцинаций (шлейфов тишины)."""
         mask = []
         for w in sw_words:
-            if w.end - w.start > 0.05:
-                mask.append((w.start, w.end))
+            dur = w.end - w.start
+            if dur > 0.05:
+                # Ограничиваем 3 секундами, чтобы галлюцинации Whisper не маркировали тишину как голос
+                e = min(w.end, w.start + 3.0)
+                mask.append((w.start, e))
         if not mask: return []
         
         merged = []
@@ -183,16 +186,17 @@ class KaraokeAligner:
         return merged
 
     def _distribute_fallback(self, words: list, start_idx: int, end_idx: int, t_start: float, t_end: float):
-        """Естественная гравитация. Используется в инструменталах и Fade-Out."""
+        """Физическое распределение (для инструменталов, фейдаутов и потерянных куплетов)."""
         if start_idx > end_idx: return
         gap = t_end - t_start
         if gap <= 0: gap = 0.1
         
         weights = [self._get_vowel_weight(words[k]["clean_text"], words[k]["line_break"]) for k in range(start_idx, end_idx + 1)]
         total_weight = sum(weights)
+        word_count = end_idx - start_idx + 1
         
-        # Физическое время, необходимое для произнесения этой массы букв (0.25с на 1 гласную)
-        req_dur = total_weight * 0.25
+        # Физически оптимальное время (0.3с на 1 ед. массы)
+        opt_dur = total_weight * 0.3
         
         is_intro = (start_idx == 0)
         is_outro = (end_idx == len(words) - 1)
@@ -203,13 +207,17 @@ class KaraokeAligner:
         if is_intro: stick_right, stick_left = True, False
         if is_outro: stick_left, stick_right = True, False
         
-        if gap > req_dur * 1.5 and gap > 3.0:
-            if stick_left and not stick_right:
-                actual_gap, curr_t = req_dur, t_start + 0.1
+        if gap > opt_dur * 1.5 and gap > 4.0:
+            if word_count >= 8:
+                # Потерян целый блок (куплет). Равномерно заполняем дыру с отступами 10%
+                actual_gap = gap * 0.8
+                curr_t = t_start + gap * 0.1
+            elif stick_left and not stick_right:
+                actual_gap, curr_t = opt_dur, t_start + 0.1
             elif stick_right and not stick_left:
-                actual_gap, curr_t = req_dur, t_end - req_dur - 0.1
+                actual_gap, curr_t = opt_dur, t_end - opt_dur - 0.1
             else:
-                actual_gap, curr_t = req_dur, t_start + (gap - req_dur) / 2.0
+                actual_gap, curr_t = opt_dur, t_start + (gap - opt_dur) / 2.0
         else:
             actual_gap, curr_t = gap, t_start
             
@@ -239,14 +247,18 @@ class KaraokeAligner:
             if i_e - i_s > 0.05:
                 active_vads.append((i_s, i_e))
                 
-        if not active_vads:
-            self._distribute_fallback(words, start_idx, end_idx, t_start, t_end)
-            return
-            
-        total_vad_dur = sum(e - s for s, e in active_vads)
         weights = [self._get_vowel_weight(words[k]["clean_text"], words[k]["line_break"]) for k in range(start_idx, end_idx + 1)]
         total_weight = sum(weights)
         
+        # Минимальное физическое время на артикуляцию (0.15с на 1 ед. массы)
+        min_phys_time = total_weight * 0.15
+        total_vad_dur = sum(e - s for s, e in active_vads)
+        
+        # Если VAD-зона катастрофически мала для такого объема текста, VAD игнорируется (защита от сжатия)
+        if not active_vads or total_vad_dur < min_phys_time:
+            self._distribute_fallback(words, start_idx, end_idx, t_start, t_end)
+            return
+            
         t_cursor = 0.0
         for i, k in enumerate(range(start_idx, end_idx + 1)):
             w_logic_dur = (weights[i] / total_weight) * total_vad_dur
@@ -268,13 +280,13 @@ class KaraokeAligner:
                 
         merged_vad = self._extract_vad_mask(sw_words)
         
-        log.info("V20: Установка Платиновых Якорей (Блокировка иллюзий)...")
+        log.info("V21: Установка Платиновых Якорей + Физическая проверка скорости...")
         canon_idx = 0
         sw_idx = 0
         last_anchored_canon_idx = -1
         last_anchored_time = 0.0
         anchors_count = 0
-        search_window = 60 # Только вперед! Никаких прыжков в прошлые припевы
+        search_window = 60
         
         while canon_idx < len(canon_words) and sw_idx < len(valid_sw):
             best_match_len = 0
@@ -291,36 +303,38 @@ class KaraokeAligner:
                     best_match_len = match_len
                     best_c_idx = c
                     
-            # АБСОЛЮТНАЯ ЗАЩИТА: Фильтр платиновых якорей
             is_platinum = False
             if last_anchored_canon_idx == -1:
-                # САМЫЙ ПЕРВЫЙ ЯКОРЬ: Жесточайший фильтр. Обязано быть >= 3 слов подряд. 
-                # (Блокирует эхо "розовый зефир" на 2-й секунде у Zoloto)
-                if best_match_len >= 3:
-                    is_platinum = True
+                if best_match_len >= 3: is_platinum = True
             else:
-                # ПОСЛЕДУЮЩИЕ ЯКОРЯ: 
-                if best_match_len >= 3:
-                    is_platinum = True
+                if best_match_len >= 3: is_platinum = True
                 elif best_match_len == 2:
                     w1 = canon_words[best_c_idx]["clean_text"]
                     w2 = canon_words[best_c_idx+1]["clean_text"]
-                    if len(w1) + len(w2) >= 7: 
-                        is_platinum = True
+                    if len(w1) + len(w2) >= 7: is_platinum = True
                 elif best_match_len == 1:
                     w1 = canon_words[best_c_idx]["clean_text"]
-                    # Блокировка одиночных галлюцинаций (типа "ничего" с 11с дырой). Одиночки берем только огромные.
-                    if len(w1) >= 8: 
-                        is_platinum = True
+                    if len(w1) >= 8: is_platinum = True
 
-            # Проверка адекватности BPM (если Whisper нашел слово, но до него неадекватная скорость пения)
-            if is_platinum and last_anchored_canon_idx != -1:
-                w_diff = best_c_idx - last_anchored_canon_idx
-                t_diff = valid_sw[sw_idx]["start"] - last_anchored_time
-                if w_diff > 0 and (t_diff / w_diff) < 0.08: 
-                    # Быстрее 12 слов в секунду? Это бред/сэмпл, пропускаем.
-                    is_platinum = False
+            # ФИЗИЧЕСКАЯ ПРОВЕРКА (Закон Архимеда для музыки)
+            # Отвергаем эхо и бэк-вокалы, если они заставляют текст "лететь" со скоростью света
+            if is_platinum:
+                if last_anchored_canon_idx == -1:
+                    prev_words = canon_words[0:best_c_idx]
+                    avail_time = valid_sw[sw_idx]["start"]
+                else:
+                    prev_words = canon_words[last_anchored_canon_idx + 1 : best_c_idx]
+                    avail_time = valid_sw[sw_idx]["start"] - last_anchored_time
                     
+                if prev_words:
+                    v_weights = sum(self._get_vowel_weight(w["clean_text"], w["line_break"]) for w in prev_words)
+                    min_req_time = v_weights * 0.16 # Физический предел артикуляции певца
+                    
+                    if avail_time < min_req_time:
+                        log.debug("Отвергнут якорь '%s': невозможно спеть текст за %.1fс (нужно мин %.1fс)", 
+                                  valid_sw[sw_idx]['clean'], avail_time, min_req_time)
+                        is_platinum = False
+                        
             if is_platinum:
                 for k in range(best_match_len):
                     canon_words[best_c_idx + k]["start"] = valid_sw[sw_idx + k]["start"]
@@ -333,9 +347,9 @@ class KaraokeAligner:
                 sw_idx += best_match_len
                 anchors_count += best_match_len
             else:
-                sw_idx += 1 # Whisper нагаллюцинировал болтовню или эхо - идем дальше
+                sw_idx += 1
                 
-        log.info("Установлено платиновых якорей: %d из %d", anchors_count, len(canon_words))
+        log.info("Установлено якорей после физ. проверок: %d из %d", anchors_count, len(canon_words))
         anchors = [i for i, w in enumerate(canon_words) if w["start"] != -1.0]
 
         if not anchors:
@@ -343,10 +357,11 @@ class KaraokeAligner:
             self._distribute_fallback(canon_words, 0, len(canon_words)-1, 1.0, audio_duration - 1.0)
             return canon_words
 
-        # 3. ЗАЛИВКА ПУСТОТ С УЧЕТОМ ГЛАСНЫХ
+        # Заливка Интро
         if anchors[0] > 0:
             self._fill_gap_with_vad(canon_words, 0, anchors[0] - 1, 0.0, canon_words[anchors[0]]["start"], merged_vad)
             
+        # Заливка куплетов и проигрышей
         for k in range(len(anchors) - 1):
             i1, i2 = anchors[k], anchors[k+1]
             if i2 - i1 > 1:
@@ -354,10 +369,9 @@ class KaraokeAligner:
                 t2 = canon_words[i2]["start"]
                 self._fill_gap_with_vad(canon_words, i1 + 1, i2 - 1, t1, t2, merged_vad)
                 
-        # 4. ОТСЕЧЕНИЕ МЕРТВОЙ ТКАНИ (Fade-out Ягоды / Доры)
+        # Заливка Аутро
         if anchors[-1] < len(canon_words) - 1:
             t_start = canon_words[anchors[-1]]["end"]
-            # Выкидываем текст далеко в будущее (плеер его просто проигнорирует, т.к. аудио кончилось)
             fake_end_time = max(t_start + 10.0, audio_duration + 10.0)
             self._distribute_fallback(canon_words, anchors[-1] + 1, len(canon_words) - 1, t_start + 0.5, fake_end_time)
 
@@ -366,8 +380,7 @@ class KaraokeAligner:
     def _apply_surgeons(self, words: list) -> list:
         for idx, cw in enumerate(words):
             v_weight = self._get_vowel_weight(cw["clean_text"], cw["line_break"])
-            # Защита от экстремальных аномалий (1 гласная = макс 2.5 сек, 3 гласных = 5.5 сек)
-            max_dur = v_weight * 1.5 + 1.0 
+            max_dur = v_weight * 1.0 + 1.0 
             if cw["end"] - cw["start"] > max_dur:
                 cw["end"] = cw["start"] + max_dur
 
