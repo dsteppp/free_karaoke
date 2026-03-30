@@ -38,29 +38,46 @@ def prepare_text(text: str) -> list:
                     "line_break": is_last_in_line,
                     "start": -1.0,
                     "end": -1.0,
-                    "dtw_tried": False
+                    "dtw_tried": False,
+                    "is_island": False # Флаг для изоляции повторов
                 })
     return words_list
 
-def is_repetition_island(words: list, s_idx: int, e_idx: int) -> bool:
+def find_repetition_islands(words: list) -> list:
     """
-    V12: Определяет, состоит ли участок текста из жестких повторов.
-    Если уникальных слов мало по сравнению с общим объемом — это Остров Повторов.
+    V13: Сканирует текст ЗАРАНЕЕ и находит блоки зацикленных фраз (от 10 слов).
+    Эти Острова будут изолированы от нейросети, чтобы не сломать общую матрицу выравнивания.
     """
-    length = e_idx - s_idx + 1
-    if length < 4: return False
+    islands = []
+    n = len(words)
+    i = 0
     
-    text_chunk = [words[i]["clean_text"] for i in range(s_idx, e_idx + 1)]
-    unique_words = set(text_chunk)
-    
-    # Коэффициент уникальности (чем ниже, тем больше повторов)
-    ratio = len(unique_words) / length
-    
-    # Дополнительно: проверяем, повторяется ли хотя бы одно слово много раз
-    max_repeats = max(text_chunk.count(w) for w in unique_words)
-    
-    # Если уникальных слов меньше 45% или какое-то слово повторяется 3+ раз подряд
-    return ratio < 0.45 or max_repeats >= 3
+    while i < n:
+        best_island = None
+        # Ищем сверху-вниз: от самых больших блоков к минимальным (10 слов)
+        for j in range(n - 1, i + 9, -1):
+            chunk = [words[k]["clean_text"] for k in range(i, j + 1) if len(words[k]["clean_text"]) > 1]
+            if not chunk: continue
+            
+            unique = set(chunk)
+            ratio = len(unique) / len(chunk)
+            max_repeats = max([chunk.count(u) for u in unique]) if unique else 0
+            
+            # Если уникальных слов меньше 35% ИЛИ одно слово повторяется 3+ раза (при соотношении < 50%)
+            if ratio < 0.35 or (max_repeats >= 3 and ratio < 0.5):
+                best_island = (i, j)
+                break
+        
+        if best_island:
+            islands.append(best_island)
+            # Помечаем слова флагом
+            for k in range(best_island[0], best_island[1] + 1):
+                words[k]["is_island"] = True
+            i = best_island[1] + 1
+        else:
+            i += 1
+            
+    return islands
 
 # ─── ФОНЕТИЧЕСКАЯ МАТЕМАТИКА ────────────────────────────────────────────────
 
@@ -110,13 +127,14 @@ def get_safe_bounds(words: list, s_idx: int, e_idx: int, audio_duration: float) 
         
     return t_start, t_end
 
-# ─── V12: СЕМАНТИЧЕСКАЯ СИСТЕМА ОЦЕНКИ (SEMANTIC EVALUATOR) ────────────────
+# ─── V13: СЕМАНТИЧЕСКАЯ СИСТЕМА ОЦЕНКИ (SEMANTIC EVALUATOR) ────────────────
 
 def evaluate_alignment_quality(words: list, vad_mask: list, curtains: list, spot_check_fn=None) -> float:
     """
-    V12: "Absolute Harmony" Evaluator.
-    Внедрен Void Penalty (-5 баллов за КАЖДОЕ ненайденное слово).
-    Смысловой Аудит (Spot Check) использует Forced Alignment.
+    V13: "Master Plan" Evaluator.
+    Суровый контроль:
+    - Void Penalty (каждое ненайденное слово -5 баллов).
+    - Orphan VAD Penalty (штраф за куски голоса > 3сек без текста).
     """
     score = 100.0
     total = len(words)
@@ -159,17 +177,32 @@ def evaluate_alignment_quality(words: list, vad_mask: list, curtains: list, spot
             if next_w["start"] != -1.0:
                 gap = next_w["start"] - w["end"]
                 
-                # Прощаем долгие разрывы (до 3с), но проверяем VAD
                 if gap > 3.0: 
                     has_curtain = any(c_s >= w["end"] and c_e <= next_w["start"] for c_s, c_e in curtains)
                     if not has_curtain:
                         vad_in_gap = sum((min(next_w["start"], ve) - max(w["end"], vs)) 
                                          for vs, ve in vad_mask if min(next_w["start"], ve) > max(w["end"], vs))
-                        if vad_in_gap > 1.5: # Наказываем только если в дыре > 1.5 сек реального голоса
+                        if vad_in_gap > 1.5: 
                             torn_lines += 1
 
-    # V12: Жестокий Оценщик Пустот (Void Penalty)
-    # Каждое ненайденное слово бьет по оценке ОЧЕНЬ больно. 20 потерянных слов (как финал Доры) = 0 баллов.
+    # 4. V13: Поиск Брошенного Голоса (Orphan VAD Penalty - Защита Доры)
+    orphan_vad_time = 0.0
+    for vs, ve in vad_mask:
+        has_words = False
+        for w in words:
+            if w["start"] != -1.0 and min(w["end"], ve) - max(w["start"], vs) > 0:
+                has_words = True
+                break
+        
+        vad_dur = ve - vs
+        if not has_words and vad_dur > 2.0:
+            orphan_vad_time += vad_dur
+            
+    # За каждые 1.5 секунды брошенного вокала - минус 10 баллов
+    if orphan_vad_time > 1.5:
+        score -= (orphan_vad_time * 10.0)
+
+    # 5. V13: Жестокий Оценщик Пустот (Void Penalty)
     score -= unresolved * 5.0
     
     score -= (squeezed / total) * 100 * 0.5
@@ -177,7 +210,7 @@ def evaluate_alignment_quality(words: list, vad_mask: list, curtains: list, spot
     score -= torn_lines * 5.0 
     score -= hallucinations * 5.0
 
-    # 4. V12: Смысловой Аудитор (Spot-Check с использованием Forced Alignment)
+    # 6. V13: Смысловой Аудитор (Spot-Check с использованием Forced Alignment)
     if score >= 80.0 and spot_check_fn is not None:
         valid_indices = [i for i, w in enumerate(words) if w["start"] != -1.0 and (w["end"] - w["start"]) > 0.2]
         
@@ -189,14 +222,12 @@ def evaluate_alignment_quality(words: list, vad_mask: list, curtains: list, spot
                 w = words[idx]
                 t_start = max(0.0, w["start"] - 0.5)
                 t_end = w["end"] + 0.5
-                
                 target_phrase = " ".join([words[k]["clean_text"] for k in range(max(0, idx-1), min(total, idx+2))])
                 
-                # spot_check_fn теперь использует model.align (Forced Alignment) в Главном Дирижере
                 if not spot_check_fn(t_start, t_end, target_phrase):
                     failed_checks += 1
                     
             if failed_checks > 0:
-                score -= 30.0 # Огромный штраф за семантический рассинхрон
+                score -= 30.0 # Семантический рассинхрон
 
     return max(0.0, score)

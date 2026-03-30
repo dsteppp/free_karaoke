@@ -12,11 +12,11 @@ import numpy as np
 
 from app_logger import get_logger, dump_debug
 
-# ─── ИМПОРТЫ ИЗ НАШЕЙ НОВОЙ МОДУЛЬНОЙ СИСТЕМЫ (SYMPHONY V12) ─────────────────
+# ─── ИМПОРТЫ ИЗ НАШЕЙ НОВОЙ МОДУЛЬНОЙ СИСТЕМЫ (SYMPHONY V13) ─────────────────
 from aligner_utils import (
     detect_language, prepare_text, get_vowel_weight, 
     get_phonetic_bounds, get_safe_bounds, evaluate_alignment_quality,
-    is_repetition_island
+    find_repetition_islands
 )
 from aligner_acoustics import (
     vocal_sniper, build_iron_curtain, enforce_curtains, 
@@ -31,8 +31,9 @@ log = get_logger("aligner")
 
 class KaraokeAligner:
     """
-    Главный Дирижер "Symphony V12: Absolute Harmony".
-    Интегрирует Эталонный Аудитор, Острова Повторов и Абсолютную Гравитацию.
+    Главный Дирижер "Symphony V13: Master Plan".
+    Реализует подход Top-Down: превентивная изоляция повторов, 
+    Text-Driven разведчик в Авангарде и защита макро-структуры (VAD Penalty).
     """
 
     def __init__(self, model_name="medium"):
@@ -48,43 +49,75 @@ class KaraokeAligner:
 
     # ─── ЭТАП 1: СМЫСЛОВОЙ АВАНГАРД И СКЕЛЕТ ────────────────────────────────────
 
-    def _vanguard_protocol(self, model, audio_data: np.ndarray, words: list, lang: str):
-        if not words: return
-        log.info("🛡️ [Vanguard] Поиск истинного начала песни (защита от ранней болтовни)...")
+    def _vanguard_protocol(self, model, audio_data: np.ndarray, words: list, lang: str, vad_mask: list):
+        """
+        V13: Text-Driven Разведчик. 
+        Не имеет временных лимитов. Шагает по кускам голоса (VAD) и ищет первые 2 строки.
+        """
+        if not words or not vad_mask: return
+        log.info("🛡️ [Vanguard] Поиск истинного начала песни (Text-Driven разведчик)...")
         sr = 16000
-        crop_dur = min(45.0, len(audio_data) / sr)
-        crop = audio_data[:int(crop_dur * sr)]
         
-        try:
-            res = model.transcribe(crop, language=lang)
-            blind_words = res.all_words()
-            if not blind_words: return
+        first_lines = []
+        lines_found = 0
+        for w in words:
+            first_lines.append(w["clean_text"])
+            if w["line_break"]: lines_found += 1
+            if lines_found >= 2 or len(first_lines) >= 12: break
             
-            first_line_clean = " ".join([w["clean_text"] for w in words[:4]])
-            b_texts = [re.sub(r'[^\w]', '', w.word.lower()) for w in blind_words]
-            
-            best_score = 0
-            best_t = 0.0
-            
-            for i in range(len(b_texts) - 3):
-                chunk = " ".join([t for t in b_texts[i:i+4] if t])
-                score = rapidfuzz.fuzz.partial_ratio(first_line_clean, chunk)
-                if score > best_score:
-                    best_score = score
-                    best_t = blind_words[i].start
-                    
-            if best_score > 75 and best_t > 3.0:
-                log.info(f"   🚩 Истинное начало найдено на {best_t:.2f}s. Установка абсолютного Занавеса на болтовню.")
-                self.all_curtains.append((0.0, best_t - 0.2))
-            else:
-                log.info("   ✅ Ранняя болтовня не обнаружена (либо текст начинается сразу).")
+        target_text = " ".join(first_lines)
+        search_len = len(first_lines)
+        
+        search_start = 0.0
+        for vs, ve in vad_mask:
+            if ve - search_start < 5.0: # Накапливаем разумный кусок для прослушивания
+                continue
                 
-        except Exception as e:
-            log.warning(f"   ❌ Ошибка Авангарда: {e}")
+            crop_end = min(ve + 1.5, len(audio_data) / sr)
+            crop = audio_data[int(search_start * sr) : int(crop_end * sr)]
+            
+            try:
+                res = model.transcribe(crop, language=lang)
+                blind_words = res.all_words()
+                if blind_words:
+                    b_texts = [re.sub(r'[^\w]', '', w.word.lower()) for w in blind_words]
+                    best_score, best_t = 0, 0.0
+                    
+                    for i in range(len(b_texts) - search_len + 1):
+                        chunk = " ".join([t for t in b_texts[i:i+search_len] if t])
+                        score = rapidfuzz.fuzz.partial_ratio(target_text, chunk)
+                        if score > 75 and score > best_score:
+                            best_score = score
+                            best_t = search_start + blind_words[i].start
+                            
+                    if best_score > 75:
+                        if best_t > 3.0:
+                            log.info(f"   🚩 Истинное начало найдено на {best_t:.2f}s. Установка абсолютного Занавеса.")
+                            self.all_curtains.append((0.0, best_t - 0.2))
+                        else:
+                            log.info("   ✅ Текст начинается сразу, занавес не требуется.")
+                        return
+            except Exception as e:
+                log.warning(f"   ❌ Ошибка Авангарда на отрезке {search_start:.1f}s: {e}")
+                
+            search_start = crop_end - 1.0 # 1 секунда перекрытия
+            
+        log.info("   ⚠️ Авангард прослушал всё аудио, но не нашел уверенного старта. Занавес не установлен.")
 
     def _platinum_skeleton(self, model, audio_data: np.ndarray, canon_words: list, lang: str):
+        """
+        V13: Строит скелет ТОЛЬКО из уникальных слов. 
+        Острова Повторов (is_island) изолированы и спрятаны от Whisper.
+        """
         log.info("[Actor] Фаза 1: Сборка жесткого скелета (Platinum)...")
-        text_for_whisper = " ".join([w["word"] for w in canon_words])
+        
+        # Индексы безопасных (уникальных) слов
+        safe_indices = [i for i, w in enumerate(canon_words) if not w.get("is_island", False)]
+        if not safe_indices:
+            log.warning("   ⚠️ Весь текст состоит из повторов! Скелет пропущен.")
+            return
+
+        text_for_whisper = " ".join([canon_words[i]["word"] for i in safe_indices])
         
         try:
             result = model.align(audio_data, text_for_whisper, language=lang)
@@ -111,40 +144,57 @@ class KaraokeAligner:
                 valid_sw.append({"clean": cl, "start": start_t, "end": end_t})
                 last_t = end_t
                 
-        canon_idx, sw_idx, anchors_count = 0, 0, 0
+        canon_idx_ptr, sw_idx, anchors_count = 0, 0, 0
         search_window = 60
         
-        while canon_idx < len(canon_words) and sw_idx < len(valid_sw):
-            best_match_len, best_c_idx = 0, -1
-            for c in range(canon_idx, min(canon_idx + search_window, len(canon_words))):
+        while canon_idx_ptr < len(safe_indices) and sw_idx < len(valid_sw):
+            best_match_len, best_ptr = 0, -1
+            for ptr in range(canon_idx_ptr, min(canon_idx_ptr + search_window, len(safe_indices))):
                 match_len = 0
-                while (c + match_len < len(canon_words) and 
+                while (ptr + match_len < len(safe_indices) and 
                        sw_idx + match_len < len(valid_sw) and 
-                       canon_words[c + match_len]["clean_text"] == valid_sw[sw_idx + match_len]["clean"]):
+                       canon_words[safe_indices[ptr + match_len]]["clean_text"] == valid_sw[sw_idx + match_len]["clean"]):
                     match_len += 1
                 if match_len > best_match_len:
-                    best_match_len, best_c_idx = match_len, c
+                    best_match_len, best_ptr = match_len, ptr
                     
             is_platinum = False
             if best_match_len >= 4: is_platinum = True
             elif best_match_len == 3:
-                chars = sum(len(canon_words[best_c_idx + k]["clean_text"]) for k in range(3))
+                chars = sum(len(canon_words[safe_indices[best_ptr + k]]["clean_text"]) for k in range(3))
                 if chars >= 12: is_platinum = True
             elif best_match_len == 2:
-                chars = sum(len(canon_words[best_c_idx + k]["clean_text"]) for k in range(2))
+                chars = sum(len(canon_words[safe_indices[best_ptr + k]]["clean_text"]) for k in range(2))
                 if chars >= 10: is_platinum = True
 
             if is_platinum:
                 for k in range(best_match_len):
-                    canon_words[best_c_idx + k]["start"] = valid_sw[sw_idx + k]["start"]
-                    canon_words[best_c_idx + k]["end"] = valid_sw[sw_idx + k]["end"]
-                canon_idx = best_c_idx + best_match_len
+                    real_idx = safe_indices[best_ptr + k]
+                    canon_words[real_idx]["start"] = valid_sw[sw_idx + k]["start"]
+                    canon_words[real_idx]["end"] = valid_sw[sw_idx + k]["end"]
+                canon_idx_ptr = best_ptr + best_match_len
                 sw_idx += best_match_len
                 anchors_count += best_match_len
             else:
                 sw_idx += 1
 
-        log.info(f"[Actor] Платиновый скелет установлен: {anchors_count}/{len(canon_words)} слов.")
+        log.info(f"[Actor] Платиновый скелет установлен: {anchors_count}/{len(safe_indices)} уникальных слов.")
+
+    def _map_repetition_islands(self, canon_words: list, audio_duration: float, vad_mask: list):
+        """V13: Раскладывает закарантиненные Острова Повторов в оставшиеся после Скелета окна."""
+        n = len(canon_words)
+        i = 0
+        while i < n:
+            if canon_words[i].get("is_island", False) and canon_words[i]["start"] == -1.0:
+                j = i
+                while j < n and canon_words[j].get("is_island", False) and canon_words[j]["start"] == -1.0: 
+                    j += 1
+                
+                t_start, t_end = get_safe_bounds(canon_words, i, j - 1, audio_duration)
+                repetition_island_mapper(canon_words, i, j - 1, t_start, t_end, vad_mask)
+                i = j
+            else:
+                i += 1
 
     # ─── ЭТАП 2: CRITIC & SURGEON ───────────────────────────────────────────────
 
@@ -410,7 +460,7 @@ class KaraokeAligner:
                 i += 1
 
     def _apply_absolute_gravity(self, words: list, audio_duration: float, vad_mask: list):
-        """V12: Абсолютная Гравитация (Fail-Safe). Срабатывает в самом финале и заливает всё без лимитов."""
+        """V13: Абсолютная Гравитация (Fail-Safe). Срабатывает в самом финале и заливает всё без лимитов."""
         log.info("🪐 [Absolute Gravity] Принудительное спасение всех оставшихся слов (Fail-Safe)...")
         n = len(words)
         
@@ -507,12 +557,17 @@ class KaraokeAligner:
         self._track_stem = os.path.basename(output_json_path).replace("_(Karaoke Lyrics).json", "")
 
         log.info("=" * 50)
-        log.info(f"Aligner СТАРТ (Symphony V12 Absolute Harmony): {self._track_stem}")
+        log.info(f"Aligner СТАРТ (Symphony V13 Master Plan): {self._track_stem}")
         
         canon_words_original = prepare_text(raw_lyrics)
         if not canon_words_original:
             with open(output_json_path, "w", encoding="utf-8") as f: json.dump([], f)
             return output_json_path
+
+        # V13: Превентивный Карантин Повторов
+        islands = find_repetition_islands(canon_words_original)
+        if islands:
+            log.info(f"🏝️ [Quarantine] Обнаружено {len(islands)} Островов Повторов. Они изолированы от нейросети.")
 
         lang = detect_language(raw_lyrics)
         model = None
@@ -529,7 +584,10 @@ class KaraokeAligner:
             model = stable_whisper.load_model(self.model_name, download_root=self.whisper_model_dir, device=self.device)
             
             self.all_curtains = sorted(iron_curtains, key=lambda x: x[0])
-            self._vanguard_protocol(model, audio_data_raw, canon_words_original, lang)
+            
+            # V13: Авангард по VAD (Разведчик)
+            self._vanguard_protocol(model, audio_data_raw, canon_words_original, lang, vad_mask)
+            
             self.all_curtains = sorted(self.all_curtains, key=lambda x: x[0])
 
             # V12: Эталонный Аудитор (Forced-Alignment Spot-Check)
@@ -561,6 +619,9 @@ class KaraokeAligner:
                     log.warning("⏱️ МАШИНА ВРЕМЕНИ: Суровая оценка забраковала результат. Запуск Aggressive Mode (Pass 2)!")
 
                 self._platinum_skeleton(model, gated_audio_data, canon_words, lang)
+                
+                # V13: Немедленно заселяем Острова Повторов в точные окна
+                self._map_repetition_islands(canon_words, audio_duration, vad_mask)
 
                 for iteration in range(3):
                     bugs = self._audit_json(canon_words)
@@ -588,8 +649,8 @@ class KaraokeAligner:
                         
                         t_start, t_end = get_safe_bounds(canon_words, s_idx, e_idx, audio_duration)
                         
-                        # V12: Остров Повторов перехватывает управление
-                        if is_repetition_island(canon_words, s_idx, e_idx):
+                        # V13: Остров Повторов перехватывает управление (Fallback)
+                        if any(canon_words[k].get("is_island", False) for k in range(s_idx, e_idx + 1)):
                             if repetition_island_mapper(canon_words, s_idx, e_idx, t_start, t_end, vad_mask):
                                 continue
 
@@ -597,7 +658,7 @@ class KaraokeAligner:
                             if macro_compass(canon_words, s_idx, e_idx, gated_audio_data, t_start, t_end, model, lang):
                                 continue 
                         
-                        if heal_by_motif_matrix(canon_words, s_idx, e_idx, audio_duration): continue
+                        if heal_by_motif_matrix(canon_words, s_idx, e_idx, audio_duration, vad_mask): continue
                         if ctc_inquisitor(canon_words, s_idx, e_idx, gated_audio_data, model, lang, t_start, t_end): continue
                         
                         if aggressive_mode:
@@ -620,7 +681,7 @@ class KaraokeAligner:
             canon_words = best_words
             score = best_score
 
-            # ─── V12: ТОЧЕЧНАЯ РЕСТАВРАЦИЯ (FALLBACK) ────────────
+            # ─── V13: ТОЧЕЧНАЯ РЕСТАВРАЦИЯ (FALLBACK) ────────────
             if score < 85.0:
                 log.warning(f"🚨 [Targeted Fallback] Оценка {score:.1f}/100. Запуск Семантической Реставрации!")
                 
@@ -639,8 +700,8 @@ class KaraokeAligner:
                     t_start = max(0.0, t_start - 0.5)
                     t_end = min(audio_duration, t_end + 0.5)
                     
-                    # V12: Сначала проверяем на Остров Повторов
-                    if is_repetition_island(canon_words, s_idx, e_idx):
+                    # V13: Проверяем на Остров Повторов
+                    if any(canon_words[k].get("is_island", False) for k in range(s_idx, e_idx + 1)):
                         if repetition_island_mapper(canon_words, s_idx, e_idx, t_start, t_end, vad_mask):
                             harpoon_used = True
                             continue
@@ -656,8 +717,7 @@ class KaraokeAligner:
                     score = evaluate_alignment_quality(canon_words, vad_mask, self.all_curtains) 
                     log.info(f"📊 Оценка качества после Реставрации: {score:.1f}/100")
 
-            # ─── V12: АБСОЛЮТНАЯ ГРАВИТАЦИЯ (ФИНАЛЬНЫЙ ЩИТ) ────────────
-            # Гарантируем, что ни одно слово не останется с таймингом -1.0
+            # ─── V13: АБСОЛЮТНАЯ ГРАВИТАЦИЯ (ФИНАЛЬНЫЙ ЩИТ) ────────────
             if any(w["start"] == -1.0 for w in canon_words):
                 self._apply_absolute_gravity(canon_words, audio_duration, vad_mask)
                 self._apply_vad_guillotine(canon_words, vad_mask)
@@ -688,7 +748,7 @@ class KaraokeAligner:
         with open(output_json_path, "w", encoding="utf-8") as f:
             json.dump(final_json, f, ensure_ascii=False, indent=2)
 
-        dump_debug("12_Absolute_Harmony", final_json, self._track_stem)
+        dump_debug("13_Master_Plan", final_json, self._track_stem)
         log.info(f"Aligner ГОТОВО → {output_json_path}")
         log.info("=" * 50)
         
