@@ -6,14 +6,74 @@ from aligner_utils import get_safe_bounds, get_vowel_weight, get_phonetic_bounds
 
 log = get_logger("aligner_orchestra")
 
+# ─── V12: ОСТРОВ ПОВТОРОВ (REPETITION ISLAND MAPPER) ───────────────────────
+
+def repetition_island_mapper(words: list, s_idx: int, e_idx: int, t_start: float, t_end: float, vad_mask: list) -> bool:
+    """
+    V12: Накладывает повторяющиеся строки чисто математически (фонетически)
+    строго на доступные куски голоса (VAD). Игнорирует тишину.
+    Нейросеть (Whisper) здесь НЕ используется.
+    """
+    if t_end <= t_start: return False
+    
+    log.info(f"🏝️ [Repetition Island] Найдена зона повторов [{s_idx}-{e_idx}]. Запуск структурного маппинга по VAD...")
+    
+    valid_vads = []
+    for (vs, ve) in vad_mask:
+        c_s, c_e = max(t_start, vs), min(t_end, ve)
+        if c_e - c_s > 0.05: valid_vads.append((c_s, c_e))
+        
+    if not valid_vads:
+        log.warning("   ⚠️ На Острове Повторов нет голоса (VAD). Маппинг отменен.")
+        return False
+        
+    weights = [get_vowel_weight(words[k]["clean_text"], words[k]["line_break"]) for k in range(s_idx, e_idx + 1)]
+    total_w = sum(weights)
+    
+    # Физическое время звучания голоса на острове
+    total_vad_time = sum(e - s for s, e in valid_vads)
+    
+    curr_t = 0.0
+    mapped_count = 0
+    
+    for k in range(s_idx, e_idx + 1):
+        # Доля времени для этого слова (относительно всего доступного VAD)
+        w_logic_dur = (weights[k-s_idx] / total_w) * total_vad_time
+        
+        # Находим физическое время начала слова
+        accum, mapped_s = 0.0, valid_vads[0][0]
+        for (vs, ve) in valid_vads:
+            dur = ve - vs
+            if curr_t <= accum + dur:
+                mapped_s = vs + (curr_t - accum)
+                break
+            accum += dur
+            
+        # Находим физическое время конца слова
+        accum, mapped_e = 0.0, valid_vads[-1][1]
+        for (vs, ve) in valid_vads:
+            dur = ve - vs
+            # Берем 90% длительности, чтобы оставить микро-зазор между словами
+            if curr_t + w_logic_dur * 0.9 <= accum + dur:
+                mapped_e = vs + (curr_t + w_logic_dur * 0.9 - accum)
+                break
+            accum += dur
+            
+        words[k]["start"] = mapped_s
+        words[k]["end"] = mapped_e
+        words[k]["dtw_tried"] = True
+        
+        curr_t += w_logic_dur
+        mapped_count += 1
+        
+    log.info(f"   ✅ Маппинг Острова завершен: уложено {mapped_count} слов на {len(valid_vads)} кусков VAD.")
+    return True
+
 # ─── V11: СЕМАНТИЧЕСКИЙ ГАРПУН (SEMANTIC HARPOON) ──────────────────────────
 
 def semantic_harpoon(words: list, s_idx: int, e_idx: int, audio_data: np.ndarray, t_start: float, t_end: float, model, lang: str) -> bool:
     """
-    V11: Умная Точечная Реставрация через слепое прослушивание (Transcribe).
-    Вместо принудительного размазывания слов (Align), Гарпун слушает аудио,
-    ищет в нем наши потерянные слова и прибивает их только при хорошем совпадении.
-    Остальное (паузы, соло, шум) игнорируется.
+    Умная Точечная Реставрация через слепое прослушивание (Transcribe).
     """
     if t_end - t_start < 0.5: return False
     
@@ -24,7 +84,7 @@ def semantic_harpoon(words: list, s_idx: int, e_idx: int, audio_data: np.ndarray
     if len(crop) < sr * 0.5: return False
     
     try:
-        # 1. Слепая транскрибация куска аудио (Vanilla)
+        # 1. Слепая транскрибация куска аудио
         result = model.transcribe(crop, language=lang)
         blind_words = result.all_words()
         
@@ -45,17 +105,13 @@ def semantic_harpoon(words: list, s_idx: int, e_idx: int, audio_data: np.ndarray
             clean = words[k]["clean_text"]
             best_score, best_idx = 0, -1
             
-            # Ищем совпадение в небольшом окне (защита от сдвигов)
             for j in range(b_ptr, min(b_ptr + 5, len(b_texts))):
                 score = rapidfuzz.fuzz.ratio(clean, b_texts[j])
                 if score > best_score:
                     best_score, best_idx = score, j
             
-            # Если слово совпало хотя бы на 60%
             if best_idx != -1 and best_score > 60:
                 bw = blind_words[best_idx]
-                
-                # Фильтр от сумасшедших таймингов (Whisper может выдавать слова по 0.02 сек или по 5 сек)
                 dur = bw.end - bw.start
                 _, max_dur = get_phonetic_bounds(clean, words[k]["line_break"])
                 
@@ -63,7 +119,6 @@ def semantic_harpoon(words: list, s_idx: int, e_idx: int, audio_data: np.ndarray
                     mapped_s = t_start - 0.2 + bw.start
                     mapped_e = t_start - 0.2 + bw.end
                     
-                    # Прибиваем слово намертво
                     words[k]["start"] = mapped_s
                     words[k]["end"] = mapped_e
                     words[k]["dtw_tried"] = True
@@ -81,17 +136,17 @@ def semantic_harpoon(words: list, s_idx: int, e_idx: int, audio_data: np.ndarray
         
     return False
 
-# ─── V11: MACRO-COMPASS (ДЕТЕКТОР ГЛОБАЛЬНОГО РАССИНХРОНА) ───────────────────
+# ─── V12: УКРОЩЕННЫЙ МАКРО-КОМПАС (LEASHED COMPASS) ──────────────────────────
 
 def macro_compass(words: list, s_idx: int, e_idx: int, audio_data: np.ndarray, t_start: float, t_end: float, model, lang: str) -> bool:
     """
-    Слепая транскрибация для починки 'Порванных строк'.
-    Если алгоритм слышит слова из "будущего", он сдвигает указатель текста вперед.
+    V12: Слепая транскрибация для починки 'Порванных строк'.
+    Заглядывает в будущее МАКСИМУМ на 5 слов, чтобы не сломать трек на повторах.
     """
     if (e_idx - s_idx) < 2: return False 
     if t_end - t_start < 1.0: return False
     
-    log.info(f"🧭 [Macro-Compass] Проверка глобального рассинхрона [{s_idx}-{e_idx}]...")
+    log.info(f"🧭 [Macro-Compass] Проверка локального рассинхрона [{s_idx}-{e_idx}]...")
     sr = 16000
     crop = audio_data[int(t_start * sr) : int(t_end * sr)]
     if len(crop) < sr * 0.2: return False
@@ -104,7 +159,8 @@ def macro_compass(words: list, s_idx: int, e_idx: int, audio_data: np.ndarray, t
         b_texts = [re.sub(r'[^\w]', '', w.word.lower()) for w in blind_words if w.word.strip()]
         if not b_texts: return False
         
-        lookahead_limit = min(len(words), e_idx + 25)
+        # V12: Жесткий поводок. Компас не может смотреть дальше 5 слов.
+        lookahead_limit = min(len(words), e_idx + 5)
         best_match_score = 0
         best_match_idx = -1
         
