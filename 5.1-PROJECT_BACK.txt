@@ -288,13 +288,16 @@ def detect_language(text: str) -> str:
     return "en"     
 
 def prepare_text(text: str) -> list:
-    """Очищает текст и превращает его в список словарей-якорей."""
+    """
+    V5.0: Очищает текст и добавляет 'line_num' для Строкового Мышления (Line-First Alignment).
+    """
     text = re.sub(r'[\x5B\x28].*?[\x5D\x29]', '', text)
     text = re.sub(r'([a-zA-Z\u0400-\u04FFёЁ])([\x2D\u2013\u2014]+)([a-zA-Z\u0400-\u04FFёЁ])', r'\1\2 \3', text)
     text = re.sub(r'[ \t]{2,}', ' ', text)
     text = re.sub(r'\n{3,}', '\n\n', text)
 
     words_list = []
+    line_num = 0
     for raw_line in text.splitlines():
         line = raw_line.strip()
         if not line: continue
@@ -310,33 +313,29 @@ def prepare_text(text: str) -> list:
                     "clean_text": clean,
                     "has_punct": has_punct,
                     "line_break": is_last_in_line,
+                    "line_num": line_num,  # 🧱 Привязка слова к монолитной строке
                     "start": -1.0,
                     "end": -1.0,
                     "dtw_tried": False
                 })
+        line_num += 1
     return words_list
 
 def is_repetition_island(words: list, s_idx: int, e_idx: int) -> bool:
-    """
-    V12: Определяет, состоит ли участок текста из жестких повторов.
-    Если уникальных слов мало по сравнению с общим объемом — это Остров Повторов.
-    """
+    """Адаптивный целевой сканер Острова Повторов."""
     length = e_idx - s_idx + 1
-    if length < 4: return False
+    if length < 5: return False
     
-    text_chunk = [words[i]["clean_text"] for i in range(s_idx, e_idx + 1)]
+    text_chunk = [words[i]["clean_text"] for i in range(s_idx, e_idx + 1) if words[i]["clean_text"]]
+    if not text_chunk: return False
+    
     unique_words = set(text_chunk)
-    
-    # Коэффициент уникальности (чем ниже, тем больше повторов)
-    ratio = len(unique_words) / length
-    
-    # Дополнительно: проверяем, повторяется ли хотя бы одно слово много раз
+    ratio = len(unique_words) / len(text_chunk)
     max_repeats = max(text_chunk.count(w) for w in unique_words)
     
-    # Если уникальных слов меньше 45% или какое-то слово повторяется 3+ раз подряд
-    return ratio < 0.45 or max_repeats >= 3
+    return ratio <= 0.40 or (max_repeats >= 3 and ratio < 0.60)
 
-# ─── ФОНЕТИЧЕСКАЯ МАТЕМАТИКА ────────────────────────────────────────────────
+# ─── ФОНЕТИЧЕСКАЯ МАТЕМАТИКА И ПЛОТНОСТИ (V5.0) ─────────────────────────────
 
 def get_vowel_weight(word: str, is_line_end: bool) -> float:
     """Вычисляет фонетический вес слова (длительность произношения)."""
@@ -365,6 +364,28 @@ def get_phonetic_bounds(clean_text: str, is_line_end: bool) -> tuple:
     
     return min_dur, max_dur
 
+def get_line_phonetic_bounds(words: list, s_idx: int, e_idx: int) -> tuple:
+    """
+    V5.0: Вычисляет Фонетическую Массу целой фразы/строки.
+    Используется для оценки Баланса Масс при сдвигах и растяжениях.
+    """
+    total_min = 0.0
+    total_max = 0.0
+    for i in range(s_idx, e_idx + 1):
+        min_d, max_d = get_phonetic_bounds(words[i]["clean_text"], words[i]["line_break"])
+        total_min += min_d
+        total_max += max_d
+    return total_min, total_max
+
+def calculate_phrase_density(words: list, s_idx: int, e_idx: int, t_start: float, t_end: float) -> float:
+    """
+    V5.0: Вычисляет Плотность (Density) отрезка.
+    Если плотность << 1.0 (например, 0.1), значит текст размазан по тишине или болтовне (False Start).
+    """
+    if t_end <= t_start: return 0.0
+    mass_min, _ = get_line_phonetic_bounds(words, s_idx, e_idx)
+    return mass_min / (t_end - t_start)
+
 def get_safe_bounds(words: list, s_idx: int, e_idx: int, audio_duration: float) -> tuple:
     """Ищет жесткие границы времени, между которыми находится слепая зона."""
     t_start = 0.0
@@ -384,13 +405,28 @@ def get_safe_bounds(words: list, s_idx: int, e_idx: int, audio_duration: float) 
         
     return t_start, t_end
 
-# ─── V12: СЕМАНТИЧЕСКАЯ СИСТЕМА ОЦЕНКИ (SEMANTIC EVALUATOR) ────────────────
+def calculate_overlap(t_start: float, t_end: float, mask: list) -> float:
+    """Вычисляет, сколько времени из отрезка попадает внутрь переданной маски VAD."""
+    overlap = 0.0
+    for ms, me in mask:
+        o_s = max(t_start, ms)
+        o_e = min(t_end, me)
+        if o_e > o_s:
+            overlap += (o_e - o_s)
+    return overlap
 
-def evaluate_alignment_quality(words: list, vad_mask: list, curtains: list, spot_check_fn=None) -> float:
+def get_vad_capacity(t_start: float, t_end: float, combined_vad: list) -> float:
     """
-    V12: "Absolute Harmony" Evaluator.
-    Внедрен Void Penalty (-5 баллов за КАЖДОЕ ненайденное слово).
-    Смысловой Аудит (Spot Check) использует Forced Alignment.
+    V5.0: Семантическая обертка для расчета Емкости VAD.
+    Показывает, сколько физического голоса есть в "Дыре" для вставки текста.
+    """
+    return calculate_overlap(t_start, t_end, combined_vad)
+
+# ─── СЕМАНТИЧЕСКАЯ СИСТЕМА ОЦЕНКИ (SEMANTIC EVALUATOR) ──────────────────────
+
+def evaluate_alignment_quality(words: list, strong_vad: list, weak_vad: list, curtains: list, spot_check_fn=None) -> float:
+    """
+    V5.0: Динамический контроль за макро-структурой (без жестких секундных констант).
     """
     score = 100.0
     total = len(words)
@@ -402,6 +438,8 @@ def evaluate_alignment_quality(words: list, vad_mask: list, curtains: list, spot
     torn_lines = 0
     hallucinations = 0
 
+    combined_vad = sorted(strong_vad + weak_vad, key=lambda x: x[0])
+
     for i, w in enumerate(words):
         if w["start"] == -1.0:
             unresolved += 1
@@ -409,69 +447,53 @@ def evaluate_alignment_quality(words: list, vad_mask: list, curtains: list, spot
         
         dur = w["end"] - w["start"]
         
-        # 1. Физическая деформация
-        if dur < 0.06:
-            squeezed += 1
+        if dur < 0.06: squeezed += 1
         min_dur, max_dur = get_phonetic_bounds(w["clean_text"], w["line_break"])
-        if dur > max_dur * 1.5: 
-            overstretched += 1
+        if dur > max_dur * 1.5: overstretched += 1
 
-        # 2. Галлюцинации (VAD-Overlap)
-        overlap = 0.0
-        for vs, ve in vad_mask:
-            o_s = max(w["start"], vs)
-            o_e = min(w["end"], ve)
-            if o_e > o_s:
-                overlap += (o_e - o_s)
-        
+        # Галлюцинации (VAD-Overlap) - штраф за слова, поставленные в абсолютную тишину
+        overlap = calculate_overlap(w["start"], w["end"], combined_vad)
         if dur > 0 and (overlap / dur) < 0.1:
             hallucinations += 1
 
-        # 3. Мягкая проверка натяжения (Smart Line Tension)
-        if i < total - 1 and not w["line_break"]:
+        # V5.0: Динамическая проверка разрыва строки (Intra-line Cohesion)
+        # Штрафуем только если слова принадлежат одной строке, но между ними огромная пауза.
+        if i < total - 1 and w["line_num"] == words[i+1]["line_num"]:
             next_w = words[i+1]
             if next_w["start"] != -1.0:
                 gap = next_w["start"] - w["end"]
+                # Допустимая пауза внутри строки зависит от длины самого слова, а не равна жестким 3.0с
+                allowed_pause = max(1.5, max_dur * 2.0) 
                 
-                # Прощаем долгие разрывы (до 3с), но проверяем VAD
-                if gap > 3.0: 
+                if gap > allowed_pause: 
                     has_curtain = any(c_s >= w["end"] and c_e <= next_w["start"] for c_s, c_e in curtains)
                     if not has_curtain:
-                        vad_in_gap = sum((min(next_w["start"], ve) - max(w["end"], vs)) 
-                                         for vs, ve in vad_mask if min(next_w["start"], ve) > max(w["end"], vs))
-                        if vad_in_gap > 1.5: # Наказываем только если в дыре > 1.5 сек реального голоса
+                        vad_in_gap = calculate_overlap(w["end"], next_w["start"], combined_vad)
+                        if vad_in_gap > 1.0: # Если в паузе есть чужой голос - это 100% разрыв
                             torn_lines += 1
 
-    # V12: Жестокий Оценщик Пустот (Void Penalty)
-    # Каждое ненайденное слово бьет по оценке ОЧЕНЬ больно. 20 потерянных слов (как финал Доры) = 0 баллов.
+    # Штрафы за физические аномалии таймлайна
     score -= unresolved * 5.0
-    
     score -= (squeezed / total) * 100 * 0.5
     score -= (overstretched / total) * 100 * 0.5 
     score -= torn_lines * 5.0 
     score -= hallucinations * 5.0
 
-    # 4. V12: Смысловой Аудитор (Spot-Check с использованием Forced Alignment)
+    # Семантический Аудитор (Сверка текста и аудио эталоном Whisper)
     if score >= 80.0 and spot_check_fn is not None:
         valid_indices = [i for i, w in enumerate(words) if w["start"] != -1.0 and (w["end"] - w["start"]) > 0.2]
-        
         if len(valid_indices) >= 10:
             check_points = random.sample(valid_indices[5:-5], min(2, len(valid_indices) - 10))
-            
             failed_checks = 0
             for idx in check_points:
                 w = words[idx]
                 t_start = max(0.0, w["start"] - 0.5)
                 t_end = w["end"] + 0.5
-                
                 target_phrase = " ".join([words[k]["clean_text"] for k in range(max(0, idx-1), min(total, idx+2))])
-                
-                # spot_check_fn теперь использует model.align (Forced Alignment) в Главном Дирижере
                 if not spot_check_fn(t_start, t_end, target_phrase):
                     failed_checks += 1
-                    
             if failed_checks > 0:
-                score -= 30.0 # Огромный штраф за семантический рассинхрон
+                score -= 30.0 
 
     return max(0.0, score)
 
@@ -754,204 +776,27 @@ import re
 import numpy as np
 import rapidfuzz
 from app_logger import get_logger
-from aligner_utils import get_safe_bounds, get_vowel_weight, get_phonetic_bounds
+from aligner_utils import (
+    get_safe_bounds, get_vowel_weight, get_phonetic_bounds, 
+    calculate_overlap, is_repetition_island
+)
 
 log = get_logger("aligner_orchestra")
 
-# ─── V12: ОСТРОВ ПОВТОРОВ (REPETITION ISLAND MAPPER) ───────────────────────
+class Proposal:
+    """Обертка для предложенных таймингов от инструмента на Арене."""
+    def __init__(self, source_name: str, timings: list):
+        self.source_name = source_name
+        self.timings = timings  # Список dict: [{"start": 1.0, "end": 1.5}, ...]
+        self.score = 0.0
 
-def repetition_island_mapper(words: list, s_idx: int, e_idx: int, t_start: float, t_end: float, vad_mask: list) -> bool:
-    """
-    V12: Накладывает повторяющиеся строки чисто математически (фонетически)
-    строго на доступные куски голоса (VAD). Игнорирует тишину.
-    Нейросеть (Whisper) здесь НЕ используется.
-    """
-    if t_end <= t_start: return False
-    
-    log.info(f"🏝️ [Repetition Island] Найдена зона повторов [{s_idx}-{e_idx}]. Запуск структурного маппинга по VAD...")
-    
-    valid_vads = []
-    for (vs, ve) in vad_mask:
-        c_s, c_e = max(t_start, vs), min(t_end, ve)
-        if c_e - c_s > 0.05: valid_vads.append((c_s, c_e))
-        
-    if not valid_vads:
-        log.warning("   ⚠️ На Острове Повторов нет голоса (VAD). Маппинг отменен.")
-        return False
-        
-    weights = [get_vowel_weight(words[k]["clean_text"], words[k]["line_break"]) for k in range(s_idx, e_idx + 1)]
-    total_w = sum(weights)
-    
-    # Физическое время звучания голоса на острове
-    total_vad_time = sum(e - s for s, e in valid_vads)
-    
-    curr_t = 0.0
-    mapped_count = 0
-    
-    for k in range(s_idx, e_idx + 1):
-        # Доля времени для этого слова (относительно всего доступного VAD)
-        w_logic_dur = (weights[k-s_idx] / total_w) * total_vad_time
-        
-        # Находим физическое время начала слова
-        accum, mapped_s = 0.0, valid_vads[0][0]
-        for (vs, ve) in valid_vads:
-            dur = ve - vs
-            if curr_t <= accum + dur:
-                mapped_s = vs + (curr_t - accum)
-                break
-            accum += dur
-            
-        # Находим физическое время конца слова
-        accum, mapped_e = 0.0, valid_vads[-1][1]
-        for (vs, ve) in valid_vads:
-            dur = ve - vs
-            # Берем 90% длительности, чтобы оставить микро-зазор между словами
-            if curr_t + w_logic_dur * 0.9 <= accum + dur:
-                mapped_e = vs + (curr_t + w_logic_dur * 0.9 - accum)
-                break
-            accum += dur
-            
-        words[k]["start"] = mapped_s
-        words[k]["end"] = mapped_e
-        words[k]["dtw_tried"] = True
-        
-        curr_t += w_logic_dur
-        mapped_count += 1
-        
-    log.info(f"   ✅ Маппинг Острова завершен: уложено {mapped_count} слов на {len(valid_vads)} кусков VAD.")
-    return True
+# ─── АРЕНА: КАНДИДАТ 1 (MOTIF MATRIX) ───────────────────────────────────────
 
-# ─── V11: СЕМАНТИЧЕСКИЙ ГАРПУН (SEMANTIC HARPOON) ──────────────────────────
-
-def semantic_harpoon(words: list, s_idx: int, e_idx: int, audio_data: np.ndarray, t_start: float, t_end: float, model, lang: str) -> bool:
-    """
-    Умная Точечная Реставрация через слепое прослушивание (Transcribe).
-    """
-    if t_end - t_start < 0.5: return False
-    
-    log.info(f"🎯 [Semantic Harpoon] Точечная реставрация слепым прослушиванием для слов [{s_idx}-{e_idx}]...")
-    
-    sr = 16000
-    crop = audio_data[int(max(0, t_start - 0.2) * sr) : int(min(len(audio_data), (t_end + 0.2) * sr))]
-    if len(crop) < sr * 0.5: return False
-    
-    try:
-        # 1. Слепая транскрибация куска аудио
-        result = model.transcribe(crop, language=lang)
-        blind_words = result.all_words()
-        
-        if not blind_words:
-            log.warning("   ❌ Гарпун не услышал ни одного слова в зоне.")
-            return False
-
-        b_texts = [re.sub(r'[^\w]', '', w.word.lower()) for w in blind_words if w.word.strip()]
-        
-        if not b_texts:
-            return False
-
-        healed = 0
-        b_ptr = 0
-        
-        # 2. Нечеткий поиск (Fuzzy Match)
-        for k in range(s_idx, e_idx + 1):
-            clean = words[k]["clean_text"]
-            best_score, best_idx = 0, -1
-            
-            for j in range(b_ptr, min(b_ptr + 5, len(b_texts))):
-                score = rapidfuzz.fuzz.ratio(clean, b_texts[j])
-                if score > best_score:
-                    best_score, best_idx = score, j
-            
-            if best_idx != -1 and best_score > 60:
-                bw = blind_words[best_idx]
-                dur = bw.end - bw.start
-                _, max_dur = get_phonetic_bounds(clean, words[k]["line_break"])
-                
-                if 0.05 < dur <= max_dur * 1.5:
-                    mapped_s = t_start - 0.2 + bw.start
-                    mapped_e = t_start - 0.2 + bw.end
-                    
-                    words[k]["start"] = mapped_s
-                    words[k]["end"] = mapped_e
-                    words[k]["dtw_tried"] = True
-                    b_ptr = best_idx + 1
-                    healed += 1
-                else:
-                    log.warning(f"   ⚠️ Слово '{clean}' найдено, но забраковано из-за длины ({dur:.2f}s).")
-                    
-        if healed > 0:
-            log.info(f"   ✅ Гарпун восстановил {healed}/{(e_idx - s_idx + 1)} слов.")
-            return True
-            
-    except Exception as e:
-        log.warning(f"   ❌ Ошибка Гарпуна: {e}")
-        
-    return False
-
-# ─── V12: УКРОЩЕННЫЙ МАКРО-КОМПАС (LEASHED COMPASS) ──────────────────────────
-
-def macro_compass(words: list, s_idx: int, e_idx: int, audio_data: np.ndarray, t_start: float, t_end: float, model, lang: str) -> bool:
-    """
-    V12: Слепая транскрибация для починки 'Порванных строк'.
-    Заглядывает в будущее МАКСИМУМ на 5 слов, чтобы не сломать трек на повторах.
-    """
-    if (e_idx - s_idx) < 2: return False 
-    if t_end - t_start < 1.0: return False
-    
-    log.info(f"🧭 [Macro-Compass] Проверка локального рассинхрона [{s_idx}-{e_idx}]...")
-    sr = 16000
-    crop = audio_data[int(t_start * sr) : int(t_end * sr)]
-    if len(crop) < sr * 0.2: return False
-    
-    try:
-        result = model.transcribe(crop, language=lang)
-        blind_words = result.all_words()
-        if not blind_words: return False
-        
-        b_texts = [re.sub(r'[^\w]', '', w.word.lower()) for w in blind_words if w.word.strip()]
-        if not b_texts: return False
-        
-        # V12: Жесткий поводок. Компас не может смотреть дальше 5 слов.
-        lookahead_limit = min(len(words), e_idx + 5)
-        best_match_score = 0
-        best_match_idx = -1
-        
-        for future_idx in range(e_idx + 1, lookahead_limit - 2):
-            phrase = [words[future_idx + k]["clean_text"] for k in range(3)]
-            for b_i in range(len(b_texts) - 2):
-                score1 = rapidfuzz.fuzz.ratio(phrase[0], b_texts[b_i])
-                score2 = rapidfuzz.fuzz.ratio(phrase[1], b_texts[b_i+1])
-                score3 = rapidfuzz.fuzz.ratio(phrase[2], b_texts[b_i+2])
-                
-                avg_score = (score1 + score2 + score3) / 3.0
-                if avg_score > 75 and avg_score > best_match_score:
-                    best_match_score = avg_score
-                    best_match_idx = future_idx
-                    
-        if best_match_score > 75:
-            shift_amount = best_match_idx - s_idx
-            log.warning(f"   🚨 [Macro-Compass] РАССИНХРОН! Артист поет '{words[best_match_idx]['clean_text']}', а мы ищем '{words[s_idx]['clean_text']}'")
-            log.warning(f"   🔄 Сдвиг якорей на {shift_amount} слов вперед.")
-            
-            for k in range(s_idx, best_match_idx):
-                words[k]["start"] = words[k]["end"] = -1.0
-                
-            for k in range(best_match_idx, min(len(words), best_match_idx + len(blind_words))):
-                words[k]["start"] = words[k]["end"] = -1.0
-            return True
-            
-    except Exception as e:
-        log.warning(f"   ❌ Ошибка Компаса: {e}")
-        
-    return False
-
-# ─── ИНСТРУМЕНТЫ ИСЦЕЛЕНИЯ (HEALERS) ────────────────────────────────────────
-
-def heal_by_motif_matrix(words: list, s_idx: int, e_idx: int, audio_duration: float) -> bool:
-    """Ищет идентичные здоровые строки-двойники во всем тексте и клонирует их тайминги."""
+def propose_motif_matrix(words: list, s_idx: int, e_idx: int, audio_duration: float, strong_vad: list) -> Proposal:
+    """Ищет здорового двойника (припев) и предлагает его тайминги."""
     target_phrase = " ".join([words[i]["clean_text"] for i in range(s_idx, e_idx + 1)])
     target_len = e_idx - s_idx + 1
-    if target_len < 2: return False
+    if target_len < 2: return None
     
     for i in range(len(words) - target_len + 1):
         if max(0, s_idx - target_len) <= i <= e_idx: continue
@@ -962,28 +807,38 @@ def heal_by_motif_matrix(words: list, s_idx: int, e_idx: int, audio_duration: fl
                 twin_dur = words[i + target_len - 1]["end"] - words[i]["start"]
                 if twin_dur < 0.2: continue
                 
-                log.info(f"🧬 [Motif Matrix] Найден здоровый двойник. Копирование матрицы для [{s_idx}-{e_idx}]!")
-                t_start, _ = get_safe_bounds(words, s_idx, e_idx, audio_duration)
-                src_start = words[i]["start"]
+                t_start, t_end = get_safe_bounds(words, s_idx, e_idx, audio_duration)
                 
+                # Магнетизм к уверенному голосу (Strong VAD)
+                vad_start = t_start
+                for vs, ve in strong_vad:
+                    if ve > t_start + 0.2:
+                        vad_start = max(t_start, vs)
+                        break
+                        
+                if vad_start + twin_dur > t_end + 1.0:
+                    vad_start = max(t_start, t_end - twin_dur)
+                
+                src_start = words[i]["start"]
+                timings = []
                 for k in range(target_len):
                     rel_s = words[i + k]["start"] - src_start
                     rel_dur = words[i + k]["end"] - words[i + k]["start"]
-                    
-                    new_s = t_start + rel_s
+                    new_s = vad_start + rel_s
                     new_e = new_s + rel_dur
-                    words[s_idx + k]["start"] = new_s
-                    words[s_idx + k]["end"] = max(new_s + 0.05, new_e)
-                return True
-    return False
+                    timings.append({"start": new_s, "end": max(new_s + 0.05, new_e)})
+                
+                return Proposal("Motif Matrix", timings)
+    return None
 
-def ctc_inquisitor(words: list, s_idx: int, e_idx: int, audio_data: np.ndarray, model, lang: str, t_start: float, t_end: float) -> bool:
-    """Принудительный forced alignment на битом участке (допрос с пристрастием)."""
-    if t_end - t_start < 0.3: return False
-    log.info(f"⚔️ [CTC Inquisitor] Принудительный допрос (Forced Alignment) слов [{s_idx}-{e_idx}]...")
+# ─── АРЕНА: КАНДИДАТ 2 (CTC INQUISITOR) ─────────────────────────────────────
+
+def propose_inquisitor(words: list, s_idx: int, e_idx: int, audio_data: np.ndarray, model, lang: str, t_start: float, t_end: float) -> Proposal:
+    """Принудительный Forced Alignment через Wav2Vec2."""
+    if t_end - t_start < 0.3: return None
     sr = 16000
     crop = audio_data[int(t_start * sr) : int(t_end * sr)]
-    if len(crop) < sr * 0.2: return False
+    if len(crop) < sr * 0.2: return None
     
     text = " ".join([words[i]["word"] for i in range(s_idx, e_idx + 1)])
     try:
@@ -992,7 +847,7 @@ def ctc_inquisitor(words: list, s_idx: int, e_idx: int, audio_data: np.ndarray, 
         
         valid_words = [w for w in sw_words if w.end - w.start >= 0.05]
         if len(valid_words) >= (e_idx - s_idx + 1) * 0.4:
-            log.info("   ✅ Инквизитор успешно восстановил участок.")
+            timings = []
             c_ptr = 0
             for k in range(s_idx, e_idx + 1):
                 clean = words[k]["clean_text"]
@@ -1004,73 +859,269 @@ def ctc_inquisitor(words: list, s_idx: int, e_idx: int, audio_data: np.ndarray, 
                         best_score, best_match = score, j
                 
                 if best_match != -1 and best_score > 60:
-                    words[k]["start"] = t_start + valid_words[best_match].start
-                    words[k]["end"] = t_start + valid_words[best_match].end
+                    timings.append({
+                        "start": t_start + valid_words[best_match].start,
+                        "end": t_start + valid_words[best_match].end
+                    })
                     c_ptr = best_match + 1
-            return True
-    except Exception as e:
-        log.warning(f"   ❌ Ошибка Инквизитора: {e}")
-    return False
+                else:
+                    return None
+            return Proposal("CTC Inquisitor", timings)
+    except Exception:
+        pass
+    return None
 
-def heal_phonetic_loom(words: list, s_idx: int, e_idx: int, t_start: float, t_end: float, vad_mask: list) -> bool:
-    """Эластичный Ткацкий станок. Ограничивает растягивание слов по пустому VAD (когда нет других вариантов)."""
-    log.info(f"[Orchestra] Ткацкий станок (The Loom) для слов {s_idx}-{e_idx}...")
+# ─── АРЕНА: КАНДИДАТ 3 (SEMANTIC HARPOON - АВАНГАРД АРЕНЫ) ──────────────────
+
+def propose_harpoon(words: list, s_idx: int, e_idx: int, audio_data: np.ndarray, model, lang: str, t_start: float, t_end: float) -> Proposal:
+    """Слепой Whisper на уровне слов. Отлично спасает сброшенные интро."""
+    if t_end - t_start < 0.5: return None
+    sr = 16000
+    crop = audio_data[int(max(0, t_start - 0.2) * sr) : int(min(len(audio_data), (t_end + 0.2) * sr))]
+    if len(crop) < sr * 0.5: return None
+    
+    try:
+        result = model.transcribe(crop, language=lang)
+        blind_words = result.all_words()
+        if not blind_words: return None
+
+        b_texts = [re.sub(r'[^\w]', '', w.word.lower()) for w in blind_words if w.word.strip()]
+        if not b_texts: return None
+
+        timings = []
+        b_ptr = 0
+        for k in range(s_idx, e_idx + 1):
+            clean = words[k]["clean_text"]
+            best_score, best_idx = 0, -1
+            
+            for j in range(b_ptr, min(b_ptr + 5, len(b_texts))):
+                score = rapidfuzz.fuzz.ratio(clean, b_texts[j])
+                if score > best_score:
+                    best_score, best_idx = score, j
+            
+            if best_idx != -1 and best_score > 60:
+                bw = blind_words[best_idx]
+                min_dur, max_dur = get_phonetic_bounds(clean, words[k]["line_break"])
+                dur = bw.end - bw.start
+                if 0.05 < dur <= max_dur * 1.5:
+                    timings.append({
+                        "start": t_start - 0.2 + bw.start,
+                        "end": t_start - 0.2 + bw.end
+                    })
+                    b_ptr = best_idx + 1
+                else:
+                    return None
+            else:
+                return None
+        return Proposal("Semantic Harpoon", timings)
+    except Exception:
+        pass
+    return None
+
+# ─── АРЕНА: КАНДИДАТ 4 (LINE-FIRST PHONETIC LOOM V5.0) ──────────────────────
+
+def propose_loom(words: list, s_idx: int, e_idx: int, t_start: float, t_end: float, strong_vad: list, weak_vad: list) -> Proposal:
+    """V5.0: Line-First Loom. Сначала выделяет место Строке, затем распределяет слова внутри неё."""
+    combined_vad = sorted(strong_vad + weak_vad, key=lambda x: x[0])
     
     valid_vads = []
-    for (vs, ve) in vad_mask:
+    for (vs, ve) in combined_vad:
         c_s, c_e = max(t_start, vs), min(t_end, ve)
         if c_e - c_s > 0.05: valid_vads.append((c_s, c_e))
         
     if not valid_vads:
         valid_vads = [(t_start, t_end)]
         
-    weights = [get_vowel_weight(words[k]["clean_text"], words[k]["line_break"]) for k in range(s_idx, e_idx + 1)]
-    total_w = sum(weights)
-    
-    required_time = total_w * 0.3
+    def _map_time(t_vad: float, vads: list) -> float:
+        """Переводит VAD-время в реальное время."""
+        accum = 0.0
+        for (vs, ve) in vads:
+            d = ve - vs
+            if t_vad <= accum + d:
+                return vs + (t_vad - accum)
+            accum += d
+        return vads[-1][1]
+
+    # 1. Группируем слова в Строки
+    lines = []
+    curr_line = []
+    for k in range(s_idx, e_idx + 1):
+        curr_line.append(k)
+        if words[k]["line_break"] or k == e_idx:
+            lines.append(curr_line)
+            curr_line = []
+            
     total_vad_time = sum(e - s for s, e in valid_vads)
     
-    if total_vad_time > required_time * 1.5:
-        allowed_time = required_time * 1.2
-        trimmed_vads = []
-        accum = 0.0
-        for vs, ve in valid_vads:
-            dur = ve - vs
-            if accum + dur <= allowed_time:
-                trimmed_vads.append((vs, ve))
-                accum += dur
-            else:
-                trimmed_vads.append((vs, vs + (allowed_time - accum)))
-                break
-        valid_vads = trimmed_vads
-        total_vad_time = sum(e - s for s, e in valid_vads)
+    # Считаем вес Строк
+    line_weights = [sum(get_vowel_weight(words[k]["clean_text"], words[k]["line_break"]) for k in line) for line in lines]
+    total_w = sum(line_weights) if sum(line_weights) > 0 else 1.0
+    
+    timings = []
+    curr_vad_t = 0.0
+    
+    for l_idx, line in enumerate(lines):
+        lw = line_weights[l_idx]
+        l_vad_dur = (lw / total_w) * total_vad_time
         
-    curr_t = 0.0
-    for k in range(s_idx, e_idx + 1):
-        w_logic_dur = (weights[k-s_idx] / total_w) * total_vad_time
+        # Получаем реальные границы короба для всей Строки
+        l_start_real = _map_time(curr_vad_t, valid_vads)
+        l_end_real = _map_time(curr_vad_t + l_vad_dur, valid_vads)
         
-        accum, mapped_s, mapped_e = 0.0, valid_vads[0][0], valid_vads[-1][1]
-        
-        for (vs, ve) in valid_vads:
-            dur = ve - vs
-            if curr_t <= accum + dur:
-                mapped_s = vs + (curr_t - accum)
-                break
-            accum += dur
+        # Вдыхаем: резервируем микро-паузу между строками (если есть место)
+        if l_idx < len(lines) - 1 and (l_end_real - l_start_real) > 0.5:
+            l_end_real -= 0.15  
             
-        accum = 0.0
+        # Теперь берем только те куски VAD, которые попали в короб Строки
+        line_vads = []
         for (vs, ve) in valid_vads:
-            dur = ve - vs
-            if curr_t + w_logic_dur * 0.95 <= accum + dur:
-                mapped_e = vs + (curr_t + w_logic_dur * 0.95 - accum)
-                break
-            accum += dur
+            c_s, c_e = max(l_start_real, vs), min(l_end_real, ve)
+            if c_e > c_s: line_vads.append((c_s, c_e))
+        if not line_vads: 
+            line_vads = [(l_start_real, l_end_real)]
             
-        words[k]["start"] = mapped_s
-        words[k]["end"] = mapped_e
-        curr_t += w_logic_dur
+        line_total_vad_time = sum(e - s for s, e in line_vads)
+        w_curr_vad_t = 0.0
         
-    return True
+        # Распределяем слова внутри короба Строки
+        for k in line:
+            w_w = get_vowel_weight(words[k]["clean_text"], False) 
+            w_dur = (w_w / lw) * line_total_vad_time
+            
+            w_s = _map_time(w_curr_vad_t, line_vads)
+            w_e = _map_time(w_curr_vad_t + w_dur * 0.95, line_vads) # 5% зазор между словами
+            
+            timings.append({"start": w_s, "end": w_e})
+            w_curr_vad_t += w_dur
+            
+        curr_vad_t += l_vad_dur
+        
+    return Proposal("Phonetic Loom", timings)
+
+
+# ─── THE SUPREME JUDGE (АБСОЛЮТНЫЙ СУДЬЯ V5.0) ──────────────────────────────
+
+def the_supreme_judge(proposals: list, words: list, s_idx: int, e_idx: int, strong_vad: list, weak_vad: list) -> Proposal:
+    """V5.0: Выбирает лучшее предложение. Жестко штрафует за сжатие целых строк."""
+    best_prop = None
+    best_score = -99999.0
+    
+    if not proposals:
+        return None
+
+    clean_texts = [words[i]["clean_text"] for i in range(s_idx, e_idx + 1)]
+    line_breaks = [words[i]["line_break"] for i in range(s_idx, e_idx + 1)]
+    
+    for prop in proposals:
+        if prop is None or len(prop.timings) != (e_idx - s_idx + 1):
+            continue
+            
+        score = 100.0
+        
+        # 1. Пословная оценка (Акустика и микро-физика)
+        for i, t in enumerate(prop.timings):
+            dur = t["end"] - t["start"]
+            min_dur, max_dur = get_phonetic_bounds(clean_texts[i], line_breaks[i])
+            
+            if dur < 0.08:
+                score -= 1000.0  # 🚨 СМЕРТНЫЙ ПРИГОВОР ЗА СИНГУЛЯРНОСТЬ
+            elif dur < min_dur: 
+                score -= 200.0 * (min_dur - dur)
+                
+            if dur > max_dur * 1.5: 
+                score -= 100.0 * (dur - max_dur)
+            
+            overlap_strong = calculate_overlap(t["start"], t["end"], strong_vad)
+            overlap_weak = calculate_overlap(t["start"], t["end"], weak_vad)
+            silence_dur = dur - overlap_strong - overlap_weak
+            
+            if overlap_strong > 0.1: score += 5.0
+            if silence_dur > 0.15: score -= (silence_dur * 200.0) 
+
+        # 2. Макро-оценка Строки (Защита от сплющивания припевов Золото)
+        lines = []
+        cur_l = []
+        for i in range(len(prop.timings)):
+            cur_l.append(i)
+            if line_breaks[i] or i == len(prop.timings) - 1:
+                lines.append(cur_l)
+                cur_l = []
+                
+        for line in lines:
+            l_s = prop.timings[line[0]]["start"]
+            l_e = prop.timings[line[-1]]["end"]
+            l_dur = l_e - l_s
+            
+            # Считаем минимальную физическую массу всей строки
+            l_min = sum(get_phonetic_bounds(clean_texts[k], line_breaks[k])[0] for k in line)
+            
+            if l_dur < l_min:
+                score -= 500.0 * (l_min - l_dur) # 🚨 Штраф за коллапс всей строки
+                
+        prop.score = score
+        log.debug(f"   ⚖️ Судья оценил {prop.source_name}: {score:.1f} баллов.")
+        
+        if score > best_score:
+            best_score = score
+            best_prop = prop
+            
+    if best_prop:
+        log.info(f"   🏆 Победитель Арены: {best_prop.source_name} ({best_prop.score:.1f} баллов).")
+        
+    return best_prop
+
+
+# ─── ДИАГНОСТИЧЕСКИЙ КОМПАС (ADVISORY COMPASS) ──────────────────────────────
+
+def diagnostic_compass(words: list, s_idx: int, e_idx: int, audio_data: np.ndarray, t_start: float, t_end: float, model, lang: str) -> int:
+    """Щупает будущее на предмет глобальных сдвигов. Отключается внутри Островов Повторов."""
+    if is_repetition_island(words, s_idx, e_idx):
+        log.debug("   🧭 [Diagnostic Compass] Обнаружен цикл (Остров). Компас отключен для защиты от ложного сдвига.")
+        return -1
+
+    if (e_idx - s_idx) < 2: return -1 
+    gap_dur = t_end - t_start
+    if gap_dur < 1.0: return -1
+    
+    acoustic_max_words = int(gap_dur * 3.5) + 2
+    next_anchor_idx = len(words)
+    for i in range(e_idx + 1, len(words)):
+        if words[i]["start"] != -1.0:
+            next_anchor_idx = i
+            break
+            
+    lookahead_limit = min(e_idx + acoustic_max_words, next_anchor_idx, len(words))
+    if lookahead_limit <= e_idx + 1: return -1
+
+    sr = 16000
+    crop = audio_data[int(t_start * sr) : int(t_end * sr)]
+    try:
+        result = model.transcribe(crop, language=lang)
+        blind_words = result.all_words()
+        if not blind_words: return -1
+        
+        b_texts = [re.sub(r'[^\w]', '', w.word.lower()) for w in blind_words if w.word.strip()]
+        if not b_texts: return -1
+        
+        best_match_score = 0
+        best_match_idx = -1
+        
+        for future_idx in range(e_idx + 1, lookahead_limit - 2):
+            phrase = [words[future_idx + k]["clean_text"] for k in range(3)]
+            for b_i in range(len(b_texts) - 2):
+                s1 = rapidfuzz.fuzz.ratio(phrase[0], b_texts[b_i])
+                s2 = rapidfuzz.fuzz.ratio(phrase[1], b_texts[b_i+1])
+                s3 = rapidfuzz.fuzz.ratio(phrase[2], b_texts[b_i+2])
+                avg_score = (s1 + s2 + s3) / 3.0
+                if avg_score > 80 and avg_score > best_match_score:
+                    best_match_score = avg_score
+                    best_match_idx = future_idx
+                    
+        if best_match_score > 80:
+            return best_match_idx
+    except Exception:
+        pass
+    return -1
 
 ================================================================================
 ФАЙЛ: ./main.py
@@ -1933,46 +1984,31 @@ from app_logger import get_logger
 
 log = get_logger("aligner_acoustics")
 
-# ─── V8/V9: SMART THRESHOLDS (SNIPER И CURTAIN) ────────────────────────────
+# ─── V5.0: NON-DESTRUCTIVE ACOUSTICS (VOCAL HEATMAP) ────────────────────────────
 
 def vocal_sniper(audio_data: np.ndarray, sr: int) -> np.ndarray:
     """
-    V8: Smart Vocal Sniper. 
-    Очищает хвосты и вдохи относительно базового шума конкретной песни (noise_floor).
+    V5.0: Оружие разряжено (Safe Source).
+    Мы не вырезаем тихие звуки физически, чтобы не повредить шепот (например, Кристина Си).
+    Возвращаем оригинальное аудио без изменений. Whisper и Арена будут слушать чистый оригинал.
     """
-    log.info("🎯 [Vocal Sniper] Зачистка вокального стема (Smart Pre-gating)...")
-    hop_length = 512
-    rms = librosa.feature.rms(y=audio_data, frame_length=2048, hop_length=hop_length)[0]
-    
-    # Динамический порог на базе 15-го перцентиля (шум паузы)
-    noise_floor = np.percentile(rms, 15)
-    thresh = max(10 ** (-42 / 20), noise_floor * 2.0)
-    
-    mask = rms > thresh
-    # Сглаживаем маску
-    mask = np.convolve(mask, np.ones(5)/5, mode='same') > 0.2
-    mask_audio = np.repeat(mask, hop_length)
-    
-    if len(mask_audio) < len(audio_data):
-        mask_audio = np.pad(mask_audio, (0, len(audio_data) - len(mask_audio)))
-    else:
-        mask_audio = mask_audio[:len(audio_data)]
-        
-    gated = np.where(mask_audio, audio_data, 0.0)
-    return gated.astype(np.float32)
+    log.info("🎯 [Vocal Sniper] Режим Read-Only. Аудио сохранено в оригинале.")
+    return audio_data
 
 def build_iron_curtain(audio_data: np.ndarray, sr: int) -> list:
     """
-    V8: Smart Iron Curtain. 
-    Создает зоны абсолютной пустоты с динамическим порогом.
+    V5.0: Soft Iron Curtain (Поиск Великой Пустоты).
+    Определяет только зоны АБСОЛЮТНОЙ тишины или чистого минуса (> 3 сек).
+    В V5.0 (Line-First) эти зоны используются для запрета разрыва строк (Void Integrity).
     """
-    log.info("🛡️ [Iron Curtain] Сканирование проигрышей (Smart Threshold)...")
+    log.info("🛡️ [Iron Curtain] Сканирование зон абсолютной пустоты (Soft Threshold)...")
     hop_length = 512
     rms = librosa.feature.rms(y=audio_data, frame_length=2048, hop_length=hop_length)[0]
     
-    # Динамический порог для абсолютной тишины
-    noise_floor = np.percentile(rms, 10)
-    thresh = max(10 ** (-50 / 20), noise_floor * 1.2)
+    # Смягчаем порог: берем 5-й перцентиль (самые тихие участки)
+    noise_floor = np.percentile(rms, 5)
+    # Жесткий лимит -60 dB 
+    thresh = max(10 ** (-60 / 20), noise_floor * 1.1)
     
     silence_mask = rms < thresh
     
@@ -1988,20 +2024,20 @@ def build_iron_curtain(audio_data: np.ndarray, sr: int) -> list:
         elif not is_silent and in_silence:
             in_silence = False
             end_t = times[i]
-            if end_t - start_t > 2.5:
+            if end_t - start_t > 3.0:
                 curtains.append((start_t, end_t))
-                log.info(f"   🧱 Железный занавес установлен: {start_t:.2f}s - {end_t:.2f}s")
+                log.info(f"   🧱 Soft Curtain установлен: {start_t:.2f}s - {end_t:.2f}s")
                 
     if in_silence:
         end_t = times[-1]
-        if end_t - start_t > 2.5:
+        if end_t - start_t > 3.0:
             curtains.append((start_t, end_t))
-            log.info(f"   🧱 Железный занавес установлен (конец): {start_t:.2f}s - {end_t:.2f}s")
+            log.info(f"   🧱 Soft Curtain установлен (конец): {start_t:.2f}s - {end_t:.2f}s")
             
     return curtains
 
 def enforce_curtains(start: float, end: float, curtains: list) -> tuple:
-    """Сдвигает тайминги, чтобы слово не пересекало Железный Занавес."""
+    """Сдвигает тайминги, чтобы слово физически не заходило за занавес (Instrumental Void)."""
     for c_s, c_e in curtains:
         if start < c_s and end > c_s: 
             end = c_s - 0.01
@@ -2012,82 +2048,82 @@ def enforce_curtains(start: float, end: float, curtains: list) -> tuple:
             end = start + 0.1
     return start, max(start + 0.05, end)
 
-# ─── V9: СЕМАНТИЧЕСКИЙ VAD И АКУСТИЧЕСКАЯ ТОПОГРАФИЯ ─────────────────────────
+# ─── СЕМАНТИЧЕСКИЙ VAD И АКУСТИЧЕСКАЯ ТОПОГРАФИЯ ─────────────────────────
 
 def get_acoustic_maps(audio_data: np.ndarray, sr: int) -> tuple:
-    """Генерирует карту голоса (VAD), атаки (Onsets) и функцию проверки гармоник."""
-    log.info("[Orchestra] Генерация акустической топографии (Semantic VAD, Onsets, Harmonics)...")
+    """
+    V5.0: Генерация Vocal Heatmap (Информационная карта).
+    Выдает базис для расчета Емкости VAD (VAD Capacity) в главном скрипте.
+    """
+    log.info("🗺️ [Orchestra] Генерация акустической топографии (Vocal Heatmap, Onsets)...")
     hop_length = 512
     times = librosa.frames_to_time(np.arange(len(audio_data)//hop_length + 1), sr=sr, hop_length=hop_length)
 
     rms = librosa.feature.rms(y=audio_data, frame_length=2048, hop_length=hop_length)[0]
     rms_norm = rms / (np.max(rms) + 1e-8)
     
-    # 1. Первичный поиск энергии
-    raw_vad_frames = rms_norm > 0.015 
+    # Разделяем на уверенный голос (Red Zone) и слабый голос/шепот (Yellow Zone)
+    strong_vad_frames = rms_norm > 0.02
+    weak_vad_frames = (rms_norm > 0.005) & (rms_norm <= 0.02)
     
-    raw_intervals, in_speech, start_t = [], False, 0.0
-    for t, is_active in zip(times[:len(raw_vad_frames)], raw_vad_frames):
-        if is_active and not in_speech:
-            start_t, in_speech = t, True
-        elif not is_active and in_speech:
-            raw_intervals.append((start_t, t))
-            in_speech = False
-    if in_speech: raw_intervals.append((start_t, times[-1]))
+    def frames_to_intervals(frames_mask, pad=0.0):
+        intervals = []
+        in_zone = False
+        s_t = 0.0
+        for t, is_active in zip(times[:len(frames_mask)], frames_mask):
+            if is_active and not in_zone:
+                s_t, in_zone = t, True
+            elif not is_active and in_zone:
+                intervals.append((max(0, s_t - pad), t + pad))
+                in_zone = False
+        if in_zone: 
+            intervals.append((max(0, s_t - pad), times[-1] + pad))
+        return intervals
 
-    # 2. V9: Семантический фильтр (Spectral Flatness)
-    # Плоскость спектра: 0.0 = чистый тон (гласная), 1.0 = белый шум (барабан, вдох)
     flatness = librosa.feature.spectral_flatness(y=audio_data, hop_length=hop_length)[0]
-    
-    vad_mask = []
-    pad = 0.2  # Soft Padding, чтобы не обрезать глухие согласные (с, ш, х)
-    
-    for s, e in raw_intervals:
+
+    # Строим карту сильного голоса (с учетом тональности)
+    raw_strong = frames_to_intervals(strong_vad_frames, pad=0.2)
+    strong_vad_mask = []
+    for s, e in raw_strong:
         s_frame = librosa.time_to_frames(s, sr=sr, hop_length=hop_length)
         e_frame = librosa.time_to_frames(e, sr=sr, hop_length=hop_length)
-        
-        # Если блок достаточно длинный, чтобы его анализировать
         if s_frame < e_frame and s_frame < len(flatness):
-            chunk_flatness = flatness[s_frame:e_frame]
-            # Если минимальный flatness в куске меньше 0.1, значит там есть хотя бы одна тональная нота
-            if np.min(chunk_flatness) < 0.1:
-                s_pad, e_pad = max(0.0, s - pad), e + pad
-                if not vad_mask: 
-                    vad_mask.append((s_pad, e_pad))
+            if np.min(flatness[s_frame:e_frame]) < 0.1: # Есть тональность
+                if not strong_vad_mask:
+                    strong_vad_mask.append((s, e))
                 else:
-                    last_s, last_e = vad_mask[-1]
-                    if s_pad - last_e < 0.5: 
-                        vad_mask[-1] = (last_s, max(last_e, e_pad))
-                    elif e_pad - s_pad > 0.1: 
-                        vad_mask.append((s_pad, e_pad))
-            else:
-                # В этом куске нет гармоник (это удар рабочего барабана или резкий вдох). Игнорируем.
-                pass
-        
+                    last_s, last_e = strong_vad_mask[-1]
+                    if s - last_e < 0.5:
+                        strong_vad_mask[-1] = (last_s, max(last_e, e))
+                    elif e - s > 0.1:
+                        strong_vad_mask.append((s, e))
+                        
+    # Слабая зона (шепот Кристины Си)
+    weak_vad_mask = frames_to_intervals(weak_vad_frames, pad=0.1)
+
     o_env = librosa.onset.onset_strength(y=audio_data, sr=sr)
     raw_onsets = librosa.onset.onset_detect(onset_envelope=o_env, sr=sr, units='time')
-    # Атаки звука (onsets) берем только из подтвержденных голосовых зон
-    onsets = [o_t for o_t in raw_onsets if any(vs <= o_t <= ve for (vs, ve) in vad_mask)]
+    
+    # Onsets берем и из сильной, и из слабой зоны
+    onsets = [o_t for o_t in raw_onsets if any(vs <= o_t <= ve for (vs, ve) in strong_vad_mask) or 
+                                           any(ws <= o_t <= we for (ws, we) in weak_vad_mask)]
 
     def is_harmonic(t_start, t_end):
         s_frame = librosa.time_to_frames(t_start, sr=sr, hop_length=hop_length)
         e_frame = librosa.time_to_frames(t_end, sr=sr, hop_length=hop_length)
         if s_frame >= e_frame or s_frame >= len(flatness): return False
-        chunk = flatness[s_frame:e_frame]
-        return np.median(chunk) < 0.05
+        return np.median(flatness[s_frame:e_frame]) < 0.05
 
-    return vad_mask, onsets, is_harmonic
+    return strong_vad_mask, weak_vad_mask, onsets, is_harmonic
 
 def apply_vad_deafness(crop_audio: np.ndarray, sr: int, t_start: float, vad_mask: list) -> np.ndarray:
-    """Хирургическая глухота (Attention Masking). Заглушает участки вне VAD-маски."""
-    mask = np.zeros_like(crop_audio, dtype=bool)
-    times = t_start + np.arange(len(crop_audio)) / sr
-    
-    for vs, ve in vad_mask:
-        mask |= (times >= vs) & (times <= ve)
-        
-    # Заглушаем на 90% всё, что не попадает в VAD
-    return np.where(mask, crop_audio, crop_audio * 0.1)
+    """
+    V5.0: Функция отключена (Safe Source).
+    Хирургическая глухота больше не модифицирует аудио, 
+    чтобы не лишать Whisper контекста на этапе Арены (Semantic Harpoon).
+    """
+    return crop_audio
 
 ================================================================================
 ФАЙЛ: ./karaoke_aligner.py
@@ -2106,27 +2142,28 @@ import numpy as np
 
 from app_logger import get_logger, dump_debug
 
-# ─── ИМПОРТЫ ИЗ НАШЕЙ НОВОЙ МОДУЛЬНОЙ СИСТЕМЫ (SYMPHONY V12) ─────────────────
+# ─── ИМПОРТЫ ИЗ НАШЕЙ НОВОЙ МОДУЛЬНОЙ СИСТЕМЫ (SYMPHONY V5.0) ───────────────
 from aligner_utils import (
     detect_language, prepare_text, get_vowel_weight, 
-    get_phonetic_bounds, get_safe_bounds, evaluate_alignment_quality,
-    is_repetition_island
+    get_phonetic_bounds, get_line_phonetic_bounds, get_vad_capacity,
+    calculate_phrase_density, get_safe_bounds, evaluate_alignment_quality,
+    is_repetition_island, calculate_overlap
 )
 from aligner_acoustics import (
     vocal_sniper, build_iron_curtain, enforce_curtains, 
-    get_acoustic_maps, apply_vad_deafness
+    get_acoustic_maps
 )
 from aligner_orchestra import (
-    macro_compass, heal_by_motif_matrix, ctc_inquisitor, 
-    heal_phonetic_loom, semantic_harpoon, repetition_island_mapper
+    Proposal, propose_motif_matrix, propose_inquisitor, 
+    propose_harpoon, propose_loom, the_supreme_judge, diagnostic_compass
 )
 
 log = get_logger("aligner")
 
 class KaraokeAligner:
     """
-    Главный Дирижер "Symphony V12: Absolute Harmony".
-    Интегрирует Эталонный Аудитор, Острова Повторов и Абсолютную Гравитацию.
+    Главный Дирижер "Symphony V5.0: Line-First Physics".
+    Эффект Лавины, Баланс Масс и Строковая Неделимость.
     """
 
     def __init__(self, model_name="medium"):
@@ -2140,44 +2177,44 @@ class KaraokeAligner:
         self._track_stem = ""
         self.all_curtains = [] 
 
-    # ─── ЭТАП 1: СМЫСЛОВОЙ АВАНГАРД И СКЕЛЕТ ────────────────────────────────────
+    # ─── ЭТАП 1: ПОДГОТОВКА И СКЕЛЕТ ──────────────────────────────────────────
 
-    def _vanguard_protocol(self, model, audio_data: np.ndarray, words: list, lang: str):
-        if not words: return
-        log.info("🛡️ [Vanguard] Поиск истинного начала песни (защита от ранней болтовни)...")
-        sr = 16000
-        crop_dur = min(45.0, len(audio_data) / sr)
-        crop = audio_data[:int(crop_dur * sr)]
-        
-        try:
-            res = model.transcribe(crop, language=lang)
-            blind_words = res.all_words()
-            if not blind_words: return
-            
-            first_line_clean = " ".join([w["clean_text"] for w in words[:4]])
-            b_texts = [re.sub(r'[^\w]', '', w.word.lower()) for w in blind_words]
-            
-            best_score = 0
-            best_t = 0.0
-            
-            for i in range(len(b_texts) - 3):
-                chunk = " ".join([t for t in b_texts[i:i+4] if t])
-                score = rapidfuzz.fuzz.partial_ratio(first_line_clean, chunk)
-                if score > best_score:
-                    best_score = score
-                    best_t = blind_words[i].start
-                    
-            if best_score > 75 and best_t > 3.0:
-                log.info(f"   🚩 Истинное начало найдено на {best_t:.2f}s. Установка абсолютного Занавеса на болтовню.")
-                self.all_curtains.append((0.0, best_t - 0.2))
+    def _find_instrumental_voids(self, strong_vad: list, weak_vad: list):
+        """Ищет длинные инструментальные проигрыши (>4 сек без голоса)."""
+        log.info("🕳️ [Void Detector] Поиск длинных инструментальных проигрышей...")
+        combined_vad = sorted(strong_vad + weak_vad, key=lambda x: x[0])
+        if not combined_vad: return
+
+        merged = []
+        for s, e in combined_vad:
+            if not merged: merged.append((s, e))
             else:
-                log.info("   ✅ Ранняя болтовня не обнаружена (либо текст начинается сразу).")
-                
-        except Exception as e:
-            log.warning(f"   ❌ Ошибка Авангарда: {e}")
+                last_s, last_e = merged[-1]
+                if s - last_e < 1.0: merged[-1] = (last_s, max(last_e, e))
+                else: merged.append((s, e))
+        
+        last_e = 0.0
+        for s, e in merged:
+            if s - last_e > 4.0: 
+                log.info(f"   🕳️ Найден Instrumental Void: {last_e:.2f}s - {s:.2f}s. Установлен занавес.")
+                self.all_curtains.append((last_e, s))
+            last_e = e
+
+    def _filter_vad_from_curtains(self, vad_list: list) -> list:
+        """Физически вырезает занавесы из VAD для создания механики Wall Jump."""
+        res = []
+        for vs, ve in vad_list:
+            curr_s = vs
+            for cs, ce in self.all_curtains:
+                if ce <= curr_s: continue
+                if cs >= ve: break
+                if curr_s < cs: res.append((curr_s, cs))
+                curr_s = max(curr_s, ce)
+            if curr_s < ve: res.append((curr_s, ve))
+        return res
 
     def _platinum_skeleton(self, model, audio_data: np.ndarray, canon_words: list, lang: str):
-        log.info("[Actor] Фаза 1: Сборка жесткого скелета (Platinum)...")
+        log.info("[Actor] Фаза 1: Сборка жесткого скелета (Platinum DTW)...")
         text_for_whisper = " ".join([w["word"] for w in canon_words])
         
         try:
@@ -2198,10 +2235,8 @@ class KaraokeAligner:
             if cl:
                 start_t = max(last_t, w.start)
                 end_t = max(start_t + 0.05, w.end)
-                
                 if any(c_s <= start_t <= c_e for c_s, c_e in self.all_curtains):
                     continue
-                    
                 valid_sw.append({"clean": cl, "start": start_t, "end": end_t})
                 last_t = end_t
                 
@@ -2222,11 +2257,9 @@ class KaraokeAligner:
             is_platinum = False
             if best_match_len >= 4: is_platinum = True
             elif best_match_len == 3:
-                chars = sum(len(canon_words[best_c_idx + k]["clean_text"]) for k in range(3))
-                if chars >= 12: is_platinum = True
+                if sum(len(canon_words[best_c_idx + k]["clean_text"]) for k in range(3)) >= 12: is_platinum = True
             elif best_match_len == 2:
-                chars = sum(len(canon_words[best_c_idx + k]["clean_text"]) for k in range(2))
-                if chars >= 10: is_platinum = True
+                if sum(len(canon_words[best_c_idx + k]["clean_text"]) for k in range(2)) >= 10: is_platinum = True
 
             if is_platinum:
                 for k in range(best_match_len):
@@ -2240,170 +2273,88 @@ class KaraokeAligner:
 
         log.info(f"[Actor] Платиновый скелет установлен: {anchors_count}/{len(canon_words)} слов.")
 
-    # ─── ЭТАП 2: CRITIC & SURGEON ───────────────────────────────────────────────
+    # ─── ЭТАП 2: АУДИТОР И МАКРО-ФИЗИКА (V5.0) ──────────────────────────────────
 
-    def _audit_json(self, words: list) -> list:
+    def _audit_json(self, words: list, audio_duration: float, combined_vad: list) -> list:
         bugs = []
         n = len(words)
         
-        clusters = []
-        curr_cluster = []
+        # 1. Макро-очистка Интро (False Start Sweeper)
+        first_block = []
         for i in range(n):
-            if words[i]["start"] != -1:
-                curr_cluster.append(i)
-            else:
-                if curr_cluster: clusters.append(curr_cluster)
-                curr_cluster = []
-        if curr_cluster: clusters.append(curr_cluster)
-
-        for cluster in clusters:
-            if len(cluster) <= 3:
-                first, last = cluster[0], cluster[-1]
-                gap_left = words[first]["start"] - words[first-1]["end"] if first > 0 and words[first-1]["end"] != -1 else 15.0
-                gap_right = words[last+1]["start"] - words[last]["end"] if last < n-1 and words[last+1]["start"] != -1 else 15.0
-                
-                if gap_left > 8.0 and gap_right > 8.0:
-                    bugs.append({"type": "ISLAND_OF_LIES", "cluster": cluster})
+            if words[i]["start"] != -1: first_block.append(i)
+            elif first_block: break
+            
+        if first_block and first_block[0] == 0:
+            t_s = words[first_block[0]]["start"]
+            t_e = words[first_block[-1]]["end"]
+            density = calculate_phrase_density(words, first_block[0], first_block[-1], t_s, t_e)
+            
+            if density < 0.2 and (t_e - t_s) > 8.0:
+                bugs.append({"type": "FALSE_START", "cluster": first_block})
 
         for i in range(n):
             w = words[i]
             if w["start"] == -1: continue
             dur = w["end"] - w["start"]
+            min_dur, max_dur = get_phonetic_bounds(w["clean_text"], w["line_break"])
             
-            if dur <= 0.05 or (i > 0 and words[i-1]["end"] != -1 and w["start"] < words[i-1]["start"]):
+            if dur < min_dur * 0.5 or dur <= 0.05 or (i > 0 and words[i-1]["end"] != -1 and w["start"] < words[i-1]["start"]):
                 bugs.append({"type": "BLACK_HOLE", "idx": i})
             
-            vowel_w = get_vowel_weight(w["clean_text"], w["line_break"])
-            if dur > (vowel_w * 0.8 + 0.5) and dur > 1.8:
+            if dur > max_dur * 1.5:
                 bugs.append({"type": "OVERSTRETCH", "idx": i})
 
+        # 3. Внутристрочная Гравитация (TORN_LINE V5.0)
         for i in range(n - 1):
             if words[i]["end"] != -1 and words[i+1]["start"] != -1:
-                gap = words[i+1]["start"] - words[i]["end"]
-                if gap > 3.0 and not words[i]["line_break"]:
-                    has_curtain = any(c_s >= words[i]["end"] and c_e <= words[i+1]["start"] for c_s, c_e in self.all_curtains)
-                    if not has_curtain:
-                        log.warning(f"⚖️ [Master Auditor] Порванная строка (TORN_LINE) ({gap:.1f}s) между '{words[i]['clean_text']}' и '{words[i+1]['clean_text']}'.")
-                        bugs.append({"type": "TORN_LINE", "idx": i+1})
+                if words[i]["line_num"] == words[i+1]["line_num"]:
+                    gap = words[i+1]["start"] - words[i]["end"]
+                    _, max_d = get_phonetic_bounds(words[i]["clean_text"], False)
+                    
+                    allowed_pause = max(1.5, max_d * 2.0)
+                    
+                    if gap > allowed_pause:
+                        vad_in_gap = get_vad_capacity(words[i]["end"], words[i+1]["start"], combined_vad)
+                        if vad_in_gap > 1.0: 
+                            log.warning(f"⚖️ [Master Auditor] Порванная строка ({gap:.1f}s) между '{words[i]['clean_text']}' и '{words[i+1]['clean_text']}'.")
+                            bugs.append({"type": "TORN_LINE", "line_num": words[i]["line_num"]})
 
         return bugs
 
     def _fix_bugs(self, words: list, bugs: list):
         for bug in bugs:
-            if bug["type"] == "ISLAND_OF_LIES":
-                log.warning(f"[Surgeon] Уничтожен ОСТРОВ ЛЖИ: слова {bug['cluster']}")
+            if bug["type"] == "FALSE_START":
+                log.warning(f"[Surgeon] Устранение FALSE_START: сброс интро {bug['cluster']}")
                 for idx in bug["cluster"]:
-                    words[idx]["start"], words[idx]["end"] = -1.0, -1.0
-                    
+                    words[idx]["start"] = words[idx]["end"] = -1.0
             elif bug["type"] == "BLACK_HOLE":
                 idx = bug["idx"]
-                start_del, end_del = max(0, idx - 2), min(len(words) - 1, idx + 2)
+                start_del, end_del = max(0, idx - 1), min(len(words) - 1, idx + 1)
                 log.warning(f"[Surgeon] Взлом BLACK_HOLE (индексы {start_del}-{end_del}). Сброс якорей.")
                 for k in range(start_del, end_del + 1):
-                    words[k]["start"], words[k]["end"] = -1.0, -1.0
-
+                    words[k]["start"] = words[k]["end"] = -1.0
             elif bug["type"] == "OVERSTRETCH":
                 idx = bug["idx"]
                 w = words[idx]
-                old_end = w["end"]
-                vowel_w = get_vowel_weight(w["clean_text"], w["line_break"])
-                w["end"] = w["start"] + vowel_w * 0.8 + 0.5
-                log.warning(f"[Surgeon] Хвост OVERSTRETCH жестко обрублен: '{w['clean_text']}' ({old_end:.1f}s -> {w['end']:.1f}s)")
-                
+                if w["start"] != -1.0:
+                    vowel_w = get_vowel_weight(w["clean_text"], w["line_break"])
+                    w["end"] = w["start"] + vowel_w * 0.8 + 0.5
+                    log.warning(f"[Surgeon] Хвост OVERSTRETCH обрублен: '{w['clean_text']}'")
             elif bug["type"] == "TORN_LINE":
-                idx = bug["idx"]
-                log.warning(f"[Surgeon] Взлом TORN_LINE: сброс слов {idx-1} и {idx}")
-                words[idx-1]["start"], words[idx-1]["end"] = -1.0, -1.0
-                words[idx]["start"], words[idx]["end"] = -1.0, -1.0
-
-    def _find_gaps(self, words: list) -> list:
-        gaps, i, n = [], 0, len(words)
-        while i < n:
-            if words[i]["start"] == -1 and not words[i].get("dtw_tried", False):
-                j = i
-                while j < n and words[j]["start"] == -1: j += 1
-                gaps.append((i, j - 1))
-                i = j
-            else: i += 1
-        return gaps
-
-    def _micro_dtw_surgery(self, words: list, gap: tuple, audio_data: np.ndarray, model, lang: str, aggressive: bool, vad_mask: list):
-        s_idx, e_idx = gap
-        audio_duration = len(audio_data) / 16000.0
-        
-        t_start, t_end = get_safe_bounds(words, s_idx, e_idx, audio_duration)
-
-        v_weights = sum(get_vowel_weight(words[i]["clean_text"], words[i]["line_break"]) for i in range(s_idx, e_idx + 1))
-        est_dur = v_weights * 0.4
-        
-        window_len = t_end - t_start
-        if window_len > est_dur * 3.0:
-            if s_idx == 0:
-                t_start = max(t_start, t_end - est_dur * 2.0)
-            elif e_idx == len(words) - 1:
-                t_end = min(t_end, t_start + est_dur * 2.0)
-
-        if t_end - t_start < 0.2:
-            for k in range(s_idx, e_idx + 1): words[k]["dtw_tried"] = True
-            return
-
-        log.info(f"[Surgeon] Micro-DTW для слов [{s_idx}-{e_idx}] в окне {t_start:.1f}s - {t_end:.1f}s")
-        sr = 16000
-        crop_audio = audio_data[int(t_start * sr) : int(t_end * sr)]
-        
-        if len(crop_audio) < sr * 0.2:
-            for k in range(s_idx, e_idx + 1): words[k]["dtw_tried"] = True
-            return
-
-        if aggressive and vad_mask:
-            crop_audio = apply_vad_deafness(crop_audio, sr, t_start, vad_mask)
-
-        crop_text = " ".join([words[i]["word"] for i in range(s_idx, e_idx + 1)])
-        
-        try:
-            res = model.align(crop_audio, crop_text, language=lang)
-            c_sw = res.all_words()
-            
-            s_texts = [re.sub(r'[^\w]', '', w.word.lower()) for w in c_sw]
-            c_ptr = 0
-            for k in range(s_idx, e_idx + 1):
-                words[k]["dtw_tried"] = True 
-                c_clean = words[k]["clean_text"]
-                best_score, best_match = 0, -1
-                
-                for j in range(c_ptr, min(c_ptr + 6, len(s_texts))):
-                    score = rapidfuzz.fuzz.ratio(c_clean, s_texts[j])
-                    if score > 75 and score > best_score:
-                        best_score, best_match = score, j
-                        if score == 100: break
-                
-                if best_match != -1:
-                    dur = c_sw[best_match].end - c_sw[best_match].start
-                    if 0.05 < dur < 2.0:
-                        mapped_s = t_start + c_sw[best_match].start
-                        mapped_e = t_start + c_sw[best_match].end
-                        
-                        if not any(c_s <= mapped_s <= c_e for c_s, c_e in self.all_curtains):
-                            words[k]["start"] = mapped_s
-                            words[k]["end"] = mapped_e
-                        
-                        c_ptr = best_match + 1
-        except Exception as e:
-            log.warning(f"[Surgeon] Micro-DTW не справился ({e}).")
-            for k in range(s_idx, e_idx + 1): words[k]["dtw_tried"] = True
+                target_line = bug["line_num"]
+                log.warning(f"[Surgeon] Взлом TORN_LINE: сброс целой строки №{target_line}")
+                for w in words:
+                    if w["line_num"] == target_line:
+                        w["start"] = w["end"] = -1.0
 
     def _run_tribunal(self, words: list, is_harmonic_fn) -> list:
+        """Восстановлено: Трибунал микро-физики (обрезает резиновые хвосты эха и ловит сжатия)."""
         quarantine_zones = []
-        n = len(words)
-        i = 0
-        
+        n, i = len(words), 0
         while i < n:
             if words[i]["start"] == -1:
-                j = i
-                while j < n and words[j]["start"] == -1: j += 1
-                quarantine_zones.append((i, j - 1, "UNRESOLVED_GAP"))
-                i = j
-                continue
+                i += 1; continue
                 
             dur = words[i]["end"] - words[i]["start"]
             min_dur, max_dur = get_phonetic_bounds(words[i]["clean_text"], words[i]["line_break"])
@@ -2413,99 +2364,75 @@ class KaraokeAligner:
                     log.warning(f"[Tribunal] Резина найдена на '{words[i]['clean_text']}'. Обрезаем (Шум/Эхо).")
                     words[i]["end"] = words[i]["start"] + max_dur
             
-            if words[i]["start"] != -1:
-                j = i
-                cluster_min_dur = 0.0
-                while j < n and words[j]["start"] != -1 and (words[j]["end"] - words[i]["start"] < 1.5):
-                    mn, _ = get_phonetic_bounds(words[j]["clean_text"], words[j]["line_break"])
-                    cluster_min_dur += mn
-                    j += 1
-                
-                real_dur = words[j-1]["end"] - words[i]["start"] if j > i else 0
-                if (j - i) >= 3 and real_dur < (cluster_min_dur * 0.7):
-                    quarantine_zones.append((i, j - 1, "PHYSICAL_IMPOSSIBILITY"))
-                    i = j
-                    continue
+            j = i
+            cluster_min_dur = 0.0
+            while j < n and words[j]["start"] != -1 and (words[j]["end"] - words[i]["start"] < 1.5):
+                mn, _ = get_phonetic_bounds(words[j]["clean_text"], words[j]["line_break"])
+                cluster_min_dur += mn
+                j += 1
+            
+            real_dur = words[j-1]["end"] - words[i]["start"] if j > i else 0
+            if (j - i) >= 3 and real_dur < (cluster_min_dur * 0.7):
+                quarantine_zones.append((i, j - 1, "PHYSICAL_IMPOSSIBILITY"))
+                i = j
+                continue
             i += 1
             
         return quarantine_zones
 
-    # ─── ЭТАП 5: ФИЗИКА И ГРАВИТАЦИЯ ────────────────────────────────────────────
-
-    def _apply_gravity(self, words: list, audio_duration: float, vad_mask: list):
-        log.info("[Physics] Гравитационная заливка слепых зон (до 4 слов)...")
-        n = len(words)
-        
-        def get_available_vad(t_min, t_max):
-            res = []
-            for (vs, ve) in vad_mask:
-                i_s, i_e = max(t_min, vs), min(t_max, ve)
-                if i_e > i_s: res.append((i_s, i_e))
-            return res
-
-        i = 0
+    def _find_gaps(self, words: list) -> list:
+        gaps, i, n = [], 0, len(words)
         while i < n:
-            if words[i]["start"] == -1.0:
+            if words[i]["start"] == -1:
                 j = i
-                while j < n and words[j]["start"] == -1.0: j += 1
-                
-                if j - i > 4:
-                    log.warning(f"   🛑 [Smart Gravity] Дыра слишком большая ({j-i} слов). Гравитация отменена.")
-                    i = j
-                    continue
-                    
-                t_start, t_end = get_safe_bounds(words, i, j - 1, audio_duration)
-
-                active_vads = get_available_vad(t_start, t_end)
-                weights = [get_vowel_weight(words[k]["clean_text"], words[k]["line_break"]) for k in range(i, j)]
-                total_w = sum(weights)
-                
-                total_vad_time = sum(e - s for s, e in active_vads)
-                
-                if total_vad_time < 0.5:
-                    safe_start = t_start
-                    if i == 0 and active_vads: safe_start = active_vads[-1][0] 
-                    elif j == n and active_vads: safe_start = active_vads[0][0]
-                    
-                    curr_t = safe_start
-                    for k in range(i, j):
-                        w_dur = (weights[k-i] / total_w) * min(2.0, t_end - t_start)
-                        words[k]["start"] = curr_t
-                        words[k]["end"] = curr_t + w_dur * 0.9
-                        words[k]["start"], words[k]["end"] = enforce_curtains(words[k]["start"], words[k]["end"], self.all_curtains)
-                        curr_t += w_dur
-                else:
-                    curr_t = 0.0
-                    for k in range(i, j):
-                        w_logic_dur = (weights[k-i] / total_w) * total_vad_time
-                        
-                        accum, mapped_s, mapped_e = 0.0, active_vads[0][0], active_vads[-1][1]
-                        for (vs, ve) in active_vads:
-                            dur = ve - vs
-                            if curr_t <= accum + dur:
-                                mapped_s = vs + (curr_t - accum)
-                                break
-                            accum += dur
-                            
-                        accum = 0.0
-                        for (vs, ve) in active_vads:
-                            dur = ve - vs
-                            if curr_t + w_logic_dur * 0.95 <= accum + dur:
-                                mapped_e = vs + (curr_t + w_logic_dur * 0.95 - accum)
-                                break
-                            accum += dur
-                            
-                        words[k]["start"] = mapped_s
-                        words[k]["end"] = mapped_e
-                        words[k]["start"], words[k]["end"] = enforce_curtains(words[k]["start"], words[k]["end"], self.all_curtains)
-                        curr_t += w_logic_dur
+                while j < n and words[j]["start"] == -1: j += 1
+                gaps.append((i, j - 1))
                 i = j
-            else:
-                i += 1
+            else: i += 1
+        return gaps
+
+    # ─── ЭТАП 3: АРЕНА И ЛАВИНА (THE COLOSSEUM) ─────────────────────────────────
+
+    def _the_arena_surgery(self, words: list, gap: tuple, audio_data: np.ndarray, model, lang: str, strong_vad: list, weak_vad: list, audio_duration: float):
+        s_idx, e_idx = gap
+        t_start, t_end = get_safe_bounds(words, s_idx, e_idx, audio_duration)
+        if t_end - t_start < 0.1: return
+
+        log.info(f"🏟️ [The Arena] Слова [{s_idx}-{e_idx}] выходят на Арену! Окно: {t_start:.1f}s - {t_end:.1f}s")
+        proposals = []
+        
+        # 1. Motif Matrix
+        if is_repetition_island(words, s_idx, e_idx):
+            prop_motif = propose_motif_matrix(words, s_idx, e_idx, audio_duration, strong_vad)
+            if prop_motif: proposals.append(prop_motif)
+            
+        # 2. CTC Inquisitor
+        prop_inq = propose_inquisitor(words, s_idx, e_idx, audio_data, model, lang, t_start, t_end)
+        if prop_inq: proposals.append(prop_inq)
+            
+        # 3. Semantic Harpoon (Выступает в роли Авангарда для Интро!)
+        prop_harp = propose_harpoon(words, s_idx, e_idx, audio_data, model, lang, t_start, t_end)
+        if prop_harp: proposals.append(prop_harp)
+            
+        # 4. Phonetic Loom (Line-First Loom)
+        prop_loom = propose_loom(words, s_idx, e_idx, t_start, t_end, strong_vad, weak_vad)
+        if prop_loom: proposals.append(prop_loom)
+            
+        winner = the_supreme_judge(proposals, words, s_idx, e_idx, strong_vad, weak_vad)
+        
+        if winner:
+            for k, t in enumerate(winner.timings):
+                mapped_s, mapped_e = enforce_curtains(t["start"], t["end"], self.all_curtains)
+                words[s_idx + k]["start"] = mapped_s
+                words[s_idx + k]["end"] = mapped_e
+        else:
+            log.warning(f"   ⚠️ Арена не выявила победителя для [{s_idx}-{e_idx}].")
+
+    # ─── ЭТАП 4: ФИНАЛЬНЫЕ ШТРИХИ ──────────────────────────────────────────────
 
     def _apply_absolute_gravity(self, words: list, audio_duration: float, vad_mask: list):
-        """V12: Абсолютная Гравитация (Fail-Safe). Срабатывает в самом финале и заливает всё без лимитов."""
-        log.info("🪐 [Absolute Gravity] Принудительное спасение всех оставшихся слов (Fail-Safe)...")
+        """V5.0: Fail-Safe с Правосторонеей гравитацией."""
+        log.info("🪐 [Absolute Gravity] Принудительное спасение всех оставшихся слов...")
         n = len(words)
         
         def get_available_vad(t_min, t_max):
@@ -2524,18 +2451,31 @@ class KaraokeAligner:
                 
                 t_start, t_end = get_safe_bounds(words, i, j - 1, audio_duration)
                 active_vads = get_available_vad(t_start, t_end)
-                
-                if not active_vads:
-                    active_vads = [(t_start, t_end)]
                     
                 weights = [get_vowel_weight(words[k]["clean_text"], words[k]["line_break"]) for k in range(i, j)]
                 total_w = sum(weights)
+                req_time = total_w * 0.4
+                
+                if not active_vads: active_vads = [(t_start, t_end)]
                 total_vad_time = sum(e - s for s, e in active_vads)
+                
+                if t_end - t_start > req_time * 2.5 and total_vad_time > req_time * 1.5:
+                    trimmed_vads = []
+                    accum = 0.0
+                    for vs, ve in reversed(active_vads):
+                        dur = ve - vs
+                        if accum + dur <= req_time * 1.5:
+                            trimmed_vads.insert(0, (vs, ve))
+                            accum += dur
+                        else:
+                            trimmed_vads.insert(0, (ve - (req_time * 1.5 - accum), ve))
+                            break
+                    active_vads = trimmed_vads
+                    total_vad_time = sum(e - s for s, e in active_vads)
                 
                 curr_t = 0.0
                 for k in range(i, j):
                     w_logic_dur = (weights[k-i] / total_w) * total_vad_time
-                    
                     accum, mapped_s, mapped_e = 0.0, active_vads[0][0], active_vads[-1][1]
                     for (vs, ve) in active_vads:
                         dur = ve - vs
@@ -2543,7 +2483,6 @@ class KaraokeAligner:
                             mapped_s = vs + (curr_t - accum)
                             break
                         accum += dur
-                        
                     accum = 0.0
                     for (vs, ve) in active_vads:
                         dur = ve - vs
@@ -2552,17 +2491,14 @@ class KaraokeAligner:
                             break
                         accum += dur
                         
-                    words[k]["start"] = mapped_s
-                    words[k]["end"] = mapped_e
-                    words[k]["start"], words[k]["end"] = enforce_curtains(words[k]["start"], words[k]["end"], self.all_curtains)
+                    words[k]["start"], words[k]["end"] = enforce_curtains(mapped_s, mapped_e, self.all_curtains)
                     curr_t += w_logic_dur
                     healed += 1
                 i = j
             else:
                 i += 1
                 
-        if healed > 0:
-            log.info(f"   ✨ Абсолютная Гравитация спасла {healed} слов от исчезновения!")
+        if healed > 0: log.info(f"   ✨ Абсолютная Гравитация спасла {healed} слов!")
 
     def _apply_vad_guillotine(self, words: list, vad_mask: list):
         if not vad_mask: return
@@ -2588,10 +2524,8 @@ class KaraokeAligner:
     def _smoothing(self, words: list):
         last_e = 0.0
         for w in words:
-            if w["start"] < last_e:
-                w["start"] = last_e + 0.01
-            if w["end"] <= w["start"]:
-                w["end"] = w["start"] + 0.1
+            if w["start"] < last_e: w["start"] = last_e + 0.01
+            if w["end"] <= w["start"]: w["end"] = w["start"] + 0.1
             w["start"], w["end"] = enforce_curtains(w["start"], w["end"], self.all_curtains)
             last_e = w["end"]
 
@@ -2601,7 +2535,7 @@ class KaraokeAligner:
         self._track_stem = os.path.basename(output_json_path).replace("_(Karaoke Lyrics).json", "")
 
         log.info("=" * 50)
-        log.info(f"Aligner СТАРТ (Symphony V12 Absolute Harmony): {self._track_stem}")
+        log.info(f"Aligner СТАРТ (Symphony V5.0: Line-First Physics): {self._track_stem}")
         
         canon_words_original = prepare_text(raw_lyrics)
         if not canon_words_original:
@@ -2616,17 +2550,21 @@ class KaraokeAligner:
             audio_data_raw, sr = librosa.load(vocals_path, sr=16000, mono=True)
             audio_duration = len(audio_data_raw) / sr
             
-            gated_audio_data = vocal_sniper(audio_data_raw, sr)
-            iron_curtains = build_iron_curtain(gated_audio_data, sr)
-            vad_mask, onsets, is_harmonic_fn = get_acoustic_maps(gated_audio_data, sr)
+            iron_curtains = build_iron_curtain(audio_data_raw, sr)
+            strong_vad, weak_vad, onsets, is_harmonic_fn = get_acoustic_maps(audio_data_raw, sr)
+            self.all_curtains = sorted(iron_curtains, key=lambda x: x[0])
             
+            # 1. Поиск Великих Пустот (Занавесов)
+            self._find_instrumental_voids(strong_vad, weak_vad)
+            self.all_curtains = sorted(self.all_curtains, key=lambda x: x[0])
+            
+            # 2. Wall Jump: Вырезаем занавесы из VAD
+            strong_vad = self._filter_vad_from_curtains(strong_vad)
+            weak_vad = self._filter_vad_from_curtains(weak_vad)
+            combined_vad = sorted(strong_vad + weak_vad, key=lambda x: x[0])
+
             model = stable_whisper.load_model(self.model_name, download_root=self.whisper_model_dir, device=self.device)
             
-            self.all_curtains = sorted(iron_curtains, key=lambda x: x[0])
-            self._vanguard_protocol(model, audio_data_raw, canon_words_original, lang)
-            self.all_curtains = sorted(self.all_curtains, key=lambda x: x[0])
-
-            # V12: Эталонный Аудитор (Forced-Alignment Spot-Check)
             def spot_check_fn(t_start, t_end, target_phrase):
                 log.info(f"   🔍 [Semantic Spot-Check] Проверка эталоном {t_start:.1f}s - {t_end:.1f}s...")
                 crop = audio_data_raw[int(max(0, t_start)*sr) : int(min(audio_duration, t_end)*sr)]
@@ -2634,127 +2572,117 @@ class KaraokeAligner:
                 try:
                     res = model.align(crop, target_phrase, language=lang, fast_mode=True)
                     valid_words = [w for w in res.all_words() if w.end - w.start >= 0.05]
-                    
-                    if len(valid_words) < len(target_phrase.split()) * 0.4:
-                        log.warning(f"      ❌ Провал проверки! Эталон '{target_phrase}' не ложится на аудио.")
-                        return False
-                        
-                    log.info("      ✅ Проверка эталоном пройдена.")
+                    if len(valid_words) < len(target_phrase.split()) * 0.4: return False
                     return True
-                except:
-                    return True
+                except: return True
 
             best_words = []
             best_score = -1.0
 
             for pass_idx in range(2):
-                aggressive_mode = (pass_idx == 1)
                 canon_words = copy.deepcopy(canon_words_original)
-                
-                if aggressive_mode:
-                    log.warning("⏱️ МАШИНА ВРЕМЕНИ: Суровая оценка забраковала результат. Запуск Aggressive Mode (Pass 2)!")
+                if pass_idx == 1: log.warning("⏱️ МАШИНА ВРЕМЕНИ: Суровая оценка. Запуск Aggressive Mode (Pass 2)!")
 
-                self._platinum_skeleton(model, gated_audio_data, canon_words, lang)
+                self._platinum_skeleton(model, audio_data_raw, canon_words, lang)
 
                 for iteration in range(3):
-                    bugs = self._audit_json(canon_words)
-                    gaps = self._find_gaps(canon_words)
+                    bugs = self._audit_json(canon_words, audio_duration, combined_vad)
+                    self._fix_bugs(canon_words, bugs)
                     
-                    if not bugs and not gaps:
-                        log.info(f"[Critic] Итерация {iteration+1}: Аудит пройден.")
-                        break
-                        
-                    if bugs:
-                        self._fix_bugs(canon_words, bugs)
-                    
-                    if gaps:
-                        for gap in gaps:
-                            self._micro_dtw_surgery(canon_words, gap, gated_audio_data, model, lang, aggressive_mode, vad_mask)
-                
-                for iteration in range(2):
+                    # Трибунал (резка хвостов) восстановлен!
                     anomalies = self._run_tribunal(canon_words, is_harmonic_fn)
-                    if not anomalies: break
-                        
                     for s_idx, e_idx, reason in anomalies:
                         log.info(f"   -> Карантин [{s_idx}-{e_idx}]: {reason}. Сброс таймингов.")
-                        for k in range(s_idx, e_idx + 1):
-                            canon_words[k]["start"] = canon_words[k]["end"] = -1.0
+                        for k in range(s_idx, e_idx + 1): canon_words[k]["start"] = canon_words[k]["end"] = -1.0
+                            
+                    gaps = self._find_gaps(canon_words)
+                    
+                    # 3. ЭФФЕКТ ЛАВИНЫ (Avalanche Expansion) И Умный Остров
+                    expanded_gaps = []
+                    i = 0
+                    while i < len(gaps):
+                        s_idx, e_idx = gaps[i]
                         
+                        # Лавина: Проверяем, влезает ли текст физически в доступный VAD
+                        while True:
+                            t_start, t_end = get_safe_bounds(canon_words, s_idx, e_idx, audio_duration)
+                            mass_min, _ = get_line_phonetic_bounds(canon_words, s_idx, e_idx)
+                            vad_cap = get_vad_capacity(t_start, t_end, combined_vad)
+                            
+                            # Если места критически мало (<75% от минимума) - сносим следующий якорь
+                            if vad_cap < mass_min * 0.75 and e_idx < len(canon_words) - 1:
+                                next_line_num = canon_words[e_idx + 1]["line_num"]
+                                log.warning(f"🌋 [Avalanche] VAD Capacity ({vad_cap:.1f}s) < Фонетическая Масса ({mass_min:.1f}s). Сносим строку №{next_line_num}!")
+                                
+                                for k in range(e_idx + 1, len(canon_words)):
+                                    if canon_words[k]["line_num"] == next_line_num:
+                                        canon_words[k]["start"] = canon_words[k]["end"] = -1.0
+                                        e_idx = k
+                                    else: break
+                                        
+                                # Слияние с соседней дырой, если Лавина до нее дошла
+                                if i + 1 < len(gaps) and gaps[i+1][0] <= e_idx + 1:
+                                    e_idx = max(e_idx, gaps[i+1][1])
+                                    i += 1
+                            else:
+                                break
+                                
+                        # Island Expansion (Умный лимит по строкам: не более 8 строк)
+                        if expanded_gaps:
+                            last_s, last_e = expanded_gaps[-1]
+                            curr_s, curr_e = s_idx, e_idx
+                            
+                            lines_in_gap = len(set(canon_words[k]["line_num"] for k in range(last_s, curr_e + 1)))
+
+                            if curr_s - last_e <= 4 and lines_in_gap <= 8:
+                                if is_repetition_island(canon_words, last_s, curr_e):
+                                    for k in range(last_e + 1, curr_s):
+                                        canon_words[k]["start"] = canon_words[k]["end"] = -1.0
+                                    expanded_gaps[-1] = (last_s, curr_e)
+                                    log.info(f"   🏝️ [Island Expansion] Дыры слиты в Остров: [{last_s}-{curr_e}] (строк: {lines_in_gap})")
+                                    i += 1
+                                    continue
+                        
+                        expanded_gaps.append((s_idx, e_idx))
+                        i += 1
+                    
+                    gaps = expanded_gaps
+
+                    if not bugs and not anomalies and not gaps:
+                        log.info(f"[Critic] Итерация {iteration+1}: Аудит пройден. Аномалий нет.")
+                        break
+                        
+                    for gap in gaps:
+                        s_idx, e_idx = gap
                         t_start, t_end = get_safe_bounds(canon_words, s_idx, e_idx, audio_duration)
                         
-                        # V12: Остров Повторов перехватывает управление
-                        if is_repetition_island(canon_words, s_idx, e_idx):
-                            if repetition_island_mapper(canon_words, s_idx, e_idx, t_start, t_end, vad_mask):
-                                continue
-
-                        if reason in ["PHYSICAL_IMPOSSIBILITY", "UNRESOLVED_GAP"] and (e_idx - s_idx) >= 2:
-                            if macro_compass(canon_words, s_idx, e_idx, gated_audio_data, t_start, t_end, model, lang):
-                                continue 
+                        if (e_idx - s_idx) >= 2:
+                            shift_idx = diagnostic_compass(canon_words, s_idx, e_idx, audio_data_raw, t_start, t_end, model, lang)
+                            if shift_idx != -1:
+                                log.warning(f"   🔄 [Diagnostic Compass] Найден глобальный сдвиг. Расширяем карантин до {shift_idx} слова.")
+                                for k in range(e_idx + 1, shift_idx + 1):
+                                    canon_words[k]["start"] = canon_words[k]["end"] = -1.0
+                                gap = (s_idx, shift_idx)
                         
-                        if heal_by_motif_matrix(canon_words, s_idx, e_idx, audio_duration): continue
-                        if ctc_inquisitor(canon_words, s_idx, e_idx, gated_audio_data, model, lang, t_start, t_end): continue
-                        
-                        if aggressive_mode:
-                            heal_phonetic_loom(canon_words, s_idx, e_idx, t_start, t_end, vad_mask)
+                        self._the_arena_surgery(canon_words, gap, audio_data_raw, model, lang, strong_vad, weak_vad, audio_duration)
                 
-                self._apply_gravity(canon_words, audio_duration, vad_mask)
-                self._apply_vad_guillotine(canon_words, vad_mask)
+                self._apply_vad_guillotine(canon_words, combined_vad)
                 self._smoothing(canon_words)
 
-                score = evaluate_alignment_quality(canon_words, vad_mask, self.all_curtains, spot_check_fn=spot_check_fn)
+                score = evaluate_alignment_quality(canon_words, strong_vad, weak_vad, self.all_curtains, spot_check_fn=spot_check_fn)
                 log.info(f"📊 Оценка качества после Pass {pass_idx + 1}: {score:.1f}/100")
                 
                 if score > best_score:
                     best_score = score
                     best_words = copy.deepcopy(canon_words)
-                    
-                if score >= 85.0:
-                    break
+                if score >= 85.0: break
             
             canon_words = best_words
             score = best_score
 
-            # ─── V12: ТОЧЕЧНАЯ РЕСТАВРАЦИЯ (FALLBACK) ────────────
-            if score < 85.0:
-                log.warning(f"🚨 [Targeted Fallback] Оценка {score:.1f}/100. Запуск Семантической Реставрации!")
-                
-                bugs = self._audit_json(canon_words)
-                self._fix_bugs(canon_words, bugs)
-                anomalies = self._run_tribunal(canon_words, is_harmonic_fn)
-                for s_idx, e_idx, _ in anomalies:
-                    for k in range(s_idx, e_idx + 1):
-                        canon_words[k]["start"] = canon_words[k]["end"] = -1.0
-                
-                gaps = self._find_gaps(canon_words)
-                harpoon_used = False
-                
-                for (s_idx, e_idx) in gaps:
-                    t_start, t_end = get_safe_bounds(canon_words, s_idx, e_idx, audio_duration)
-                    t_start = max(0.0, t_start - 0.5)
-                    t_end = min(audio_duration, t_end + 0.5)
-                    
-                    # V12: Сначала проверяем на Остров Повторов
-                    if is_repetition_island(canon_words, s_idx, e_idx):
-                        if repetition_island_mapper(canon_words, s_idx, e_idx, t_start, t_end, vad_mask):
-                            harpoon_used = True
-                            continue
-                            
-                    # Иначе бьем Семантическим Гарпуном
-                    if semantic_harpoon(canon_words, s_idx, e_idx, audio_data_raw, t_start, t_end, model, lang):
-                        harpoon_used = True
-                
-                if harpoon_used:
-                    self._apply_gravity(canon_words, audio_duration, vad_mask)
-                    self._apply_vad_guillotine(canon_words, vad_mask)
-                    self._smoothing(canon_words)
-                    score = evaluate_alignment_quality(canon_words, vad_mask, self.all_curtains) 
-                    log.info(f"📊 Оценка качества после Реставрации: {score:.1f}/100")
-
-            # ─── V12: АБСОЛЮТНАЯ ГРАВИТАЦИЯ (ФИНАЛЬНЫЙ ЩИТ) ────────────
-            # Гарантируем, что ни одно слово не останется с таймингом -1.0
             if any(w["start"] == -1.0 for w in canon_words):
-                self._apply_absolute_gravity(canon_words, audio_duration, vad_mask)
-                self._apply_vad_guillotine(canon_words, vad_mask)
+                self._apply_absolute_gravity(canon_words, audio_duration, combined_vad)
+                self._apply_vad_guillotine(canon_words, combined_vad)
                 self._smoothing(canon_words)
 
         except Exception as e:
@@ -2763,7 +2691,6 @@ class KaraokeAligner:
         finally:
             if model: del model
             if 'audio_data_raw' in locals(): del audio_data_raw
-            if 'gated_audio_data' in locals(): del gated_audio_data
             gc.collect()
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
@@ -2782,7 +2709,7 @@ class KaraokeAligner:
         with open(output_json_path, "w", encoding="utf-8") as f:
             json.dump(final_json, f, ensure_ascii=False, indent=2)
 
-        dump_debug("12_Absolute_Harmony", final_json, self._track_stem)
+        dump_debug("14_0_Symphony", final_json, self._track_stem)
         log.info(f"Aligner ГОТОВО → {output_json_path}")
         log.info("=" * 50)
         

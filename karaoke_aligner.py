@@ -160,39 +160,32 @@ class KaraokeAligner:
             t_e = words[first_block[-1]]["end"]
             density = calculate_phrase_density(words, first_block[0], first_block[-1], t_s, t_e)
             
-            # Если текст размазан по тишине/болтовне, плотность будет микроскопической
             if density < 0.2 and (t_e - t_s) > 8.0:
                 bugs.append({"type": "FALSE_START", "cluster": first_block})
 
-        # 2. Оценка слов и Строк
         for i in range(n):
             w = words[i]
             if w["start"] == -1: continue
             dur = w["end"] - w["start"]
             min_dur, max_dur = get_phonetic_bounds(w["clean_text"], w["line_break"])
             
-            # Схлопывание (BLACK_HOLE)
             if dur < min_dur * 0.5 or dur <= 0.05 or (i > 0 and words[i-1]["end"] != -1 and w["start"] < words[i-1]["start"]):
                 bugs.append({"type": "BLACK_HOLE", "idx": i})
             
-            # Перерастяжение (OVERSTRETCH) - чисто физическое правило
             if dur > max_dur * 1.5:
                 bugs.append({"type": "OVERSTRETCH", "idx": i})
 
         # 3. Внутристрочная Гравитация (TORN_LINE V5.0)
         for i in range(n - 1):
             if words[i]["end"] != -1 and words[i+1]["start"] != -1:
-                # Если слова принадлежат одной строке
                 if words[i]["line_num"] == words[i+1]["line_num"]:
                     gap = words[i+1]["start"] - words[i]["end"]
                     _, max_d = get_phonetic_bounds(words[i]["clean_text"], False)
                     
-                    # Динамически вычисляем допустимую паузу внутри фразы
                     allowed_pause = max(1.5, max_d * 2.0)
                     
                     if gap > allowed_pause:
                         vad_in_gap = get_vad_capacity(words[i]["end"], words[i+1]["start"], combined_vad)
-                        # Если внутри разрыва есть чей-то голос, значит строка наложена на чужую партию
                         if vad_in_gap > 1.0: 
                             log.warning(f"⚖️ [Master Auditor] Порванная строка ({gap:.1f}s) между '{words[i]['clean_text']}' и '{words[i+1]['clean_text']}'.")
                             bugs.append({"type": "TORN_LINE", "line_num": words[i]["line_num"]})
@@ -224,6 +217,38 @@ class KaraokeAligner:
                 for w in words:
                     if w["line_num"] == target_line:
                         w["start"] = w["end"] = -1.0
+
+    def _run_tribunal(self, words: list, is_harmonic_fn) -> list:
+        """Восстановлено: Трибунал микро-физики (обрезает резиновые хвосты эха и ловит сжатия)."""
+        quarantine_zones = []
+        n, i = len(words), 0
+        while i < n:
+            if words[i]["start"] == -1:
+                i += 1; continue
+                
+            dur = words[i]["end"] - words[i]["start"]
+            min_dur, max_dur = get_phonetic_bounds(words[i]["clean_text"], words[i]["line_break"])
+            
+            if dur > max_dur and dur > 2.0:
+                if not is_harmonic_fn(words[i]["start"] + max_dur, words[i]["end"]):
+                    log.warning(f"[Tribunal] Резина найдена на '{words[i]['clean_text']}'. Обрезаем (Шум/Эхо).")
+                    words[i]["end"] = words[i]["start"] + max_dur
+            
+            j = i
+            cluster_min_dur = 0.0
+            while j < n and words[j]["start"] != -1 and (words[j]["end"] - words[i]["start"] < 1.5):
+                mn, _ = get_phonetic_bounds(words[j]["clean_text"], words[j]["line_break"])
+                cluster_min_dur += mn
+                j += 1
+            
+            real_dur = words[j-1]["end"] - words[i]["start"] if j > i else 0
+            if (j - i) >= 3 and real_dur < (cluster_min_dur * 0.7):
+                quarantine_zones.append((i, j - 1, "PHYSICAL_IMPOSSIBILITY"))
+                i = j
+                continue
+            i += 1
+            
+        return quarantine_zones
 
     def _find_gaps(self, words: list) -> list:
         gaps, i, n = [], 0, len(words)
@@ -434,7 +459,7 @@ class KaraokeAligner:
                     bugs = self._audit_json(canon_words, audio_duration, combined_vad)
                     self._fix_bugs(canon_words, bugs)
                     
-                    # Трибунал (резка хвостов)
+                    # Трибунал (резка хвостов) восстановлен!
                     anomalies = self._run_tribunal(canon_words, is_harmonic_fn)
                     for s_idx, e_idx, reason in anomalies:
                         log.info(f"   -> Карантин [{s_idx}-{e_idx}]: {reason}. Сброс таймингов.")
