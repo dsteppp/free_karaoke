@@ -97,10 +97,10 @@ def propose_inquisitor(words: list, s_idx: int, e_idx: int, audio_data: np.ndarr
         pass
     return None
 
-# ─── АРЕНА: КАНДИДАТ 3 (SEMANTIC HARPOON) ───────────────────────────────────
+# ─── АРЕНА: КАНДИДАТ 3 (SEMANTIC HARPOON - НОВЫЙ АВАНГАРД) ──────────────────
 
 def propose_harpoon(words: list, s_idx: int, e_idx: int, audio_data: np.ndarray, model, lang: str, t_start: float, t_end: float) -> Proposal:
-    """Слепой Whisper на уровне слов."""
+    """Слепой Whisper на уровне слов. Отлично спасает сброшенные интро."""
     if t_end - t_start < 0.5: return None
     sr = 16000
     crop = audio_data[int(max(0, t_start - 0.2) * sr) : int(min(len(audio_data), (t_end + 0.2) * sr))]
@@ -144,13 +144,10 @@ def propose_harpoon(words: list, s_idx: int, e_idx: int, audio_data: np.ndarray,
         pass
     return None
 
-# ─── АРЕНА: КАНДИДАТ 4 (PHONETIC LOOM / MATH DISTRIBUTOR) ───────────────────
+# ─── АРЕНА: КАНДИДАТ 4 (PHONETIC LOOM) ──────────────────────────────────────
 
 def propose_loom(words: list, s_idx: int, e_idx: int, t_start: float, t_end: float, strong_vad: list, weak_vad: list) -> Proposal:
-    """
-    Ткацкий станок. Работает как чистый математический распределитель.
-    Идеально спасает цикличные фразы, натягивая их строго на зоны VAD.
-    """
+    """Математический распределитель. Учитывает переносы строк (создает микро-паузы)."""
     combined_vad = sorted(strong_vad + weak_vad, key=lambda x: x[0])
     
     valid_vads = []
@@ -187,6 +184,10 @@ def propose_loom(words: list, s_idx: int, e_idx: int, t_start: float, t_end: flo
                 break
             accum += dur
             
+        # Микро-пауза для конца строки (Intra-line cohesion aid)
+        if words[k]["line_break"] and (mapped_e - mapped_s) > 0.3:
+            mapped_e -= 0.1
+            
         timings.append({"start": mapped_s, "end": mapped_e})
         curr_t += w_logic_dur
         
@@ -196,10 +197,7 @@ def propose_loom(words: list, s_idx: int, e_idx: int, t_start: float, t_end: flo
 # ─── THE SUPREME JUDGE (АБСОЛЮТНЫЙ СУДЬЯ) ───────────────────────────────────
 
 def the_supreme_judge(proposals: list, words: list, s_idx: int, e_idx: int, strong_vad: list, weak_vad: list) -> Proposal:
-    """
-    Выбирает лучшее предложение.
-    V4.1: Добавлен Смертный Приговор (-1000 баллов) за сплющивание слов (черные дыры).
-    """
+    """Выбирает лучшее предложение. Жестко штрафует за 'черные дыры'."""
     best_prop = None
     best_score = -99999.0
     
@@ -218,9 +216,9 @@ def the_supreme_judge(proposals: list, words: list, s_idx: int, e_idx: int, stro
             dur = t["end"] - t["start"]
             min_dur, max_dur = get_phonetic_bounds(clean_texts[i], line_breaks[i])
             
-            # 1. Физика (жесткие штрафы за аномалии длины)
+            # 1. Физика (Смертный приговор за сплющивание слов)
             if dur < 0.08:
-                score -= 1000.0  # 🚨 СМЕРТНЫЙ ПРИГОВОР (Запрет Инквизитору плодить черные дыры)
+                score -= 1000.0  # 🚨 СМЕРТНЫЙ ПРИГОВОР
             elif dur < min_dur: 
                 score -= 200.0 * (min_dur - dur)
                 
@@ -254,10 +252,7 @@ def the_supreme_judge(proposals: list, words: list, s_idx: int, e_idx: int, stro
 # ─── ДИАГНОСТИЧЕСКИЙ КОМПАС (ADVISORY COMPASS) ──────────────────────────────
 
 def diagnostic_compass(words: list, s_idx: int, e_idx: int, audio_data: np.ndarray, t_start: float, t_end: float, model, lang: str) -> int:
-    """
-    Щупает будущее на предмет глобальных сдвигов.
-    V4.1: Отключается внутри Островов Повторов, чтобы не путать циклы со сдвигом!
-    """
+    """Щупает будущее на предмет глобальных сдвигов. Отключается внутри Островов Повторов."""
     if is_repetition_island(words, s_idx, e_idx):
         log.debug("   🧭 [Diagnostic Compass] Обнаружен цикл (Остров). Компас отключен для защиты от ложного сдвига.")
         return -1
