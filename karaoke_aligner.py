@@ -12,7 +12,7 @@ import numpy as np
 
 from app_logger import get_logger, dump_debug
 
-# ─── ИМПОРТЫ ИЗ НАШЕЙ НОВОЙ МОДУЛЬНОЙ СИСТЕМЫ (SYMPHONY V5.2) ───────────────
+# ─── ИМПОРТЫ ИЗ НАШЕЙ НОВОЙ МОДУЛЬНОЙ СИСТЕМЫ (SYMPHONY V5.3) ───────────────
 from aligner_utils import (
     detect_language, prepare_text, get_vowel_weight, 
     get_phonetic_bounds, get_line_phonetic_bounds, get_vad_capacity,
@@ -33,8 +33,8 @@ log = get_logger("aligner")
 
 class KaraokeAligner:
     """
-    Главный Дирижер "Symphony V5.2: Empirical Structuralism".
-    Самокалибровка, Эмпирическая Лавина и Запрет Разрывов.
+    Главный Дирижер "Symphony V5.3: Absolute Empiricism".
+    Stanza Cohesion (Очистка Интро) и Partial Mass Avalanche (Точечная Лавина).
     """
 
     def __init__(self, model_name="medium"):
@@ -142,28 +142,33 @@ class KaraokeAligner:
 
         log.info(f"[Actor] Платиновый скелет установлен: {anchors_count}/{len(canon_words)} слов.")
 
-    # ─── ЭТАП 2: АУДИТОР С ЭМПИРИЧЕСКИМ ИНТЕЛЛЕКТОМ (V5.2) ──────────────────────
+    # ─── ЭТАП 2: АУДИТОР С ЭМПИРИЧЕСКИМ ИНТЕЛЛЕКТОМ (V5.3) ──────────────────────
 
     def _audit_json(self, words: list, audio_duration: float, combined_vad: list, empirical_data: dict) -> list:
         bugs = []
         n = len(words)
         
-        # 1. Интеллектуальный Очиститель Интро (Без магических чисел)
-        line_0_words = [i for i, w in enumerate(words) if w["line_num"] == 0 and w["start"] != -1.0]
-        if line_0_words:
-            first_idx, last_idx = line_0_words[0], line_0_words[-1]
-            t_s, t_e = words[first_idx]["start"], words[last_idx]["end"]
+        # 1. Зачистка Интро через Разрыв Строфы (Stanza Cohesion)
+        first_stanza_words = [i for i, w in enumerate(words) if w["stanza_num"] == 0 and w["start"] != -1.0]
+        if first_stanza_words:
+            emp_gap = empirical_data.get("avg_breath_gap", 1.0)
+            critical_gap = max(5.0, emp_gap * 10) # Физический предел паузы внутри одного куплета
             
-            # Вычисляем темп (SDR) первой строки
-            actual_sdr = calculate_sdr(words, first_idx, last_idx, t_s, t_e)
-            stanza = words[first_idx]["stanza_num"]
-            # Эталонный темп этого куплета
-            expected_sdr = empirical_data["stanza_sdr"].get(stanza, empirical_data["global_sdr"])
+            max_gap = 0.0
+            cutoff = -1
             
-            # Если темп в 4 раза медленнее эталона куплета - это размазанное интро
-            if actual_sdr > 0 and actual_sdr < (expected_sdr * 0.25) and (t_e - t_s) > 4.0:
-                log.info(f"🔎 [Auditor] Интро размазано (Темп {actual_sdr:.2f} при норме {expected_sdr:.2f}). Диагноз: FALSE_START.")
-                bugs.append({"type": "FALSE_START", "line_num": 0})
+            for k in range(len(first_stanza_words) - 1):
+                idx_curr = first_stanza_words[k]
+                idx_next = first_stanza_words[k+1]
+                gap = words[idx_next]["start"] - words[idx_curr]["end"]
+                
+                if gap > critical_gap and gap > max_gap:
+                    max_gap = gap
+                    cutoff = idx_next
+                    
+            if cutoff != -1:
+                log.info(f"🔎 [Auditor] Аномальный разрыв {max_gap:.1f}с внутри Строфы №0. Диагноз: FALSE_START на битах.")
+                bugs.append({"type": "FALSE_START", "cutoff_idx": cutoff})
 
         # 2. Оценка микро-физики
         for i in range(n):
@@ -197,11 +202,12 @@ class KaraokeAligner:
     def _fix_bugs(self, words: list, bugs: list):
         for bug in bugs:
             if bug["type"] == "FALSE_START":
-                target_line = bug["line_num"]
-                log.warning(f"[Surgeon] Устранение FALSE_START: сброс строки №{target_line}")
-                for w in words:
-                    if w["line_num"] == target_line:
-                        w["start"] = w["end"] = -1.0
+                cutoff = bug["cutoff_idx"]
+                log.warning(f"[Surgeon] Устранение FALSE_START: сброс мусора до слова {cutoff}")
+                for k in range(cutoff):
+                    # Сбрасываем только если это действительно первая строфа (куплет)
+                    if words[k]["stanza_num"] == 0:
+                        words[k]["start"] = words[k]["end"] = -1.0
             elif bug["type"] == "BLACK_HOLE":
                 idx = bug["idx"]
                 start_del, end_del = max(0, idx - 1), min(len(words) - 1, idx + 1)
@@ -284,7 +290,6 @@ class KaraokeAligner:
         prop_harp = propose_harpoon(words, s_idx, e_idx, audio_data, model, lang, t_start, t_end)
         if prop_harp: proposals.append(prop_harp)
             
-        # V5.2: Передаем эмпирику в Ткацкий станок! (Будет обновлен в aligner_orchestra.py)
         prop_loom = propose_loom(words, s_idx, e_idx, t_start, t_end, strong_vad, weak_vad, empirical_data)
         if prop_loom: proposals.append(prop_loom)
             
@@ -404,7 +409,7 @@ class KaraokeAligner:
         self._track_stem = os.path.basename(output_json_path).replace("_(Karaoke Lyrics).json", "")
 
         log.info("=" * 50)
-        log.info(f"Aligner СТАРТ (Symphony V5.2: Empirical Structuralism): {self._track_stem}")
+        log.info(f"Aligner СТАРТ (Symphony V5.3: Absolute Empiricism): {self._track_stem}")
         
         canon_words_original = prepare_text(raw_lyrics)
         if not canon_words_original:
@@ -451,7 +456,6 @@ class KaraokeAligner:
 
                 self._platinum_skeleton(model, audio_data_raw, canon_words, lang)
 
-                # V5.2: Сбор эталонов песни!
                 empirical_data = get_empirical_data(canon_words)
                 log.info(f"📊 Эмпирика: Темп={empirical_data['global_sdr']:.1f} слог/с, Вдох={empirical_data['avg_breath_gap']:.2f}с")
 
@@ -466,7 +470,7 @@ class KaraokeAligner:
                             
                     gaps = self._find_gaps(canon_words)
                     
-                    # 3. ЭМПИРИЧЕСКАЯ ЛАВИНА (Avalanche V5.2)
+                    # 3. ЭМПИРИЧЕСКАЯ ЛАВИНА (Точечная оценка массы V5.3)
                     expanded_gaps = []
                     i = 0
                     while i < len(gaps):
@@ -476,28 +480,36 @@ class KaraokeAligner:
                             t_start, t_end = get_safe_bounds(canon_words, s_idx, e_idx, audio_duration)
                             vad_cap = get_vad_capacity(t_start, t_end, combined_vad)
                             
-                            # Вычисляем Эмпирическую потребность во времени
                             req_time = 0.0
                             lines_in_gap = sorted(list(set(canon_words[k]["line_num"] for k in range(s_idx, e_idx + 1))))
+                            
                             for l_num in lines_in_gap:
+                                # Вычисляем долю потерянных слов от целой строки (Partial Mass)
+                                missing_vowels = sum(1 for k in range(s_idx, e_idx+1) if canon_words[k]["line_num"] == l_num for c in canon_words[k]["clean_text"] if c in "аеёиоуыэюяaeiouy")
+                                missing_vowels = max(1, missing_vowels)
+                                
+                                total_vowels_in_line = sum(1 for w in canon_words if w["line_num"] == l_num for c in w["clean_text"] if c in "аеёиоуыэюяaeiouy")
+                                total_vowels_in_line = max(1, total_vowels_in_line)
+                                
+                                fraction = missing_vowels / total_vowels_in_line
+                                
                                 w_sample = next(w for w in canon_words[s_idx:e_idx+1] if w["line_num"] == l_num)
                                 h_id = w_sample["homologous_id"]
                                 s_num = w_sample["stanza_num"]
 
-                                if h_id in empirical_data["homo_durations"]:
-                                    req_time += empirical_data["homo_durations"][h_id]
+                                if h_id != -1 and h_id in empirical_data["homo_durations"]:
+                                    req_time += empirical_data["homo_durations"][h_id] * fraction
                                 else:
-                                    vowels = max(1, sum(1 for k in range(s_idx, e_idx+1) if canon_words[k]["line_num"] == l_num for c in canon_words[k]["clean_text"] if c in "аеёиоуыэюяaeiouy"))
                                     exp_sdr = empirical_data["stanza_sdr"].get(s_num, empirical_data["global_sdr"])
-                                    req_time += vowels / exp_sdr
+                                    req_time += missing_vowels / exp_sdr
 
                             if len(lines_in_gap) > 1:
-                                req_time += (len(lines_in_gap) - 1) * empirical_data["avg_breath_gap"]
+                                req_time += (len(lines_in_gap) - 1) * min(1.0, empirical_data["avg_breath_gap"])
 
-                            # Если доступный голос < 85% от эмпирически необходимого - сносим следующий якорь!
+                            # Если доступный голос < 85% от необходимого
                             if vad_cap < req_time * 0.85 and e_idx < len(canon_words) - 1:
                                 next_line_num = canon_words[e_idx + 1]["line_num"]
-                                log.warning(f"🌋 [Empirical Avalanche] VAD ({vad_cap:.1f}s) < Эталон ({req_time:.1f}s). Сносим строку №{next_line_num}!")
+                                log.warning(f"🌋 [Partial Avalanche] VAD ({vad_cap:.1f}s) < Эталон ({req_time:.1f}s). Сносим строку №{next_line_num}!")
                                 
                                 for k in range(e_idx + 1, len(canon_words)):
                                     if canon_words[k]["line_num"] == next_line_num:
