@@ -2,7 +2,10 @@ import re
 import numpy as np
 import rapidfuzz
 from app_logger import get_logger
-from aligner_utils import get_safe_bounds, get_vowel_weight, get_phonetic_bounds, calculate_overlap
+from aligner_utils import (
+    get_safe_bounds, get_vowel_weight, get_phonetic_bounds, 
+    calculate_overlap, is_repetition_island
+)
 
 log = get_logger("aligner_orchestra")
 
@@ -88,7 +91,6 @@ def propose_inquisitor(words: list, s_idx: int, e_idx: int, audio_data: np.ndarr
                     })
                     c_ptr = best_match + 1
                 else:
-                    # Если пропустил слово, Инквизитор проиграл этот раунд (возвращаем неполный массив)
                     return None
             return Proposal("CTC Inquisitor", timings)
     except Exception:
@@ -142,11 +144,13 @@ def propose_harpoon(words: list, s_idx: int, e_idx: int, audio_data: np.ndarray,
         pass
     return None
 
-# ─── АРЕНА: КАНДИДАТ 4 (PHONETIC LOOM / GRAVITY) ────────────────────────────
+# ─── АРЕНА: КАНДИДАТ 4 (PHONETIC LOOM / MATH DISTRIBUTOR) ───────────────────
 
 def propose_loom(words: list, s_idx: int, e_idx: int, t_start: float, t_end: float, strong_vad: list, weak_vad: list) -> Proposal:
-    """Ткацкий станок. Натягивает слова строго на зоны VAD."""
-    # Объединяем сильный и слабый голос для станка
+    """
+    Ткацкий станок. Работает как чистый математический распределитель.
+    Идеально спасает цикличные фразы, натягивая их строго на зоны VAD.
+    """
     combined_vad = sorted(strong_vad + weak_vad, key=lambda x: x[0])
     
     valid_vads = []
@@ -193,10 +197,11 @@ def propose_loom(words: list, s_idx: int, e_idx: int, t_start: float, t_end: flo
 
 def the_supreme_judge(proposals: list, words: list, s_idx: int, e_idx: int, strong_vad: list, weak_vad: list) -> Proposal:
     """
-    Выбирает лучшее предложение на основе физики звука и попадания в вокальную карту.
+    Выбирает лучшее предложение.
+    V4.1: Добавлен Смертный Приговор (-1000 баллов) за сплющивание слов (черные дыры).
     """
     best_prop = None
-    best_score = -9999.0
+    best_score = -99999.0
     
     if not proposals:
         return None
@@ -214,22 +219,24 @@ def the_supreme_judge(proposals: list, words: list, s_idx: int, e_idx: int, stro
             min_dur, max_dur = get_phonetic_bounds(clean_texts[i], line_breaks[i])
             
             # 1. Физика (жесткие штрафы за аномалии длины)
-            if dur < min_dur: score -= 50 * (min_dur - dur)
-            if dur > max_dur * 1.5: score -= 30 * (dur - max_dur)
+            if dur < 0.08:
+                score -= 1000.0  # 🚨 СМЕРТНЫЙ ПРИГОВОР (Запрет Инквизитору плодить черные дыры)
+            elif dur < min_dur: 
+                score -= 200.0 * (min_dur - dur)
+                
+            if dur > max_dur * 1.5: 
+                score -= 100.0 * (dur - max_dur)
             
             # 2. Vocal Heatmap (Попадание в голос)
             overlap_strong = calculate_overlap(t["start"], t["end"], strong_vad)
             overlap_weak = calculate_overlap(t["start"], t["end"], weak_vad)
-            
             silence_dur = dur - overlap_strong - overlap_weak
             
-            # Если слово звучит в "Красной" зоне - даем бонус
             if overlap_strong > 0.1:
                 score += 5.0
             
-            # Если слово попало в абсолютную тишину (Синяя зона) - уничтожаем счет
             if silence_dur > 0.15:
-                score -= (silence_dur * 100.0) 
+                score -= (silence_dur * 200.0) 
                 
         prop.score = score
         log.debug(f"   ⚖️ Судья оценил {prop.source_name}: {score:.1f} баллов.")
@@ -248,9 +255,13 @@ def the_supreme_judge(proposals: list, words: list, s_idx: int, e_idx: int, stro
 
 def diagnostic_compass(words: list, s_idx: int, e_idx: int, audio_data: np.ndarray, t_start: float, t_end: float, model, lang: str) -> int:
     """
-    Больше не ломает тайминги сам! Только возвращает индекс (future_idx),
-    если обнаружил глобальный сдвиг. Иначе возвращает -1.
+    Щупает будущее на предмет глобальных сдвигов.
+    V4.1: Отключается внутри Островов Повторов, чтобы не путать циклы со сдвигом!
     """
+    if is_repetition_island(words, s_idx, e_idx):
+        log.debug("   🧭 [Diagnostic Compass] Обнаружен цикл (Остров). Компас отключен для защиты от ложного сдвига.")
+        return -1
+
     if (e_idx - s_idx) < 2: return -1 
     gap_dur = t_end - t_start
     if gap_dur < 1.0: return -1

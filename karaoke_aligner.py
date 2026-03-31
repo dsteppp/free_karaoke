@@ -31,8 +31,8 @@ log = get_logger("aligner")
 
 class KaraokeAligner:
     """
-    Главный Дирижер "Symphony V13: The Colosseum".
-    Адаптивный Авангард, Арена Инструментов и Абсолютный Судья.
+    Главный Дирижер "Symphony V13.1: The Colosseum".
+    Адаптивный Авангард, Wall Jump Mechanic и Island Expansion.
     """
 
     def __init__(self, model_name="medium"):
@@ -49,10 +49,7 @@ class KaraokeAligner:
     # ─── ЭТАП 1: ПОДГОТОВКА И СКЕЛЕТ ──────────────────────────────────────────
 
     def _find_instrumental_voids(self, strong_vad: list, weak_vad: list):
-        """
-        Ищет длинные инструментальные проигрыши (>4 сек без голоса) 
-        и превращает их в Железный Занавес, чтобы не тянуть слова через соло.
-        """
+        """Ищет длинные инструментальные проигрыши (>4 сек без голоса)."""
         log.info("🕳️ [Void Detector] Поиск длинных инструментальных проигрышей...")
         combined_vad = sorted(strong_vad + weak_vad, key=lambda x: x[0])
         if not combined_vad: return
@@ -67,15 +64,28 @@ class KaraokeAligner:
         
         last_e = 0.0
         for s, e in merged:
-            if s - last_e > 4.0: # 4 секунды чистой музыки
+            if s - last_e > 4.0: 
                 log.info(f"   🕳️ Найден Instrumental Void: {last_e:.2f}s - {s:.2f}s. Установлен занавес.")
                 self.all_curtains.append((last_e, s))
             last_e = e
 
+    def _filter_vad_from_curtains(self, vad_list: list) -> list:
+        """V4.1: Физически вырезает занавесы из VAD для создания механики Wall Jump."""
+        res = []
+        for vs, ve in vad_list:
+            curr_s = vs
+            for cs, ce in self.all_curtains:
+                if ce <= curr_s: continue
+                if cs >= ve: break
+                if curr_s < cs: res.append((curr_s, cs))
+                curr_s = max(curr_s, ce)
+            if curr_s < ve: res.append((curr_s, ve))
+        return res
+
     def _vanguard_protocol(self, model, audio_data: np.ndarray, words: list, lang: str):
-        """Ищет истинное начало песни, игнорируя долгие интро."""
+        """V4.1: Ленивый Авангард. Мгновенный стоп при первом хронологическом совпадении."""
         if not words: return
-        log.info("🛡️ [Vanguard] Поиск истинного начала песни (Бесконечный сканер)...")
+        log.info("🛡️ [Vanguard] Поиск истинного начала песни (Лентяй-сканер)...")
         sr = 16000
         audio_dur = len(audio_data) / sr
         
@@ -94,9 +104,6 @@ class KaraokeAligner:
         step_size = 15.0
         search_start = 0.0
         
-        best_score = 0
-        best_t = 0.0
-        
         while search_start < audio_dur:
             crop_end = min(search_start + window_size, audio_dur)
             crop = audio_data[int(search_start * sr) : int(crop_end * sr)]
@@ -109,17 +116,16 @@ class KaraokeAligner:
                     for i in range(len(b_texts) - search_len + 1):
                         chunk = " ".join([t for t in b_texts[i:i+search_len] if t])
                         score = rapidfuzz.fuzz.partial_ratio(target_text, chunk)
-                        if score > 75 and score > best_score:
-                            best_score = score
+                        
+                        # V4.1: Нам не важна громкость, первое уверенное совпадение - это старт!
+                        if score > 70:
                             best_t = search_start + blind_words[i].start
-                            
-                    if best_score > 75:
-                        if best_t > 3.0:
-                            log.info(f"   🚩 Истинное начало найдено на {best_t:.2f}s. Установка абсолютного Занавеса на болтовню.")
-                            self.all_curtains.append((0.0, best_t - 0.2))
-                        else:
-                            log.info("   ✅ Текст начинается сразу, занавес не требуется.")
-                        return 
+                            if best_t > 3.0:
+                                log.info(f"   🚩 Истинное начало найдено на {best_t:.2f}s. Установка Занавеса.")
+                                self.all_curtains.append((0.0, best_t - 0.2))
+                            else:
+                                log.info("   ✅ Текст начинается сразу, занавес не требуется.")
+                            return 
             except Exception as e:
                 log.warning(f"   ❌ Ошибка Авангарда на отрезке {search_start}s: {e}")
             search_start += step_size
@@ -300,13 +306,8 @@ class KaraokeAligner:
     # ─── ЭТАП 3: АРЕНА (THE COLOSSEUM) ──────────────────────────────────────────
 
     def _the_arena_surgery(self, words: list, gap: tuple, audio_data: np.ndarray, model, lang: str, strong_vad: list, weak_vad: list, audio_duration: float):
-        """
-        Отправляет изолированный участок на Арену.
-        Инструменты соревнуются, Судья выбирает победителя.
-        """
         s_idx, e_idx = gap
         t_start, t_end = get_safe_bounds(words, s_idx, e_idx, audio_duration)
-        
         if t_end - t_start < 0.1: return
 
         log.info(f"🏟️ [The Arena] Слова [{s_idx}-{e_idx}] выходят на Арену! Окно: {t_start:.1f}s - {t_end:.1f}s")
@@ -325,25 +326,25 @@ class KaraokeAligner:
         prop_harp = propose_harpoon(words, s_idx, e_idx, audio_data, model, lang, t_start, t_end)
         if prop_harp: proposals.append(prop_harp)
             
-        # 4. Phonetic Loom (Безопасная гравитация)
+        # 4. Phonetic Loom (Математическая Гравитация)
         prop_loom = propose_loom(words, s_idx, e_idx, t_start, t_end, strong_vad, weak_vad)
         if prop_loom: proposals.append(prop_loom)
             
-        # Суд
         winner = the_supreme_judge(proposals, words, s_idx, e_idx, strong_vad, weak_vad)
         
         if winner:
             for k, t in enumerate(winner.timings):
+                # V4.1: Скрытый Прыжок через стену (занавесы уже вырезаны из VAD, enforce_curtains просто поправляет мелкие нахлесты)
                 mapped_s, mapped_e = enforce_curtains(t["start"], t["end"], self.all_curtains)
                 words[s_idx + k]["start"] = mapped_s
                 words[s_idx + k]["end"] = mapped_e
         else:
-            log.warning(f"   ⚠️ Арена не выявила победителя для [{s_idx}-{e_idx}]. Оставлено для Абсолютной Гравитации.")
+            log.warning(f"   ⚠️ Арена не выявила победителя для [{s_idx}-{e_idx}].")
 
     # ─── ЭТАП 4: ФИНАЛЬНЫЕ ШТРИХИ ──────────────────────────────────────────────
 
     def _apply_absolute_gravity(self, words: list, audio_duration: float, vad_mask: list):
-        """Fail-Safe: Жестко заливает всё, что Арена не смогла починить."""
+        """V4.1: Fail-Safe с Правосторонеей гравитацией (Right-Anchor Gravity)."""
         log.info("🪐 [Absolute Gravity] Принудительное спасение всех оставшихся слов...")
         n = len(words)
         
@@ -363,11 +364,29 @@ class KaraokeAligner:
                 
                 t_start, t_end = get_safe_bounds(words, i, j - 1, audio_duration)
                 active_vads = get_available_vad(t_start, t_end)
-                if not active_vads: active_vads = [(t_start, t_end)]
                     
                 weights = [get_vowel_weight(words[k]["clean_text"], words[k]["line_break"]) for k in range(i, j)]
                 total_w = sum(weights)
+                req_time = total_w * 0.4
+                
+                if not active_vads: active_vads = [(t_start, t_end)]
                 total_vad_time = sum(e - s for s, e in active_vads)
+                
+                # V4.1: Right-Anchor Gravity (Спасение от раннего 'Ты')
+                # Если слева огромная дыра и VAD слишком много - прижимаем слова вправо к якорю!
+                if t_end - t_start > req_time * 2.5 and total_vad_time > req_time * 1.5:
+                    trimmed_vads = []
+                    accum = 0.0
+                    for vs, ve in reversed(active_vads):
+                        dur = ve - vs
+                        if accum + dur <= req_time * 1.5:
+                            trimmed_vads.insert(0, (vs, ve))
+                            accum += dur
+                        else:
+                            trimmed_vads.insert(0, (ve - (req_time * 1.5 - accum), ve))
+                            break
+                    active_vads = trimmed_vads
+                    total_vad_time = sum(e - s for s, e in active_vads)
                 
                 curr_t = 0.0
                 for k in range(i, j):
@@ -387,6 +406,7 @@ class KaraokeAligner:
                             break
                         accum += dur
                         
+                    # Wall Jump Mechanic сработает тут, так как active_vads не содержит зон занавеса
                     words[k]["start"], words[k]["end"] = enforce_curtains(mapped_s, mapped_e, self.all_curtains)
                     curr_t += w_logic_dur
                     healed += 1
@@ -431,7 +451,7 @@ class KaraokeAligner:
         self._track_stem = os.path.basename(output_json_path).replace("_(Karaoke Lyrics).json", "")
 
         log.info("=" * 50)
-        log.info(f"Aligner СТАРТ (Symphony V13: The Colosseum): {self._track_stem}")
+        log.info(f"Aligner СТАРТ (Symphony V13.1: The Colosseum): {self._track_stem}")
         
         canon_words_original = prepare_text(raw_lyrics)
         if not canon_words_original:
@@ -443,23 +463,25 @@ class KaraokeAligner:
         canon_words = []
         
         try:
-            # Читаем ОРИГИНАЛЬНОЕ аудио. vocal_sniper теперь отключен (Safe Source).
             audio_data_raw, sr = librosa.load(vocals_path, sr=16000, mono=True)
             audio_duration = len(audio_data_raw) / sr
             
-            # Строим информационные карты
             iron_curtains = build_iron_curtain(audio_data_raw, sr)
             strong_vad, weak_vad, onsets, is_harmonic_fn = get_acoustic_maps(audio_data_raw, sr)
             self.all_curtains = sorted(iron_curtains, key=lambda x: x[0])
             
-            # Добавляем длинные проигрыши в Занавесы (Instrumental Void)
+            # 1. Поиск Великих Пустот
             self._find_instrumental_voids(strong_vad, weak_vad)
             self.all_curtains = sorted(self.all_curtains, key=lambda x: x[0])
+            
+            # 2. V4.1 Wall Jump: Физически вырезаем занавесы из VAD-карт
+            strong_vad = self._filter_vad_from_curtains(strong_vad)
+            weak_vad = self._filter_vad_from_curtains(weak_vad)
             combined_vad = sorted(strong_vad + weak_vad, key=lambda x: x[0])
 
             model = stable_whisper.load_model(self.model_name, download_root=self.whisper_model_dir, device=self.device)
             
-            # Авангард и Скелет
+            # 3. Ленивый Авангард
             self._vanguard_protocol(model, audio_data_raw, canon_words_original, lang)
             
             def spot_check_fn(t_start, t_end, target_phrase):
@@ -493,6 +515,26 @@ class KaraokeAligner:
                             
                     gaps = self._find_gaps(canon_words)
                     
+                    # 4. V4.1 Island Expansion: Слияние зацикленных микро-дыр перед Ареной
+                    if gaps:
+                        merged_gaps = []
+                        for gap in gaps:
+                            if not merged_gaps:
+                                merged_gaps.append(gap)
+                            else:
+                                last_s, last_e = merged_gaps[-1]
+                                curr_s, curr_e = gap
+                                if curr_s - last_e <= 4:
+                                    if is_repetition_island(canon_words, last_s, curr_e):
+                                        # Стираем ложные якоря внутри зацикленного участка
+                                        for k in range(last_e + 1, curr_s):
+                                            canon_words[k]["start"] = canon_words[k]["end"] = -1.0
+                                        merged_gaps[-1] = (last_s, curr_e)
+                                        log.info(f"   🏝️ [Island Expansion] Дыры слиты в Остров Повторов: [{last_s}-{curr_e}]")
+                                        continue
+                                merged_gaps.append(gap)
+                        gaps = merged_gaps
+                    
                     if not bugs and not anomalies and not gaps:
                         log.info(f"[Critic] Итерация {iteration+1}: Аудит пройден. Аномалий нет.")
                         break
@@ -501,7 +543,6 @@ class KaraokeAligner:
                         s_idx, e_idx = gap
                         t_start, t_end = get_safe_bounds(canon_words, s_idx, e_idx, audio_duration)
                         
-                        # Если дыра большая, проверяем Компасом на сдвиг
                         if (e_idx - s_idx) >= 2:
                             shift_idx = diagnostic_compass(canon_words, s_idx, e_idx, audio_data_raw, t_start, t_end, model, lang)
                             if shift_idx != -1:
@@ -510,7 +551,6 @@ class KaraokeAligner:
                                     canon_words[k]["start"] = canon_words[k]["end"] = -1.0
                                 gap = (s_idx, shift_idx)
                         
-                        # Выпускаем инструменты на Арену
                         self._the_arena_surgery(canon_words, gap, audio_data_raw, model, lang, strong_vad, weak_vad, audio_duration)
                 
                 self._apply_vad_guillotine(canon_words, combined_vad)
@@ -527,7 +567,6 @@ class KaraokeAligner:
             canon_words = best_words
             score = best_score
 
-            # ─── АБСОЛЮТНАЯ ГРАВИТАЦИЯ (ФИНАЛЬНЫЙ ЩИТ) ────────────
             if any(w["start"] == -1.0 for w in canon_words):
                 self._apply_absolute_gravity(canon_words, audio_duration, combined_vad)
                 self._apply_vad_guillotine(canon_words, combined_vad)
@@ -557,7 +596,7 @@ class KaraokeAligner:
         with open(output_json_path, "w", encoding="utf-8") as f:
             json.dump(final_json, f, ensure_ascii=False, indent=2)
 
-        dump_debug("13_Colosseum", final_json, self._track_stem)
+        dump_debug("13_1_Colosseum", final_json, self._track_stem)
         log.info(f"Aligner ГОТОВО → {output_json_path}")
         log.info("=" * 50)
         

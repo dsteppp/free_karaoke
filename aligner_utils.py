@@ -119,6 +119,7 @@ def calculate_overlap(t_start: float, t_end: float, mask: list) -> float:
 def evaluate_alignment_quality(words: list, strong_vad: list, weak_vad: list, curtains: list, spot_check_fn=None) -> float:
     """
     Суровый контроль за макро-структурой на основе Vocal Heatmap.
+    V4.1: Убран штраф Orphan VAD Penalty. Алгоритм не наказывается за игнорирование болтовни/инструментала.
     """
     score = 100.0
     total = len(words)
@@ -143,7 +144,7 @@ def evaluate_alignment_quality(words: list, strong_vad: list, weak_vad: list, cu
         min_dur, max_dur = get_phonetic_bounds(w["clean_text"], w["line_break"])
         if dur > max_dur * 1.5: overstretched += 1
 
-        # Галлюцинации (VAD-Overlap)
+        # Галлюцинации (VAD-Overlap) - штраф за слова, поставленные в абсолютную тишину
         overlap = calculate_overlap(w["start"], w["end"], combined_vad)
         if dur > 0 and (overlap / dur) < 0.1:
             hallucinations += 1
@@ -160,28 +161,14 @@ def evaluate_alignment_quality(words: list, strong_vad: list, weak_vad: list, cu
                         if vad_in_gap > 1.5:
                             torn_lines += 1
 
-    # Поиск Брошенного Голоса (Orphan VAD Penalty)
-    orphan_vad_time = 0.0
-    for vs, ve in strong_vad:
-        has_words = False
-        for w in words:
-            if w["start"] != -1.0 and min(w["end"], ve) - max(w["start"], vs) > 0:
-                has_words = True
-                break
-        
-        vad_dur = ve - vs
-        if not has_words and vad_dur > 2.0:
-            orphan_vad_time += vad_dur
-            
-    if orphan_vad_time > 1.5:
-        score -= (orphan_vad_time * 10.0)
-
+    # Штрафы за физические аномалии таймлайна
     score -= unresolved * 5.0
     score -= (squeezed / total) * 100 * 0.5
     score -= (overstretched / total) * 100 * 0.5 
     score -= torn_lines * 5.0 
     score -= hallucinations * 5.0
 
+    # Семантический Аудитор (Сверка текста и аудио эталоном Whisper)
     if score >= 80.0 and spot_check_fn is not None:
         valid_indices = [i for i, w in enumerate(words) if w["start"] != -1.0 and (w["end"] - w["start"]) > 0.2]
         if len(valid_indices) >= 10:
