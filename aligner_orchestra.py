@@ -19,7 +19,6 @@ class Proposal:
 # ─── АРЕНА: КАНДИДАТ 1 (MOTIF MATRIX) ───────────────────────────────────────
 
 def propose_motif_matrix(words: list, s_idx: int, e_idx: int, audio_duration: float, strong_vad: list) -> Proposal:
-    """Ищет здорового двойника (припев) и предлагает его тайминги."""
     target_phrase = " ".join([words[i]["clean_text"] for i in range(s_idx, e_idx + 1)])
     target_len = e_idx - s_idx + 1
     if target_len < 2: return None
@@ -35,7 +34,6 @@ def propose_motif_matrix(words: list, s_idx: int, e_idx: int, audio_duration: fl
                 
                 t_start, t_end = get_safe_bounds(words, s_idx, e_idx, audio_duration)
                 
-                # Магнетизм к уверенному голосу (Strong VAD)
                 vad_start = t_start
                 for vs, ve in strong_vad:
                     if ve > t_start + 0.2:
@@ -60,7 +58,6 @@ def propose_motif_matrix(words: list, s_idx: int, e_idx: int, audio_duration: fl
 # ─── АРЕНА: КАНДИДАТ 2 (CTC INQUISITOR) ─────────────────────────────────────
 
 def propose_inquisitor(words: list, s_idx: int, e_idx: int, audio_data: np.ndarray, model, lang: str, t_start: float, t_end: float) -> Proposal:
-    """Принудительный Forced Alignment через Wav2Vec2."""
     if t_end - t_start < 0.3: return None
     sr = 16000
     crop = audio_data[int(t_start * sr) : int(t_end * sr)]
@@ -97,10 +94,9 @@ def propose_inquisitor(words: list, s_idx: int, e_idx: int, audio_data: np.ndarr
         pass
     return None
 
-# ─── АРЕНА: КАНДИДАТ 3 (SEMANTIC HARPOON - АВАНГАРД АРЕНЫ) ──────────────────
+# ─── АРЕНА: КАНДИДАТ 3 (SEMANTIC HARPOON) ───────────────────────────────────
 
 def propose_harpoon(words: list, s_idx: int, e_idx: int, audio_data: np.ndarray, model, lang: str, t_start: float, t_end: float) -> Proposal:
-    """Слепой Whisper на уровне слов. Отлично спасает сброшенные интро."""
     if t_end - t_start < 0.5: return None
     sr = 16000
     crop = audio_data[int(max(0, t_start - 0.2) * sr) : int(min(len(audio_data), (t_end + 0.2) * sr))]
@@ -144,10 +140,10 @@ def propose_harpoon(words: list, s_idx: int, e_idx: int, audio_data: np.ndarray,
         pass
     return None
 
-# ─── АРЕНА: КАНДИДАТ 4 (LINE-FIRST PHONETIC LOOM V5.0) ──────────────────────
+# ─── АРЕНА: КАНДИДАТ 4 (EMPIRICAL LINE-LOOM V5.2) ───────────────────────────
 
-def propose_loom(words: list, s_idx: int, e_idx: int, t_start: float, t_end: float, strong_vad: list, weak_vad: list) -> Proposal:
-    """V5.0: Line-First Loom. Сначала выделяет место Строке, затем распределяет слова внутри неё."""
+def propose_loom(words: list, s_idx: int, e_idx: int, t_start: float, t_end: float, strong_vad: list, weak_vad: list, empirical_data: dict = None) -> Proposal:
+    """V5.2: Ткацкий станок с Эмпирической Размерностью и Запретом Разрывов."""
     combined_vad = sorted(strong_vad + weak_vad, key=lambda x: x[0])
     
     valid_vads = []
@@ -159,7 +155,6 @@ def propose_loom(words: list, s_idx: int, e_idx: int, t_start: float, t_end: flo
         valid_vads = [(t_start, t_end)]
         
     def _map_time(t_vad: float, vads: list) -> float:
-        """Переводит VAD-время в реальное время."""
         accum = 0.0
         for (vs, ve) in vads:
             d = ve - vs
@@ -178,57 +173,98 @@ def propose_loom(words: list, s_idx: int, e_idx: int, t_start: float, t_end: flo
             curr_line = []
             
     total_vad_time = sum(e - s for s, e in valid_vads)
-    
-    # Считаем вес Строк
-    line_weights = [sum(get_vowel_weight(words[k]["clean_text"], words[k]["line_break"]) for k in line) for line in lines]
-    total_w = sum(line_weights) if sum(line_weights) > 0 else 1.0
-    
-    timings = []
-    curr_vad_t = 0.0
-    
-    for l_idx, line in enumerate(lines):
-        lw = line_weights[l_idx]
-        l_vad_dur = (lw / total_w) * total_vad_time
-        
-        # Получаем реальные границы короба для всей Строки
-        l_start_real = _map_time(curr_vad_t, valid_vads)
-        l_end_real = _map_time(curr_vad_t + l_vad_dur, valid_vads)
-        
-        # Вдыхаем: резервируем микро-паузу между строками (если есть место)
-        if l_idx < len(lines) - 1 and (l_end_real - l_start_real) > 0.5:
-            l_end_real -= 0.15  
+
+    # 2. Ищем "Железные Занавесы" (Стены > 1.5с) на логическом таймлайне
+    logic_voids = []
+    accum = 0.0
+    for i in range(len(valid_vads) - 1):
+        accum += (valid_vads[i][1] - valid_vads[i][0])
+        gap = valid_vads[i+1][0] - valid_vads[i][1]
+        if gap > 1.5:  # Если дыра больше 1.5с - это Стена!
+            logic_voids.append(accum)
+
+    # 3. Вычисляем Эмпирическую потребность для каждой строки
+    req_durs = []
+    for line in lines:
+        if empirical_data:
+            w_sample = words[line[0]]
+            h_id = w_sample.get("homologous_id", -1)
+            s_num = w_sample.get("stanza_num", -1)
             
-        # Теперь берем только те куски VAD, которые попали в короб Строки
+            # Если это припев/повтор - берем точную длину
+            if h_id != -1 and h_id in empirical_data["homo_durations"]:
+                dur = empirical_data["homo_durations"][h_id]
+            else:
+                # Иначе вычисляем по эталонному темпу куплета
+                vowels = sum(1 for k in line for c in words[k]["clean_text"] if c in "аеёиоуыэюяaeiouy")
+                sdr = empirical_data["stanza_sdr"].get(s_num, empirical_data.get("global_sdr", 3.0))
+                dur = max(1, vowels) / sdr
+        else:
+            dur = sum(get_vowel_weight(words[k]["clean_text"], words[k]["line_break"]) for k in line) * 0.3
+        req_durs.append(dur)
+
+    # Масштабируем, если Лавина не смогла дать достаточно места
+    total_req = sum(req_durs)
+    if total_req > total_vad_time and total_req > 0:
+        scale = total_vad_time / total_req
+        req_durs = [d * scale for d in req_durs]
+
+    # 4. Расставляем "коробки" строк, перепрыгивая Стены
+    line_boxes = []
+    curr_logic_t = 0.0
+    breath_gap = min(empirical_data["avg_breath_gap"], 0.5) if empirical_data else 0.15
+
+    for L in req_durs:
+        # VOID INTEGRITY: Проверяем, не налезла ли коробка на Стену
+        for B in logic_voids:
+            if curr_logic_t + 0.1 < B < curr_logic_t + L - 0.1:
+                # Если налезла - принудительно сдвигаем всю строку ЗА стену!
+                curr_logic_t = B
+                break 
+
+        if curr_logic_t + L > total_vad_time:
+            L = max(0.1, total_vad_time - curr_logic_t)
+            
+        line_boxes.append((curr_logic_t, curr_logic_t + L))
+        curr_logic_t += L + breath_gap
+
+    # 5. Распределяем слова строго внутри монолитных коробок
+    timings = []
+    for l_idx, line in enumerate(lines):
+        l_logic_s, l_logic_e = line_boxes[l_idx]
+        l_real_s = _map_time(l_logic_s, valid_vads)
+        l_real_e = _map_time(l_logic_e, valid_vads)
+
         line_vads = []
         for (vs, ve) in valid_vads:
-            c_s, c_e = max(l_start_real, vs), min(l_end_real, ve)
+            c_s, c_e = max(l_real_s, vs), min(l_real_e, ve)
             if c_e > c_s: line_vads.append((c_s, c_e))
         if not line_vads: 
-            line_vads = [(l_start_real, l_end_real)]
+            line_vads = [(l_real_s, l_real_e)]
             
-        line_total_vad_time = sum(e - s for s, e in line_vads)
+        line_total_vad = sum(e - s for s, e in line_vads)
         w_curr_vad_t = 0.0
         
-        # Распределяем слова внутри короба Строки
+        lw_total = sum(get_vowel_weight(words[k]["clean_text"], False) for k in line)
+        if lw_total == 0: lw_total = 1.0
+
         for k in line:
             w_w = get_vowel_weight(words[k]["clean_text"], False) 
-            w_dur = (w_w / lw) * line_total_vad_time
+            w_dur = (w_w / lw_total) * line_total_vad
             
             w_s = _map_time(w_curr_vad_t, line_vads)
-            w_e = _map_time(w_curr_vad_t + w_dur * 0.95, line_vads) # 5% зазор между словами
+            w_e = _map_time(w_curr_vad_t + w_dur * 0.95, line_vads)
             
             timings.append({"start": w_s, "end": w_e})
             w_curr_vad_t += w_dur
             
-        curr_vad_t += l_vad_dur
-        
     return Proposal("Phonetic Loom", timings)
 
 
-# ─── THE SUPREME JUDGE (АБСОЛЮТНЫЙ СУДЬЯ V5.0) ──────────────────────────────
+# ─── THE SUPREME JUDGE (ЭМПИРИЧЕСКИЙ СУДЬЯ V5.2) ─────────────────────────────
 
-def the_supreme_judge(proposals: list, words: list, s_idx: int, e_idx: int, strong_vad: list, weak_vad: list) -> Proposal:
-    """V5.0: Выбирает лучшее предложение. Жестко штрафует за сжатие целых строк."""
+def the_supreme_judge(proposals: list, words: list, s_idx: int, e_idx: int, strong_vad: list, weak_vad: list, empirical_data: dict = None) -> Proposal:
+    """V5.2: Штрафует за отклонение от ЭТАЛОНА песни."""
     best_prop = None
     best_score = -99999.0
     
@@ -244,7 +280,7 @@ def the_supreme_judge(proposals: list, words: list, s_idx: int, e_idx: int, stro
             
         score = 100.0
         
-        # 1. Пословная оценка (Акустика и микро-физика)
+        # 1. Пословная оценка (Микро-акустика)
         for i, t in enumerate(prop.timings):
             dur = t["end"] - t["start"]
             min_dur, max_dur = get_phonetic_bounds(clean_texts[i], line_breaks[i])
@@ -264,7 +300,7 @@ def the_supreme_judge(proposals: list, words: list, s_idx: int, e_idx: int, stro
             if overlap_strong > 0.1: score += 5.0
             if silence_dur > 0.15: score -= (silence_dur * 200.0) 
 
-        # 2. Макро-оценка Строки (Защита от сплющивания припевов Золото)
+        # 2. Макро-оценка Строки (Эмпирическая защита от сплющивания)
         lines = []
         cur_l = []
         for i in range(len(prop.timings)):
@@ -278,11 +314,23 @@ def the_supreme_judge(proposals: list, words: list, s_idx: int, e_idx: int, stro
             l_e = prop.timings[line[-1]]["end"]
             l_dur = l_e - l_s
             
-            # Считаем минимальную физическую массу всей строки
             l_min = sum(get_phonetic_bounds(clean_texts[k], line_breaks[k])[0] for k in line)
             
+            # ЭМПИРИЧЕСКИЙ ПРЕДЕЛ (Основан на реальном звучании песни)
+            if empirical_data:
+                w_abs_idx = s_idx + line[0]
+                h_id = words[w_abs_idx].get("homologous_id", -1)
+                s_num = words[w_abs_idx].get("stanza_num", -1)
+                
+                if h_id != -1 and h_id in empirical_data["homo_durations"]:
+                    l_min = empirical_data["homo_durations"][h_id] * 0.75 # Макс. сжатие 25% от эталона
+                else:
+                    vowels = sum(1 for k in line for c in clean_texts[k] if c in "аеёиоуыэюяaeiouy")
+                    sdr = empirical_data["stanza_sdr"].get(s_num, empirical_data.get("global_sdr", 3.0))
+                    l_min = (max(1, vowels) / sdr) * 0.7 # Макс. сжатие 30% от эталонного темпа
+            
             if l_dur < l_min:
-                score -= 500.0 * (l_min - l_dur) # 🚨 Штраф за коллапс всей строки
+                score -= 500.0 * (l_min - l_dur) # 🚨 Смертельный штраф за отклонение от ЭТАЛОНА
                 
         prop.score = score
         log.debug(f"   ⚖️ Судья оценил {prop.source_name}: {score:.1f} баллов.")

@@ -12,11 +12,12 @@ import numpy as np
 
 from app_logger import get_logger, dump_debug
 
-# ─── ИМПОРТЫ ИЗ НАШЕЙ НОВОЙ МОДУЛЬНОЙ СИСТЕМЫ (SYMPHONY V5.0) ───────────────
+# ─── ИМПОРТЫ ИЗ НАШЕЙ НОВОЙ МОДУЛЬНОЙ СИСТЕМЫ (SYMPHONY V5.2) ───────────────
 from aligner_utils import (
     detect_language, prepare_text, get_vowel_weight, 
     get_phonetic_bounds, get_line_phonetic_bounds, get_vad_capacity,
-    calculate_phrase_density, get_safe_bounds, evaluate_alignment_quality,
+    calculate_sdr, get_empirical_data, 
+    get_safe_bounds, evaluate_alignment_quality,
     is_repetition_island, calculate_overlap
 )
 from aligner_acoustics import (
@@ -32,8 +33,8 @@ log = get_logger("aligner")
 
 class KaraokeAligner:
     """
-    Главный Дирижер "Symphony V5.0: Line-First Physics".
-    Эффект Лавины, Баланс Масс и Строковая Неделимость.
+    Главный Дирижер "Symphony V5.2: Empirical Structuralism".
+    Самокалибровка, Эмпирическая Лавина и Запрет Разрывов.
     """
 
     def __init__(self, model_name="medium"):
@@ -50,7 +51,6 @@ class KaraokeAligner:
     # ─── ЭТАП 1: ПОДГОТОВКА И СКЕЛЕТ ──────────────────────────────────────────
 
     def _find_instrumental_voids(self, strong_vad: list, weak_vad: list):
-        """Ищет длинные инструментальные проигрыши (>4 сек без голоса)."""
         log.info("🕳️ [Void Detector] Поиск длинных инструментальных проигрышей...")
         combined_vad = sorted(strong_vad + weak_vad, key=lambda x: x[0])
         if not combined_vad: return
@@ -71,7 +71,6 @@ class KaraokeAligner:
             last_e = e
 
     def _filter_vad_from_curtains(self, vad_list: list) -> list:
-        """Физически вырезает занавесы из VAD для создания механики Wall Jump."""
         res = []
         for vs, ve in vad_list:
             curr_s = vs
@@ -143,26 +142,30 @@ class KaraokeAligner:
 
         log.info(f"[Actor] Платиновый скелет установлен: {anchors_count}/{len(canon_words)} слов.")
 
-    # ─── ЭТАП 2: АУДИТОР И МАКРО-ФИЗИКА (V5.0) ──────────────────────────────────
+    # ─── ЭТАП 2: АУДИТОР С ЭМПИРИЧЕСКИМ ИНТЕЛЛЕКТОМ (V5.2) ──────────────────────
 
-    def _audit_json(self, words: list, audio_duration: float, combined_vad: list) -> list:
+    def _audit_json(self, words: list, audio_duration: float, combined_vad: list, empirical_data: dict) -> list:
         bugs = []
         n = len(words)
         
-        # 1. Макро-очистка Интро (False Start Sweeper)
-        first_block = []
-        for i in range(n):
-            if words[i]["start"] != -1: first_block.append(i)
-            elif first_block: break
+        # 1. Интеллектуальный Очиститель Интро (Без магических чисел)
+        line_0_words = [i for i, w in enumerate(words) if w["line_num"] == 0 and w["start"] != -1.0]
+        if line_0_words:
+            first_idx, last_idx = line_0_words[0], line_0_words[-1]
+            t_s, t_e = words[first_idx]["start"], words[last_idx]["end"]
             
-        if first_block and first_block[0] == 0:
-            t_s = words[first_block[0]]["start"]
-            t_e = words[first_block[-1]]["end"]
-            density = calculate_phrase_density(words, first_block[0], first_block[-1], t_s, t_e)
+            # Вычисляем темп (SDR) первой строки
+            actual_sdr = calculate_sdr(words, first_idx, last_idx, t_s, t_e)
+            stanza = words[first_idx]["stanza_num"]
+            # Эталонный темп этого куплета
+            expected_sdr = empirical_data["stanza_sdr"].get(stanza, empirical_data["global_sdr"])
             
-            if density < 0.2 and (t_e - t_s) > 8.0:
-                bugs.append({"type": "FALSE_START", "cluster": first_block})
+            # Если темп в 4 раза медленнее эталона куплета - это размазанное интро
+            if actual_sdr > 0 and actual_sdr < (expected_sdr * 0.25) and (t_e - t_s) > 4.0:
+                log.info(f"🔎 [Auditor] Интро размазано (Темп {actual_sdr:.2f} при норме {expected_sdr:.2f}). Диагноз: FALSE_START.")
+                bugs.append({"type": "FALSE_START", "line_num": 0})
 
+        # 2. Оценка микро-физики
         for i in range(n):
             w = words[i]
             if w["start"] == -1: continue
@@ -175,7 +178,7 @@ class KaraokeAligner:
             if dur > max_dur * 1.5:
                 bugs.append({"type": "OVERSTRETCH", "idx": i})
 
-        # 3. Внутристрочная Гравитация (TORN_LINE V5.0)
+        # 3. Внутристрочная Гравитация
         for i in range(n - 1):
             if words[i]["end"] != -1 and words[i+1]["start"] != -1:
                 if words[i]["line_num"] == words[i+1]["line_num"]:
@@ -183,7 +186,6 @@ class KaraokeAligner:
                     _, max_d = get_phonetic_bounds(words[i]["clean_text"], False)
                     
                     allowed_pause = max(1.5, max_d * 2.0)
-                    
                     if gap > allowed_pause:
                         vad_in_gap = get_vad_capacity(words[i]["end"], words[i+1]["start"], combined_vad)
                         if vad_in_gap > 1.0: 
@@ -195,9 +197,11 @@ class KaraokeAligner:
     def _fix_bugs(self, words: list, bugs: list):
         for bug in bugs:
             if bug["type"] == "FALSE_START":
-                log.warning(f"[Surgeon] Устранение FALSE_START: сброс интро {bug['cluster']}")
-                for idx in bug["cluster"]:
-                    words[idx]["start"] = words[idx]["end"] = -1.0
+                target_line = bug["line_num"]
+                log.warning(f"[Surgeon] Устранение FALSE_START: сброс строки №{target_line}")
+                for w in words:
+                    if w["line_num"] == target_line:
+                        w["start"] = w["end"] = -1.0
             elif bug["type"] == "BLACK_HOLE":
                 idx = bug["idx"]
                 start_del, end_del = max(0, idx - 1), min(len(words) - 1, idx + 1)
@@ -219,7 +223,6 @@ class KaraokeAligner:
                         w["start"] = w["end"] = -1.0
 
     def _run_tribunal(self, words: list, is_harmonic_fn) -> list:
-        """Восстановлено: Трибунал микро-физики (обрезает резиновые хвосты эха и ловит сжатия)."""
         quarantine_zones = []
         n, i = len(words), 0
         while i < n:
@@ -261,9 +264,9 @@ class KaraokeAligner:
             else: i += 1
         return gaps
 
-    # ─── ЭТАП 3: АРЕНА И ЛАВИНА (THE COLOSSEUM) ─────────────────────────────────
+    # ─── ЭТАП 3: АРЕНА (THE COLOSSEUM) ──────────────────────────────────────────
 
-    def _the_arena_surgery(self, words: list, gap: tuple, audio_data: np.ndarray, model, lang: str, strong_vad: list, weak_vad: list, audio_duration: float):
+    def _the_arena_surgery(self, words: list, gap: tuple, audio_data: np.ndarray, model, lang: str, strong_vad: list, weak_vad: list, audio_duration: float, empirical_data: dict):
         s_idx, e_idx = gap
         t_start, t_end = get_safe_bounds(words, s_idx, e_idx, audio_duration)
         if t_end - t_start < 0.1: return
@@ -271,24 +274,21 @@ class KaraokeAligner:
         log.info(f"🏟️ [The Arena] Слова [{s_idx}-{e_idx}] выходят на Арену! Окно: {t_start:.1f}s - {t_end:.1f}s")
         proposals = []
         
-        # 1. Motif Matrix
         if is_repetition_island(words, s_idx, e_idx):
             prop_motif = propose_motif_matrix(words, s_idx, e_idx, audio_duration, strong_vad)
             if prop_motif: proposals.append(prop_motif)
             
-        # 2. CTC Inquisitor
         prop_inq = propose_inquisitor(words, s_idx, e_idx, audio_data, model, lang, t_start, t_end)
         if prop_inq: proposals.append(prop_inq)
             
-        # 3. Semantic Harpoon (Выступает в роли Авангарда для Интро!)
         prop_harp = propose_harpoon(words, s_idx, e_idx, audio_data, model, lang, t_start, t_end)
         if prop_harp: proposals.append(prop_harp)
             
-        # 4. Phonetic Loom (Line-First Loom)
-        prop_loom = propose_loom(words, s_idx, e_idx, t_start, t_end, strong_vad, weak_vad)
+        # V5.2: Передаем эмпирику в Ткацкий станок! (Будет обновлен в aligner_orchestra.py)
+        prop_loom = propose_loom(words, s_idx, e_idx, t_start, t_end, strong_vad, weak_vad, empirical_data)
         if prop_loom: proposals.append(prop_loom)
             
-        winner = the_supreme_judge(proposals, words, s_idx, e_idx, strong_vad, weak_vad)
+        winner = the_supreme_judge(proposals, words, s_idx, e_idx, strong_vad, weak_vad, empirical_data)
         
         if winner:
             for k, t in enumerate(winner.timings):
@@ -301,7 +301,6 @@ class KaraokeAligner:
     # ─── ЭТАП 4: ФИНАЛЬНЫЕ ШТРИХИ ──────────────────────────────────────────────
 
     def _apply_absolute_gravity(self, words: list, audio_duration: float, vad_mask: list):
-        """V5.0: Fail-Safe с Правосторонеей гравитацией."""
         log.info("🪐 [Absolute Gravity] Принудительное спасение всех оставшихся слов...")
         n = len(words)
         
@@ -405,7 +404,7 @@ class KaraokeAligner:
         self._track_stem = os.path.basename(output_json_path).replace("_(Karaoke Lyrics).json", "")
 
         log.info("=" * 50)
-        log.info(f"Aligner СТАРТ (Symphony V5.0: Line-First Physics): {self._track_stem}")
+        log.info(f"Aligner СТАРТ (Symphony V5.2: Empirical Structuralism): {self._track_stem}")
         
         canon_words_original = prepare_text(raw_lyrics)
         if not canon_words_original:
@@ -424,11 +423,9 @@ class KaraokeAligner:
             strong_vad, weak_vad, onsets, is_harmonic_fn = get_acoustic_maps(audio_data_raw, sr)
             self.all_curtains = sorted(iron_curtains, key=lambda x: x[0])
             
-            # 1. Поиск Великих Пустот (Занавесов)
             self._find_instrumental_voids(strong_vad, weak_vad)
             self.all_curtains = sorted(self.all_curtains, key=lambda x: x[0])
             
-            # 2. Wall Jump: Вырезаем занавесы из VAD
             strong_vad = self._filter_vad_from_curtains(strong_vad)
             weak_vad = self._filter_vad_from_curtains(weak_vad)
             combined_vad = sorted(strong_vad + weak_vad, key=lambda x: x[0])
@@ -436,7 +433,6 @@ class KaraokeAligner:
             model = stable_whisper.load_model(self.model_name, download_root=self.whisper_model_dir, device=self.device)
             
             def spot_check_fn(t_start, t_end, target_phrase):
-                log.info(f"   🔍 [Semantic Spot-Check] Проверка эталоном {t_start:.1f}s - {t_end:.1f}s...")
                 crop = audio_data_raw[int(max(0, t_start)*sr) : int(min(audio_duration, t_end)*sr)]
                 if len(crop) < sr * 0.5: return True 
                 try:
@@ -455,11 +451,14 @@ class KaraokeAligner:
 
                 self._platinum_skeleton(model, audio_data_raw, canon_words, lang)
 
+                # V5.2: Сбор эталонов песни!
+                empirical_data = get_empirical_data(canon_words)
+                log.info(f"📊 Эмпирика: Темп={empirical_data['global_sdr']:.1f} слог/с, Вдох={empirical_data['avg_breath_gap']:.2f}с")
+
                 for iteration in range(3):
-                    bugs = self._audit_json(canon_words, audio_duration, combined_vad)
+                    bugs = self._audit_json(canon_words, audio_duration, combined_vad, empirical_data)
                     self._fix_bugs(canon_words, bugs)
                     
-                    # Трибунал (резка хвостов) восстановлен!
                     anomalies = self._run_tribunal(canon_words, is_harmonic_fn)
                     for s_idx, e_idx, reason in anomalies:
                         log.info(f"   -> Карантин [{s_idx}-{e_idx}]: {reason}. Сброс таймингов.")
@@ -467,22 +466,38 @@ class KaraokeAligner:
                             
                     gaps = self._find_gaps(canon_words)
                     
-                    # 3. ЭФФЕКТ ЛАВИНЫ (Avalanche Expansion) И Умный Остров
+                    # 3. ЭМПИРИЧЕСКАЯ ЛАВИНА (Avalanche V5.2)
                     expanded_gaps = []
                     i = 0
                     while i < len(gaps):
                         s_idx, e_idx = gaps[i]
                         
-                        # Лавина: Проверяем, влезает ли текст физически в доступный VAD
                         while True:
                             t_start, t_end = get_safe_bounds(canon_words, s_idx, e_idx, audio_duration)
-                            mass_min, _ = get_line_phonetic_bounds(canon_words, s_idx, e_idx)
                             vad_cap = get_vad_capacity(t_start, t_end, combined_vad)
                             
-                            # Если места критически мало (<75% от минимума) - сносим следующий якорь
-                            if vad_cap < mass_min * 0.75 and e_idx < len(canon_words) - 1:
+                            # Вычисляем Эмпирическую потребность во времени
+                            req_time = 0.0
+                            lines_in_gap = sorted(list(set(canon_words[k]["line_num"] for k in range(s_idx, e_idx + 1))))
+                            for l_num in lines_in_gap:
+                                w_sample = next(w for w in canon_words[s_idx:e_idx+1] if w["line_num"] == l_num)
+                                h_id = w_sample["homologous_id"]
+                                s_num = w_sample["stanza_num"]
+
+                                if h_id in empirical_data["homo_durations"]:
+                                    req_time += empirical_data["homo_durations"][h_id]
+                                else:
+                                    vowels = max(1, sum(1 for k in range(s_idx, e_idx+1) if canon_words[k]["line_num"] == l_num for c in canon_words[k]["clean_text"] if c in "аеёиоуыэюяaeiouy"))
+                                    exp_sdr = empirical_data["stanza_sdr"].get(s_num, empirical_data["global_sdr"])
+                                    req_time += vowels / exp_sdr
+
+                            if len(lines_in_gap) > 1:
+                                req_time += (len(lines_in_gap) - 1) * empirical_data["avg_breath_gap"]
+
+                            # Если доступный голос < 85% от эмпирически необходимого - сносим следующий якорь!
+                            if vad_cap < req_time * 0.85 and e_idx < len(canon_words) - 1:
                                 next_line_num = canon_words[e_idx + 1]["line_num"]
-                                log.warning(f"🌋 [Avalanche] VAD Capacity ({vad_cap:.1f}s) < Фонетическая Масса ({mass_min:.1f}s). Сносим строку №{next_line_num}!")
+                                log.warning(f"🌋 [Empirical Avalanche] VAD ({vad_cap:.1f}s) < Эталон ({req_time:.1f}s). Сносим строку №{next_line_num}!")
                                 
                                 for k in range(e_idx + 1, len(canon_words)):
                                     if canon_words[k]["line_num"] == next_line_num:
@@ -490,18 +505,15 @@ class KaraokeAligner:
                                         e_idx = k
                                     else: break
                                         
-                                # Слияние с соседней дырой, если Лавина до нее дошла
                                 if i + 1 < len(gaps) and gaps[i+1][0] <= e_idx + 1:
                                     e_idx = max(e_idx, gaps[i+1][1])
                                     i += 1
                             else:
                                 break
                                 
-                        # Island Expansion (Умный лимит по строкам: не более 8 строк)
                         if expanded_gaps:
                             last_s, last_e = expanded_gaps[-1]
                             curr_s, curr_e = s_idx, e_idx
-                            
                             lines_in_gap = len(set(canon_words[k]["line_num"] for k in range(last_s, curr_e + 1)))
 
                             if curr_s - last_e <= 4 and lines_in_gap <= 8:
@@ -523,18 +535,7 @@ class KaraokeAligner:
                         break
                         
                     for gap in gaps:
-                        s_idx, e_idx = gap
-                        t_start, t_end = get_safe_bounds(canon_words, s_idx, e_idx, audio_duration)
-                        
-                        if (e_idx - s_idx) >= 2:
-                            shift_idx = diagnostic_compass(canon_words, s_idx, e_idx, audio_data_raw, t_start, t_end, model, lang)
-                            if shift_idx != -1:
-                                log.warning(f"   🔄 [Diagnostic Compass] Найден глобальный сдвиг. Расширяем карантин до {shift_idx} слова.")
-                                for k in range(e_idx + 1, shift_idx + 1):
-                                    canon_words[k]["start"] = canon_words[k]["end"] = -1.0
-                                gap = (s_idx, shift_idx)
-                        
-                        self._the_arena_surgery(canon_words, gap, audio_data_raw, model, lang, strong_vad, weak_vad, audio_duration)
+                        self._the_arena_surgery(canon_words, gap, audio_data_raw, model, lang, strong_vad, weak_vad, audio_duration, empirical_data)
                 
                 self._apply_vad_guillotine(canon_words, combined_vad)
                 self._smoothing(canon_words)
