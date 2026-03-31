@@ -97,7 +97,7 @@ def propose_inquisitor(words: list, s_idx: int, e_idx: int, audio_data: np.ndarr
         pass
     return None
 
-# ─── АРЕНА: КАНДИДАТ 3 (SEMANTIC HARPOON - НОВЫЙ АВАНГАРД) ──────────────────
+# ─── АРЕНА: КАНДИДАТ 3 (SEMANTIC HARPOON - АВАНГАРД АРЕНЫ) ──────────────────
 
 def propose_harpoon(words: list, s_idx: int, e_idx: int, audio_data: np.ndarray, model, lang: str, t_start: float, t_end: float) -> Proposal:
     """Слепой Whisper на уровне слов. Отлично спасает сброшенные интро."""
@@ -144,10 +144,10 @@ def propose_harpoon(words: list, s_idx: int, e_idx: int, audio_data: np.ndarray,
         pass
     return None
 
-# ─── АРЕНА: КАНДИДАТ 4 (PHONETIC LOOM) ──────────────────────────────────────
+# ─── АРЕНА: КАНДИДАТ 4 (LINE-FIRST PHONETIC LOOM V5.0) ──────────────────────
 
 def propose_loom(words: list, s_idx: int, e_idx: int, t_start: float, t_end: float, strong_vad: list, weak_vad: list) -> Proposal:
-    """Математический распределитель. Учитывает переносы строк (создает микро-паузы)."""
+    """V5.0: Line-First Loom. Сначала выделяет место Строке, затем распределяет слова внутри неё."""
     combined_vad = sorted(strong_vad + weak_vad, key=lambda x: x[0])
     
     valid_vads = []
@@ -158,46 +158,77 @@ def propose_loom(words: list, s_idx: int, e_idx: int, t_start: float, t_end: flo
     if not valid_vads:
         valid_vads = [(t_start, t_end)]
         
-    weights = [get_vowel_weight(words[k]["clean_text"], words[k]["line_break"]) for k in range(s_idx, e_idx + 1)]
-    total_w = sum(weights)
+    def _map_time(t_vad: float, vads: list) -> float:
+        """Переводит VAD-время в реальное время."""
+        accum = 0.0
+        for (vs, ve) in vads:
+            d = ve - vs
+            if t_vad <= accum + d:
+                return vs + (t_vad - accum)
+            accum += d
+        return vads[-1][1]
+
+    # 1. Группируем слова в Строки
+    lines = []
+    curr_line = []
+    for k in range(s_idx, e_idx + 1):
+        curr_line.append(k)
+        if words[k]["line_break"] or k == e_idx:
+            lines.append(curr_line)
+            curr_line = []
+            
     total_vad_time = sum(e - s for s, e in valid_vads)
     
+    # Считаем вес Строк
+    line_weights = [sum(get_vowel_weight(words[k]["clean_text"], words[k]["line_break"]) for k in line) for line in lines]
+    total_w = sum(line_weights) if sum(line_weights) > 0 else 1.0
+    
     timings = []
-    curr_t = 0.0
-    for k in range(s_idx, e_idx + 1):
-        w_logic_dur = (weights[k-s_idx] / total_w) * total_vad_time
+    curr_vad_t = 0.0
+    
+    for l_idx, line in enumerate(lines):
+        lw = line_weights[l_idx]
+        l_vad_dur = (lw / total_w) * total_vad_time
         
-        accum, mapped_s, mapped_e = 0.0, valid_vads[0][0], valid_vads[-1][1]
+        # Получаем реальные границы короба для всей Строки
+        l_start_real = _map_time(curr_vad_t, valid_vads)
+        l_end_real = _map_time(curr_vad_t + l_vad_dur, valid_vads)
         
+        # Вдыхаем: резервируем микро-паузу между строками (если есть место)
+        if l_idx < len(lines) - 1 and (l_end_real - l_start_real) > 0.5:
+            l_end_real -= 0.15  
+            
+        # Теперь берем только те куски VAD, которые попали в короб Строки
+        line_vads = []
         for (vs, ve) in valid_vads:
-            dur = ve - vs
-            if curr_t <= accum + dur:
-                mapped_s = vs + (curr_t - accum)
-                break
-            accum += dur
+            c_s, c_e = max(l_start_real, vs), min(l_end_real, ve)
+            if c_e > c_s: line_vads.append((c_s, c_e))
+        if not line_vads: 
+            line_vads = [(l_start_real, l_end_real)]
             
-        accum = 0.0
-        for (vs, ve) in valid_vads:
-            dur = ve - vs
-            if curr_t + w_logic_dur * 0.95 <= accum + dur:
-                mapped_e = vs + (curr_t + w_logic_dur * 0.95 - accum)
-                break
-            accum += dur
+        line_total_vad_time = sum(e - s for s, e in line_vads)
+        w_curr_vad_t = 0.0
+        
+        # Распределяем слова внутри короба Строки
+        for k in line:
+            w_w = get_vowel_weight(words[k]["clean_text"], False) 
+            w_dur = (w_w / lw) * line_total_vad_time
             
-        # Микро-пауза для конца строки (Intra-line cohesion aid)
-        if words[k]["line_break"] and (mapped_e - mapped_s) > 0.3:
-            mapped_e -= 0.1
+            w_s = _map_time(w_curr_vad_t, line_vads)
+            w_e = _map_time(w_curr_vad_t + w_dur * 0.95, line_vads) # 5% зазор между словами
             
-        timings.append({"start": mapped_s, "end": mapped_e})
-        curr_t += w_logic_dur
+            timings.append({"start": w_s, "end": w_e})
+            w_curr_vad_t += w_dur
+            
+        curr_vad_t += l_vad_dur
         
     return Proposal("Phonetic Loom", timings)
 
 
-# ─── THE SUPREME JUDGE (АБСОЛЮТНЫЙ СУДЬЯ) ───────────────────────────────────
+# ─── THE SUPREME JUDGE (АБСОЛЮТНЫЙ СУДЬЯ V5.0) ──────────────────────────────
 
 def the_supreme_judge(proposals: list, words: list, s_idx: int, e_idx: int, strong_vad: list, weak_vad: list) -> Proposal:
-    """Выбирает лучшее предложение. Жестко штрафует за 'черные дыры'."""
+    """V5.0: Выбирает лучшее предложение. Жестко штрафует за сжатие целых строк."""
     best_prop = None
     best_score = -99999.0
     
@@ -212,29 +243,46 @@ def the_supreme_judge(proposals: list, words: list, s_idx: int, e_idx: int, stro
             continue
             
         score = 100.0
+        
+        # 1. Пословная оценка (Акустика и микро-физика)
         for i, t in enumerate(prop.timings):
             dur = t["end"] - t["start"]
             min_dur, max_dur = get_phonetic_bounds(clean_texts[i], line_breaks[i])
             
-            # 1. Физика (Смертный приговор за сплющивание слов)
             if dur < 0.08:
-                score -= 1000.0  # 🚨 СМЕРТНЫЙ ПРИГОВОР
+                score -= 1000.0  # 🚨 СМЕРТНЫЙ ПРИГОВОР ЗА СИНГУЛЯРНОСТЬ
             elif dur < min_dur: 
                 score -= 200.0 * (min_dur - dur)
                 
             if dur > max_dur * 1.5: 
                 score -= 100.0 * (dur - max_dur)
             
-            # 2. Vocal Heatmap (Попадание в голос)
             overlap_strong = calculate_overlap(t["start"], t["end"], strong_vad)
             overlap_weak = calculate_overlap(t["start"], t["end"], weak_vad)
             silence_dur = dur - overlap_strong - overlap_weak
             
-            if overlap_strong > 0.1:
-                score += 5.0
+            if overlap_strong > 0.1: score += 5.0
+            if silence_dur > 0.15: score -= (silence_dur * 200.0) 
+
+        # 2. Макро-оценка Строки (Защита от сплющивания припевов Золото)
+        lines = []
+        cur_l = []
+        for i in range(len(prop.timings)):
+            cur_l.append(i)
+            if line_breaks[i] or i == len(prop.timings) - 1:
+                lines.append(cur_l)
+                cur_l = []
+                
+        for line in lines:
+            l_s = prop.timings[line[0]]["start"]
+            l_e = prop.timings[line[-1]]["end"]
+            l_dur = l_e - l_s
             
-            if silence_dur > 0.15:
-                score -= (silence_dur * 200.0) 
+            # Считаем минимальную физическую массу всей строки
+            l_min = sum(get_phonetic_bounds(clean_texts[k], line_breaks[k])[0] for k in line)
+            
+            if l_dur < l_min:
+                score -= 500.0 * (l_min - l_dur) # 🚨 Штраф за коллапс всей строки
                 
         prop.score = score
         log.debug(f"   ⚖️ Судья оценил {prop.source_name}: {score:.1f} баллов.")

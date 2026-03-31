@@ -12,11 +12,12 @@ import numpy as np
 
 from app_logger import get_logger, dump_debug
 
-# ─── ИМПОРТЫ ИЗ НАШЕЙ НОВОЙ МОДУЛЬНОЙ СИСТЕМЫ (SYMPHONY V13.2) ───────────────
+# ─── ИМПОРТЫ ИЗ НАШЕЙ НОВОЙ МОДУЛЬНОЙ СИСТЕМЫ (SYMPHONY V5.0) ───────────────
 from aligner_utils import (
     detect_language, prepare_text, get_vowel_weight, 
-    get_phonetic_bounds, get_safe_bounds, evaluate_alignment_quality,
-    is_repetition_island
+    get_phonetic_bounds, get_line_phonetic_bounds, get_vad_capacity,
+    calculate_phrase_density, get_safe_bounds, evaluate_alignment_quality,
+    is_repetition_island, calculate_overlap
 )
 from aligner_acoustics import (
     vocal_sniper, build_iron_curtain, enforce_curtains, 
@@ -31,8 +32,8 @@ log = get_logger("aligner")
 
 class KaraokeAligner:
     """
-    Главный Дирижер "Symphony V13.2: Semantic Control".
-    Без слепого Авангарда. С внутристрочной Гравитацией и Wall Jump.
+    Главный Дирижер "Symphony V5.0: Line-First Physics".
+    Эффект Лавины, Баланс Масс и Строковая Неделимость.
     """
 
     def __init__(self, model_name="medium"):
@@ -70,7 +71,7 @@ class KaraokeAligner:
             last_e = e
 
     def _filter_vad_from_curtains(self, vad_list: list) -> list:
-        """V4.1: Физически вырезает занавесы из VAD для создания механики Wall Jump."""
+        """Физически вырезает занавесы из VAD для создания механики Wall Jump."""
         res = []
         for vs, ve in vad_list:
             curr_s = vs
@@ -142,82 +143,66 @@ class KaraokeAligner:
 
         log.info(f"[Actor] Платиновый скелет установлен: {anchors_count}/{len(canon_words)} слов.")
 
-    # ─── ЭТАП 2: АУДИТОР И ТРИБУНАЛ ─────────────────────────────────────────────
+    # ─── ЭТАП 2: АУДИТОР И МАКРО-ФИЗИКА (V5.0) ──────────────────────────────────
 
-    def _audit_json(self, words: list, audio_duration: float) -> list:
+    def _audit_json(self, words: list, audio_duration: float, combined_vad: list) -> list:
         bugs = []
         n = len(words)
         
-        # 1. Сборка карты строк для Intra-line Cohesion
-        lines = []
-        cur_line = []
-        for i, w in enumerate(words):
-            cur_line.append(i)
-            if w["line_break"]:
-                lines.append(cur_line)
-                cur_line = []
-        if cur_line: lines.append(cur_line)
-
-        line_map = {}
-        for l_idx, line_indices in enumerate(lines):
-            for i in line_indices:
-                line_map[i] = line_indices
-
-        # 2. Группировка подтвержденных слов в кластеры
-        clusters = []
-        curr_cluster = []
+        # 1. Макро-очистка Интро (False Start Sweeper)
+        first_block = []
         for i in range(n):
-            if words[i]["start"] != -1: curr_cluster.append(i)
-            else:
-                if curr_cluster: clusters.append(curr_cluster)
-                curr_cluster = []
-        if curr_cluster: clusters.append(curr_cluster)
+            if words[i]["start"] != -1: first_block.append(i)
+            elif first_block: break
+            
+        if first_block and first_block[0] == 0:
+            t_s = words[first_block[0]]["start"]
+            t_e = words[first_block[-1]]["end"]
+            density = calculate_phrase_density(words, first_block[0], first_block[-1], t_s, t_e)
+            
+            # Если текст размазан по тишине/болтовне, плотность будет микроскопической
+            if density < 0.2 and (t_e - t_s) > 8.0:
+                bugs.append({"type": "FALSE_START", "cluster": first_block})
 
-        # 3. Island of Lies (Защита интро/аутро от болтовни)
-        for cluster in clusters:
-            if len(cluster) <= 4:
-                first, last = cluster[0], cluster[-1]
-                gap_left = words[first]["start"] - words[first-1]["end"] if first > 0 and words[first-1]["end"] != -1 else words[first]["start"]
-                gap_right = words[last+1]["start"] - words[last]["end"] if last < n-1 and words[last+1]["start"] != -1 else audio_duration - words[last]["end"]
-                
-                is_left_isolated = (gap_left > 6.0) or (first == 0)
-                is_right_isolated = (gap_right > 6.0) or (last == n - 1)
-                
-                if is_left_isolated and is_right_isolated and (gap_left > 6.0 or gap_right > 6.0):
-                    bugs.append({"type": "ISLAND_OF_LIES", "cluster": cluster})
-
+        # 2. Оценка слов и Строк
         for i in range(n):
             w = words[i]
             if w["start"] == -1: continue
             dur = w["end"] - w["start"]
+            min_dur, max_dur = get_phonetic_bounds(w["clean_text"], w["line_break"])
             
-            # BLACK_HOLE (Схлопывание)
-            if dur <= 0.05 or (i > 0 and words[i-1]["end"] != -1 and w["start"] < words[i-1]["start"]):
+            # Схлопывание (BLACK_HOLE)
+            if dur < min_dur * 0.5 or dur <= 0.05 or (i > 0 and words[i-1]["end"] != -1 and w["start"] < words[i-1]["start"]):
                 bugs.append({"type": "BLACK_HOLE", "idx": i})
             
-            # OVERSTRETCH (Растягивание)
-            vowel_w = get_vowel_weight(w["clean_text"], w["line_break"])
-            if dur > (vowel_w * 0.8 + 0.5) and dur > 1.8:
-                if i == 0 or (i > 0 and words[i-1]["start"] == -1):
-                    bugs.append({"type": "BLACK_HOLE", "idx": i}) # Если это старт песни, сносим полностью
-                else:
-                    bugs.append({"type": "OVERSTRETCH", "idx": i})
+            # Перерастяжение (OVERSTRETCH) - чисто физическое правило
+            if dur > max_dur * 1.5:
+                bugs.append({"type": "OVERSTRETCH", "idx": i})
 
-        # 4. Внутристрочная Гравитация (TORN_LINE)
+        # 3. Внутристрочная Гравитация (TORN_LINE V5.0)
         for i in range(n - 1):
             if words[i]["end"] != -1 and words[i+1]["start"] != -1:
-                gap = words[i+1]["start"] - words[i]["end"]
-                # Разрыв внутри одной строки недопустим (>2.5s)
-                if gap > 2.5 and not words[i]["line_break"]:
-                    log.warning(f"⚖️ [Master Auditor] Порванная строка (TORN_LINE) ({gap:.1f}s) между '{words[i]['clean_text']}' и '{words[i+1]['clean_text']}'.")
-                    bugs.append({"type": "TORN_LINE", "line": line_map[i]})
+                # Если слова принадлежат одной строке
+                if words[i]["line_num"] == words[i+1]["line_num"]:
+                    gap = words[i+1]["start"] - words[i]["end"]
+                    _, max_d = get_phonetic_bounds(words[i]["clean_text"], False)
+                    
+                    # Динамически вычисляем допустимую паузу внутри фразы
+                    allowed_pause = max(1.5, max_d * 2.0)
+                    
+                    if gap > allowed_pause:
+                        vad_in_gap = get_vad_capacity(words[i]["end"], words[i+1]["start"], combined_vad)
+                        # Если внутри разрыва есть чей-то голос, значит строка наложена на чужую партию
+                        if vad_in_gap > 1.0: 
+                            log.warning(f"⚖️ [Master Auditor] Порванная строка ({gap:.1f}s) между '{words[i]['clean_text']}' и '{words[i+1]['clean_text']}'.")
+                            bugs.append({"type": "TORN_LINE", "line_num": words[i]["line_num"]})
 
         return bugs
 
     def _fix_bugs(self, words: list, bugs: list):
         for bug in bugs:
-            if bug["type"] == "ISLAND_OF_LIES":
-                log.warning(f"[Surgeon] Уничтожен ОСТРОВ ЛЖИ: слова {bug['cluster']}")
+            if bug["type"] == "FALSE_START":
+                log.warning(f"[Surgeon] Устранение FALSE_START: сброс интро {bug['cluster']}")
                 for idx in bug["cluster"]:
                     words[idx]["start"] = words[idx]["end"] = -1.0
             elif bug["type"] == "BLACK_HOLE":
@@ -234,41 +219,11 @@ class KaraokeAligner:
                     w["end"] = w["start"] + vowel_w * 0.8 + 0.5
                     log.warning(f"[Surgeon] Хвост OVERSTRETCH обрублен: '{w['clean_text']}'")
             elif bug["type"] == "TORN_LINE":
-                line_indices = bug["line"]
-                log.warning(f"[Surgeon] Взлом TORN_LINE: сброс целой строки {line_indices[0]}-{line_indices[-1]}")
-                for idx in line_indices:
-                    words[idx]["start"] = words[idx]["end"] = -1.0
-
-    def _run_tribunal(self, words: list, is_harmonic_fn) -> list:
-        quarantine_zones = []
-        n, i = len(words), 0
-        while i < n:
-            if words[i]["start"] == -1:
-                i += 1; continue
-                
-            dur = words[i]["end"] - words[i]["start"]
-            min_dur, max_dur = get_phonetic_bounds(words[i]["clean_text"], words[i]["line_break"])
-            
-            if dur > max_dur and dur > 2.0:
-                if not is_harmonic_fn(words[i]["start"] + max_dur, words[i]["end"]):
-                    log.warning(f"[Tribunal] Резина найдена на '{words[i]['clean_text']}'. Обрезаем (Шум/Эхо).")
-                    words[i]["end"] = words[i]["start"] + max_dur
-            
-            j = i
-            cluster_min_dur = 0.0
-            while j < n and words[j]["start"] != -1 and (words[j]["end"] - words[i]["start"] < 1.5):
-                mn, _ = get_phonetic_bounds(words[j]["clean_text"], words[j]["line_break"])
-                cluster_min_dur += mn
-                j += 1
-            
-            real_dur = words[j-1]["end"] - words[i]["start"] if j > i else 0
-            if (j - i) >= 3 and real_dur < (cluster_min_dur * 0.7):
-                quarantine_zones.append((i, j - 1, "PHYSICAL_IMPOSSIBILITY"))
-                i = j
-                continue
-            i += 1
-            
-        return quarantine_zones
+                target_line = bug["line_num"]
+                log.warning(f"[Surgeon] Взлом TORN_LINE: сброс целой строки №{target_line}")
+                for w in words:
+                    if w["line_num"] == target_line:
+                        w["start"] = w["end"] = -1.0
 
     def _find_gaps(self, words: list) -> list:
         gaps, i, n = [], 0, len(words)
@@ -281,7 +236,7 @@ class KaraokeAligner:
             else: i += 1
         return gaps
 
-    # ─── ЭТАП 3: АРЕНА (THE COLOSSEUM) ──────────────────────────────────────────
+    # ─── ЭТАП 3: АРЕНА И ЛАВИНА (THE COLOSSEUM) ─────────────────────────────────
 
     def _the_arena_surgery(self, words: list, gap: tuple, audio_data: np.ndarray, model, lang: str, strong_vad: list, weak_vad: list, audio_duration: float):
         s_idx, e_idx = gap
@@ -304,7 +259,7 @@ class KaraokeAligner:
         prop_harp = propose_harpoon(words, s_idx, e_idx, audio_data, model, lang, t_start, t_end)
         if prop_harp: proposals.append(prop_harp)
             
-        # 4. Phonetic Loom (Математическая Гравитация с Wall Jump)
+        # 4. Phonetic Loom (Line-First Loom)
         prop_loom = propose_loom(words, s_idx, e_idx, t_start, t_end, strong_vad, weak_vad)
         if prop_loom: proposals.append(prop_loom)
             
@@ -312,7 +267,6 @@ class KaraokeAligner:
         
         if winner:
             for k, t in enumerate(winner.timings):
-                # Wall Jump: enforce_curtains сдвинет слово ЗА занавес, если оно попало внутрь
                 mapped_s, mapped_e = enforce_curtains(t["start"], t["end"], self.all_curtains)
                 words[s_idx + k]["start"] = mapped_s
                 words[s_idx + k]["end"] = mapped_e
@@ -322,7 +276,7 @@ class KaraokeAligner:
     # ─── ЭТАП 4: ФИНАЛЬНЫЕ ШТРИХИ ──────────────────────────────────────────────
 
     def _apply_absolute_gravity(self, words: list, audio_duration: float, vad_mask: list):
-        """V4.2: Fail-Safe с Правосторонеей гравитацией (Right-Anchor Gravity)."""
+        """V5.0: Fail-Safe с Правосторонеей гравитацией."""
         log.info("🪐 [Absolute Gravity] Принудительное спасение всех оставшихся слов...")
         n = len(words)
         
@@ -350,7 +304,6 @@ class KaraokeAligner:
                 if not active_vads: active_vads = [(t_start, t_end)]
                 total_vad_time = sum(e - s for s, e in active_vads)
                 
-                # Right-Anchor Gravity: Если слева огромная дыра - прижимаем слова вправо к якорю
                 if t_end - t_start > req_time * 2.5 and total_vad_time > req_time * 1.5:
                     trimmed_vads = []
                     accum = 0.0
@@ -427,7 +380,7 @@ class KaraokeAligner:
         self._track_stem = os.path.basename(output_json_path).replace("_(Karaoke Lyrics).json", "")
 
         log.info("=" * 50)
-        log.info(f"Aligner СТАРТ (Symphony V13.2: Semantic Control): {self._track_stem}")
+        log.info(f"Aligner СТАРТ (Symphony V5.0: Line-First Physics): {self._track_stem}")
         
         canon_words_original = prepare_text(raw_lyrics)
         if not canon_words_original:
@@ -475,13 +428,13 @@ class KaraokeAligner:
                 canon_words = copy.deepcopy(canon_words_original)
                 if pass_idx == 1: log.warning("⏱️ МАШИНА ВРЕМЕНИ: Суровая оценка. Запуск Aggressive Mode (Pass 2)!")
 
-                # V4.2: Базовый скелет сразу по всему треку (без Авангарда)
                 self._platinum_skeleton(model, audio_data_raw, canon_words, lang)
 
                 for iteration in range(3):
-                    bugs = self._audit_json(canon_words, audio_duration)
+                    bugs = self._audit_json(canon_words, audio_duration, combined_vad)
                     self._fix_bugs(canon_words, bugs)
                     
+                    # Трибунал (резка хвостов)
                     anomalies = self._run_tribunal(canon_words, is_harmonic_fn)
                     for s_idx, e_idx, reason in anomalies:
                         log.info(f"   -> Карантин [{s_idx}-{e_idx}]: {reason}. Сброс таймингов.")
@@ -489,31 +442,57 @@ class KaraokeAligner:
                             
                     gaps = self._find_gaps(canon_words)
                     
-                    # 4. Island Expansion (Умный лимит через подсчет строк: не более 8 строк)
-                    if gaps:
-                        merged_gaps = []
-                        for gap in gaps:
-                            if not merged_gaps:
-                                merged_gaps.append(gap)
-                            else:
-                                last_s, last_e = merged_gaps[-1]
-                                curr_s, curr_e = gap
+                    # 3. ЭФФЕКТ ЛАВИНЫ (Avalanche Expansion) И Умный Остров
+                    expanded_gaps = []
+                    i = 0
+                    while i < len(gaps):
+                        s_idx, e_idx = gaps[i]
+                        
+                        # Лавина: Проверяем, влезает ли текст физически в доступный VAD
+                        while True:
+                            t_start, t_end = get_safe_bounds(canon_words, s_idx, e_idx, audio_duration)
+                            mass_min, _ = get_line_phonetic_bounds(canon_words, s_idx, e_idx)
+                            vad_cap = get_vad_capacity(t_start, t_end, combined_vad)
+                            
+                            # Если места критически мало (<75% от минимума) - сносим следующий якорь
+                            if vad_cap < mass_min * 0.75 and e_idx < len(canon_words) - 1:
+                                next_line_num = canon_words[e_idx + 1]["line_num"]
+                                log.warning(f"🌋 [Avalanche] VAD Capacity ({vad_cap:.1f}s) < Фонетическая Масса ({mass_min:.1f}s). Сносим строку №{next_line_num}!")
                                 
-                                # Считаем количество строк внутри потенциального Острова
-                                lines_count = sum(1 for k in range(last_s, curr_e + 1) if canon_words[k]["line_break"])
-                                if not canon_words[curr_e]["line_break"]:
-                                    lines_count += 1
+                                for k in range(e_idx + 1, len(canon_words)):
+                                    if canon_words[k]["line_num"] == next_line_num:
+                                        canon_words[k]["start"] = canon_words[k]["end"] = -1.0
+                                        e_idx = k
+                                    else: break
+                                        
+                                # Слияние с соседней дырой, если Лавина до нее дошла
+                                if i + 1 < len(gaps) and gaps[i+1][0] <= e_idx + 1:
+                                    e_idx = max(e_idx, gaps[i+1][1])
+                                    i += 1
+                            else:
+                                break
+                                
+                        # Island Expansion (Умный лимит по строкам: не более 8 строк)
+                        if expanded_gaps:
+                            last_s, last_e = expanded_gaps[-1]
+                            curr_s, curr_e = s_idx, e_idx
+                            
+                            lines_in_gap = len(set(canon_words[k]["line_num"] for k in range(last_s, curr_e + 1)))
 
-                                if curr_s - last_e <= 4 and lines_count <= 8:
-                                    if is_repetition_island(canon_words, last_s, curr_e):
-                                        for k in range(last_e + 1, curr_s):
-                                            canon_words[k]["start"] = canon_words[k]["end"] = -1.0
-                                        merged_gaps[-1] = (last_s, curr_e)
-                                        log.info(f"   🏝️ [Island Expansion] Дыры слиты в Остров Повторов: [{last_s}-{curr_e}] (строк: {lines_count})")
-                                        continue
-                                merged_gaps.append(gap)
-                        gaps = merged_gaps
+                            if curr_s - last_e <= 4 and lines_in_gap <= 8:
+                                if is_repetition_island(canon_words, last_s, curr_e):
+                                    for k in range(last_e + 1, curr_s):
+                                        canon_words[k]["start"] = canon_words[k]["end"] = -1.0
+                                    expanded_gaps[-1] = (last_s, curr_e)
+                                    log.info(f"   🏝️ [Island Expansion] Дыры слиты в Остров: [{last_s}-{curr_e}] (строк: {lines_in_gap})")
+                                    i += 1
+                                    continue
+                        
+                        expanded_gaps.append((s_idx, e_idx))
+                        i += 1
                     
+                    gaps = expanded_gaps
+
                     if not bugs and not anomalies and not gaps:
                         log.info(f"[Critic] Итерация {iteration+1}: Аудит пройден. Аномалий нет.")
                         break
@@ -575,7 +554,7 @@ class KaraokeAligner:
         with open(output_json_path, "w", encoding="utf-8") as f:
             json.dump(final_json, f, ensure_ascii=False, indent=2)
 
-        dump_debug("13_2_Colosseum", final_json, self._track_stem)
+        dump_debug("14_0_Symphony", final_json, self._track_stem)
         log.info(f"Aligner ГОТОВО → {output_json_path}")
         log.info("=" * 50)
         

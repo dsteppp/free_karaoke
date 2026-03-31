@@ -4,12 +4,12 @@ from app_logger import get_logger
 
 log = get_logger("aligner_acoustics")
 
-# ─── V13: NON-DESTRUCTIVE ACOUSTICS (VOCAL HEATMAP) ────────────────────────────
+# ─── V5.0: NON-DESTRUCTIVE ACOUSTICS (VOCAL HEATMAP) ────────────────────────────
 
 def vocal_sniper(audio_data: np.ndarray, sr: int) -> np.ndarray:
     """
-    V13: Оружие разряжено (Safe Source).
-    Мы больше не вырезаем тихие звуки физически, чтобы не повредить шепот (Кристина Си).
+    V5.0: Оружие разряжено (Safe Source).
+    Мы не вырезаем тихие звуки физически, чтобы не повредить шепот (например, Кристина Си).
     Возвращаем оригинальное аудио без изменений. Whisper и Арена будут слушать чистый оригинал.
     """
     log.info("🎯 [Vocal Sniper] Режим Read-Only. Аудио сохранено в оригинале.")
@@ -17,9 +17,9 @@ def vocal_sniper(audio_data: np.ndarray, sr: int) -> np.ndarray:
 
 def build_iron_curtain(audio_data: np.ndarray, sr: int) -> list:
     """
-    V13: Soft Iron Curtain (Поиск Великой Пустоты).
-    Определяет только зоны АБСОЛЮТНОЙ тишины или чистого минуса (> 3 сек), 
-    чтобы не отсекать дыхание и паузы между строками.
+    V5.0: Soft Iron Curtain (Поиск Великой Пустоты).
+    Определяет только зоны АБСОЛЮТНОЙ тишины или чистого минуса (> 3 сек).
+    В V5.0 (Line-First) эти зоны используются для запрета разрыва строк (Void Integrity).
     """
     log.info("🛡️ [Iron Curtain] Сканирование зон абсолютной пустоты (Soft Threshold)...")
     hop_length = 512
@@ -27,7 +27,7 @@ def build_iron_curtain(audio_data: np.ndarray, sr: int) -> list:
     
     # Смягчаем порог: берем 5-й перцентиль (самые тихие участки)
     noise_floor = np.percentile(rms, 5)
-    # Опускаем жесткий лимит до -60 dB (раньше было -50)
+    # Жесткий лимит -60 dB 
     thresh = max(10 ** (-60 / 20), noise_floor * 1.1)
     
     silence_mask = rms < thresh
@@ -44,7 +44,6 @@ def build_iron_curtain(audio_data: np.ndarray, sr: int) -> list:
         elif not is_silent and in_silence:
             in_silence = False
             end_t = times[i]
-            # Увеличиваем минимальную длину до 3.0 секунд (Instrumental Void)
             if end_t - start_t > 3.0:
                 curtains.append((start_t, end_t))
                 log.info(f"   🧱 Soft Curtain установлен: {start_t:.2f}s - {end_t:.2f}s")
@@ -58,7 +57,7 @@ def build_iron_curtain(audio_data: np.ndarray, sr: int) -> list:
     return curtains
 
 def enforce_curtains(start: float, end: float, curtains: list) -> tuple:
-    """Сдвигает тайминги, чтобы слово не пересекало пустоту."""
+    """Сдвигает тайминги, чтобы слово физически не заходило за занавес (Instrumental Void)."""
     for c_s, c_e in curtains:
         if start < c_s and end > c_s: 
             end = c_s - 0.01
@@ -73,8 +72,8 @@ def enforce_curtains(start: float, end: float, curtains: list) -> tuple:
 
 def get_acoustic_maps(audio_data: np.ndarray, sr: int) -> tuple:
     """
-    V13: Генерация Vocal Heatmap (Информационная карта).
-    Возвращает 4 элемента: strong_vad_mask (уверенный голос), weak_vad_mask (шепот/дыхание), onsets, is_harmonic.
+    V5.0: Генерация Vocal Heatmap (Информационная карта).
+    Выдает базис для расчета Емкости VAD (VAD Capacity) в главном скрипте.
     """
     log.info("🗺️ [Orchestra] Генерация акустической топографии (Vocal Heatmap, Onsets)...")
     hop_length = 512
@@ -140,8 +139,8 @@ def get_acoustic_maps(audio_data: np.ndarray, sr: int) -> tuple:
 
 def apply_vad_deafness(crop_audio: np.ndarray, sr: int, t_start: float, vad_mask: list) -> np.ndarray:
     """
-    V13: Функция отключена (Safe Source).
+    V5.0: Функция отключена (Safe Source).
     Хирургическая глухота больше не модифицирует аудио, 
-    чтобы не лишать Whisper контекста на этапе Арены.
+    чтобы не лишать Whisper контекста на этапе Арены (Semantic Harpoon).
     """
     return crop_audio
