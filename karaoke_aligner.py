@@ -20,19 +20,19 @@ from aligner_utils import (
 )
 from aligner_acoustics import (
     vocal_sniper, build_iron_curtain, enforce_curtains, 
-    get_acoustic_maps, apply_vad_deafness
+    get_acoustic_maps
 )
 from aligner_orchestra import (
-    macro_compass, heal_by_motif_matrix, ctc_inquisitor, 
-    heal_phonetic_loom, semantic_harpoon, repetition_island_mapper
+    Proposal, propose_motif_matrix, propose_inquisitor, 
+    propose_harpoon, propose_loom, the_supreme_judge, diagnostic_compass
 )
 
 log = get_logger("aligner")
 
 class KaraokeAligner:
     """
-    Главный Дирижер "Symphony V13: Master Plan".
-    Адаптивный Авангард, Целевые Острова Повторов и VAD-Магнетизм.
+    Главный Дирижер "Symphony V13: The Colosseum".
+    Адаптивный Авангард, Арена Инструментов и Абсолютный Судья.
     """
 
     def __init__(self, model_name="medium"):
@@ -46,13 +46,34 @@ class KaraokeAligner:
         self._track_stem = ""
         self.all_curtains = [] 
 
-    # ─── ЭТАП 1: СМЫСЛОВОЙ АВАНГАРД И СКЕЛЕТ ────────────────────────────────────
+    # ─── ЭТАП 1: ПОДГОТОВКА И СКЕЛЕТ ──────────────────────────────────────────
+
+    def _find_instrumental_voids(self, strong_vad: list, weak_vad: list):
+        """
+        Ищет длинные инструментальные проигрыши (>4 сек без голоса) 
+        и превращает их в Железный Занавес, чтобы не тянуть слова через соло.
+        """
+        log.info("🕳️ [Void Detector] Поиск длинных инструментальных проигрышей...")
+        combined_vad = sorted(strong_vad + weak_vad, key=lambda x: x[0])
+        if not combined_vad: return
+
+        merged = []
+        for s, e in combined_vad:
+            if not merged: merged.append((s, e))
+            else:
+                last_s, last_e = merged[-1]
+                if s - last_e < 1.0: merged[-1] = (last_s, max(last_e, e))
+                else: merged.append((s, e))
+        
+        last_e = 0.0
+        for s, e in merged:
+            if s - last_e > 4.0: # 4 секунды чистой музыки
+                log.info(f"   🕳️ Найден Instrumental Void: {last_e:.2f}s - {s:.2f}s. Установлен занавес.")
+                self.all_curtains.append((last_e, s))
+            last_e = e
 
     def _vanguard_protocol(self, model, audio_data: np.ndarray, words: list, lang: str):
-        """
-        V13: Бесконечный Сканер.
-        Ищет первые 2 строчки скользящим окном по 30 секунд. Найдет старт в любом месте трека.
-        """
+        """Ищет истинное начало песни, игнорируя долгие интро."""
         if not words: return
         log.info("🛡️ [Vanguard] Поиск истинного начала песни (Бесконечный сканер)...")
         sr = 16000
@@ -79,14 +100,12 @@ class KaraokeAligner:
         while search_start < audio_dur:
             crop_end = min(search_start + window_size, audio_dur)
             crop = audio_data[int(search_start * sr) : int(crop_end * sr)]
-            
             try:
                 res = model.transcribe(crop, language=lang)
                 blind_words = res.all_words()
                 
                 if blind_words:
                     b_texts = [re.sub(r'[^\w]', '', w.word.lower()) for w in blind_words]
-                    
                     for i in range(len(b_texts) - search_len + 1):
                         chunk = " ".join([t for t in b_texts[i:i+search_len] if t])
                         score = rapidfuzz.fuzz.partial_ratio(target_text, chunk)
@@ -103,10 +122,9 @@ class KaraokeAligner:
                         return 
             except Exception as e:
                 log.warning(f"   ❌ Ошибка Авангарда на отрезке {search_start}s: {e}")
-                
             search_start += step_size
             
-        log.info("   ⚠️ Авангард просканировал весь трек, но не нашел уверенного старта. Занавес не установлен.")
+        log.info("   ⚠️ Авангард просканировал весь трек, но не нашел уверенного старта.")
 
     def _platinum_skeleton(self, model, audio_data: np.ndarray, canon_words: list, lang: str):
         log.info("[Actor] Фаза 1: Сборка жесткого скелета (Platinum)...")
@@ -130,10 +148,8 @@ class KaraokeAligner:
             if cl:
                 start_t = max(last_t, w.start)
                 end_t = max(start_t + 0.05, w.end)
-                
                 if any(c_s <= start_t <= c_e for c_s, c_e in self.all_curtains):
                     continue
-                    
                 valid_sw.append({"clean": cl, "start": start_t, "end": end_t})
                 last_t = end_t
                 
@@ -154,11 +170,9 @@ class KaraokeAligner:
             is_platinum = False
             if best_match_len >= 4: is_platinum = True
             elif best_match_len == 3:
-                chars = sum(len(canon_words[best_c_idx + k]["clean_text"]) for k in range(3))
-                if chars >= 12: is_platinum = True
+                if sum(len(canon_words[best_c_idx + k]["clean_text"]) for k in range(3)) >= 12: is_platinum = True
             elif best_match_len == 2:
-                chars = sum(len(canon_words[best_c_idx + k]["clean_text"]) for k in range(2))
-                if chars >= 10: is_platinum = True
+                if sum(len(canon_words[best_c_idx + k]["clean_text"]) for k in range(2)) >= 10: is_platinum = True
 
             if is_platinum:
                 for k in range(best_match_len):
@@ -172,7 +186,7 @@ class KaraokeAligner:
 
         log.info(f"[Actor] Платиновый скелет установлен: {anchors_count}/{len(canon_words)} слов.")
 
-    # ─── ЭТАП 2: CRITIC & SURGEON ───────────────────────────────────────────────
+    # ─── ЭТАП 2: АУДИТОР И ТРИБУНАЛ ─────────────────────────────────────────────
 
     def _audit_json(self, words: list) -> list:
         bugs = []
@@ -181,8 +195,7 @@ class KaraokeAligner:
         clusters = []
         curr_cluster = []
         for i in range(n):
-            if words[i]["start"] != -1:
-                curr_cluster.append(i)
+            if words[i]["start"] != -1: curr_cluster.append(i)
             else:
                 if curr_cluster: clusters.append(curr_cluster)
                 curr_cluster = []
@@ -193,7 +206,6 @@ class KaraokeAligner:
                 first, last = cluster[0], cluster[-1]
                 gap_left = words[first]["start"] - words[first-1]["end"] if first > 0 and words[first-1]["end"] != -1 else 15.0
                 gap_right = words[last+1]["start"] - words[last]["end"] if last < n-1 and words[last+1]["start"] != -1 else 15.0
-                
                 if gap_left > 8.0 and gap_right > 8.0:
                     bugs.append({"type": "ISLAND_OF_LIES", "cluster": cluster})
 
@@ -213,8 +225,7 @@ class KaraokeAligner:
             if words[i]["end"] != -1 and words[i+1]["start"] != -1:
                 gap = words[i+1]["start"] - words[i]["end"]
                 if gap > 3.0 and not words[i]["line_break"]:
-                    has_curtain = any(c_s >= words[i]["end"] and c_e <= words[i+1]["start"] for c_s, c_e in self.all_curtains)
-                    if not has_curtain:
+                    if not any(c_s >= words[i]["end"] and c_e <= words[i+1]["start"] for c_s, c_e in self.all_curtains):
                         log.warning(f"⚖️ [Master Auditor] Порванная строка (TORN_LINE) ({gap:.1f}s) между '{words[i]['clean_text']}' и '{words[i+1]['clean_text']}'.")
                         bugs.append({"type": "TORN_LINE", "idx": i+1})
 
@@ -226,116 +237,30 @@ class KaraokeAligner:
                 log.warning(f"[Surgeon] Уничтожен ОСТРОВ ЛЖИ: слова {bug['cluster']}")
                 for idx in bug["cluster"]:
                     words[idx]["start"], words[idx]["end"] = -1.0, -1.0
-                    
             elif bug["type"] == "BLACK_HOLE":
                 idx = bug["idx"]
                 start_del, end_del = max(0, idx - 2), min(len(words) - 1, idx + 2)
                 log.warning(f"[Surgeon] Взлом BLACK_HOLE (индексы {start_del}-{end_del}). Сброс якорей.")
                 for k in range(start_del, end_del + 1):
                     words[k]["start"], words[k]["end"] = -1.0, -1.0
-
             elif bug["type"] == "OVERSTRETCH":
                 idx = bug["idx"]
                 w = words[idx]
-                old_end = w["end"]
                 vowel_w = get_vowel_weight(w["clean_text"], w["line_break"])
                 w["end"] = w["start"] + vowel_w * 0.8 + 0.5
-                log.warning(f"[Surgeon] Хвост OVERSTRETCH жестко обрублен: '{w['clean_text']}' ({old_end:.1f}s -> {w['end']:.1f}s)")
-                
+                log.warning(f"[Surgeon] Хвост OVERSTRETCH обрублен: '{w['clean_text']}'")
             elif bug["type"] == "TORN_LINE":
                 idx = bug["idx"]
                 log.warning(f"[Surgeon] Взлом TORN_LINE: сброс слов {idx-1} и {idx}")
                 words[idx-1]["start"], words[idx-1]["end"] = -1.0, -1.0
                 words[idx]["start"], words[idx]["end"] = -1.0, -1.0
 
-    def _find_gaps(self, words: list) -> list:
-        gaps, i, n = [], 0, len(words)
-        while i < n:
-            if words[i]["start"] == -1 and not words[i].get("dtw_tried", False):
-                j = i
-                while j < n and words[j]["start"] == -1: j += 1
-                gaps.append((i, j - 1))
-                i = j
-            else: i += 1
-        return gaps
-
-    def _micro_dtw_surgery(self, words: list, gap: tuple, audio_data: np.ndarray, model, lang: str, aggressive: bool, vad_mask: list):
-        s_idx, e_idx = gap
-        audio_duration = len(audio_data) / 16000.0
-        
-        t_start, t_end = get_safe_bounds(words, s_idx, e_idx, audio_duration)
-
-        v_weights = sum(get_vowel_weight(words[i]["clean_text"], words[i]["line_break"]) for i in range(s_idx, e_idx + 1))
-        est_dur = v_weights * 0.4
-        
-        window_len = t_end - t_start
-        if window_len > est_dur * 3.0:
-            if s_idx == 0:
-                t_start = max(t_start, t_end - est_dur * 2.0)
-            elif e_idx == len(words) - 1:
-                t_end = min(t_end, t_start + est_dur * 2.0)
-
-        if t_end - t_start < 0.2:
-            for k in range(s_idx, e_idx + 1): words[k]["dtw_tried"] = True
-            return
-
-        log.info(f"[Surgeon] Micro-DTW для слов [{s_idx}-{e_idx}] в окне {t_start:.1f}s - {t_end:.1f}s")
-        sr = 16000
-        crop_audio = audio_data[int(t_start * sr) : int(t_end * sr)]
-        
-        if len(crop_audio) < sr * 0.2:
-            for k in range(s_idx, e_idx + 1): words[k]["dtw_tried"] = True
-            return
-
-        if aggressive and vad_mask:
-            crop_audio = apply_vad_deafness(crop_audio, sr, t_start, vad_mask)
-
-        crop_text = " ".join([words[i]["word"] for i in range(s_idx, e_idx + 1)])
-        
-        try:
-            res = model.align(crop_audio, crop_text, language=lang)
-            c_sw = res.all_words()
-            
-            s_texts = [re.sub(r'[^\w]', '', w.word.lower()) for w in c_sw]
-            c_ptr = 0
-            for k in range(s_idx, e_idx + 1):
-                words[k]["dtw_tried"] = True 
-                c_clean = words[k]["clean_text"]
-                best_score, best_match = 0, -1
-                
-                for j in range(c_ptr, min(c_ptr + 6, len(s_texts))):
-                    score = rapidfuzz.fuzz.ratio(c_clean, s_texts[j])
-                    if score > 75 and score > best_score:
-                        best_score, best_match = score, j
-                        if score == 100: break
-                
-                if best_match != -1:
-                    dur = c_sw[best_match].end - c_sw[best_match].start
-                    if 0.05 < dur < 2.0:
-                        mapped_s = t_start + c_sw[best_match].start
-                        mapped_e = t_start + c_sw[best_match].end
-                        
-                        if not any(c_s <= mapped_s <= c_e for c_s, c_e in self.all_curtains):
-                            words[k]["start"] = mapped_s
-                            words[k]["end"] = mapped_e
-                        
-                        c_ptr = best_match + 1
-        except Exception as e:
-            log.warning(f"[Surgeon] Micro-DTW не справился ({e}).")
-            for k in range(s_idx, e_idx + 1): words[k]["dtw_tried"] = True
-
     def _run_tribunal(self, words: list, is_harmonic_fn) -> list:
         quarantine_zones = []
-        n = len(words)
-        i = 0
-        
+        n, i = len(words), 0
         while i < n:
             if words[i]["start"] == -1:
-                j = i
-                while j < n and words[j]["start"] == -1: j += 1
-                quarantine_zones.append((i, j - 1, "UNRESOLVED_GAP"))
-                i = j
-                continue
+                i += 1; continue
                 
             dur = words[i]["end"] - words[i]["start"]
             min_dur, max_dur = get_phonetic_bounds(words[i]["clean_text"], words[i]["line_break"])
@@ -345,99 +270,81 @@ class KaraokeAligner:
                     log.warning(f"[Tribunal] Резина найдена на '{words[i]['clean_text']}'. Обрезаем (Шум/Эхо).")
                     words[i]["end"] = words[i]["start"] + max_dur
             
-            if words[i]["start"] != -1:
-                j = i
-                cluster_min_dur = 0.0
-                while j < n and words[j]["start"] != -1 and (words[j]["end"] - words[i]["start"] < 1.5):
-                    mn, _ = get_phonetic_bounds(words[j]["clean_text"], words[j]["line_break"])
-                    cluster_min_dur += mn
-                    j += 1
-                
-                real_dur = words[j-1]["end"] - words[i]["start"] if j > i else 0
-                if (j - i) >= 3 and real_dur < (cluster_min_dur * 0.7):
-                    quarantine_zones.append((i, j - 1, "PHYSICAL_IMPOSSIBILITY"))
-                    i = j
-                    continue
+            j = i
+            cluster_min_dur = 0.0
+            while j < n and words[j]["start"] != -1 and (words[j]["end"] - words[i]["start"] < 1.5):
+                mn, _ = get_phonetic_bounds(words[j]["clean_text"], words[j]["line_break"])
+                cluster_min_dur += mn
+                j += 1
+            
+            real_dur = words[j-1]["end"] - words[i]["start"] if j > i else 0
+            if (j - i) >= 3 and real_dur < (cluster_min_dur * 0.7):
+                quarantine_zones.append((i, j - 1, "PHYSICAL_IMPOSSIBILITY"))
+                i = j
+                continue
             i += 1
             
         return quarantine_zones
 
-    # ─── ЭТАП 5: ФИЗИКА И ГРАВИТАЦИЯ ────────────────────────────────────────────
-
-    def _apply_gravity(self, words: list, audio_duration: float, vad_mask: list):
-        log.info("[Physics] Гравитационная заливка слепых зон (до 4 слов)...")
-        n = len(words)
-        
-        def get_available_vad(t_min, t_max):
-            res = []
-            for (vs, ve) in vad_mask:
-                i_s, i_e = max(t_min, vs), min(t_max, ve)
-                if i_e > i_s: res.append((i_s, i_e))
-            return res
-
-        i = 0
+    def _find_gaps(self, words: list) -> list:
+        gaps, i, n = [], 0, len(words)
         while i < n:
-            if words[i]["start"] == -1.0:
+            if words[i]["start"] == -1:
                 j = i
-                while j < n and words[j]["start"] == -1.0: j += 1
-                
-                if j - i > 4:
-                    log.warning(f"   🛑 [Smart Gravity] Дыра слишком большая ({j-i} слов). Гравитация отменена.")
-                    i = j
-                    continue
-                    
-                t_start, t_end = get_safe_bounds(words, i, j - 1, audio_duration)
-
-                active_vads = get_available_vad(t_start, t_end)
-                weights = [get_vowel_weight(words[k]["clean_text"], words[k]["line_break"]) for k in range(i, j)]
-                total_w = sum(weights)
-                
-                total_vad_time = sum(e - s for s, e in active_vads)
-                
-                if total_vad_time < 0.5:
-                    safe_start = t_start
-                    if i == 0 and active_vads: safe_start = active_vads[-1][0] 
-                    elif j == n and active_vads: safe_start = active_vads[0][0]
-                    
-                    curr_t = safe_start
-                    for k in range(i, j):
-                        w_dur = (weights[k-i] / total_w) * min(2.0, t_end - t_start)
-                        words[k]["start"] = curr_t
-                        words[k]["end"] = curr_t + w_dur * 0.9
-                        words[k]["start"], words[k]["end"] = enforce_curtains(words[k]["start"], words[k]["end"], self.all_curtains)
-                        curr_t += w_dur
-                else:
-                    curr_t = 0.0
-                    for k in range(i, j):
-                        w_logic_dur = (weights[k-i] / total_w) * total_vad_time
-                        
-                        accum, mapped_s, mapped_e = 0.0, active_vads[0][0], active_vads[-1][1]
-                        for (vs, ve) in active_vads:
-                            dur = ve - vs
-                            if curr_t <= accum + dur:
-                                mapped_s = vs + (curr_t - accum)
-                                break
-                            accum += dur
-                            
-                        accum = 0.0
-                        for (vs, ve) in active_vads:
-                            dur = ve - vs
-                            if curr_t + w_logic_dur * 0.95 <= accum + dur:
-                                mapped_e = vs + (curr_t + w_logic_dur * 0.95 - accum)
-                                break
-                            accum += dur
-                            
-                        words[k]["start"] = mapped_s
-                        words[k]["end"] = mapped_e
-                        words[k]["start"], words[k]["end"] = enforce_curtains(words[k]["start"], words[k]["end"], self.all_curtains)
-                        curr_t += w_logic_dur
+                while j < n and words[j]["start"] == -1: j += 1
+                gaps.append((i, j - 1))
                 i = j
-            else:
-                i += 1
+            else: i += 1
+        return gaps
+
+    # ─── ЭТАП 3: АРЕНА (THE COLOSSEUM) ──────────────────────────────────────────
+
+    def _the_arena_surgery(self, words: list, gap: tuple, audio_data: np.ndarray, model, lang: str, strong_vad: list, weak_vad: list, audio_duration: float):
+        """
+        Отправляет изолированный участок на Арену.
+        Инструменты соревнуются, Судья выбирает победителя.
+        """
+        s_idx, e_idx = gap
+        t_start, t_end = get_safe_bounds(words, s_idx, e_idx, audio_duration)
+        
+        if t_end - t_start < 0.1: return
+
+        log.info(f"🏟️ [The Arena] Слова [{s_idx}-{e_idx}] выходят на Арену! Окно: {t_start:.1f}s - {t_end:.1f}s")
+        proposals = []
+        
+        # 1. Motif Matrix
+        if is_repetition_island(words, s_idx, e_idx):
+            prop_motif = propose_motif_matrix(words, s_idx, e_idx, audio_duration, strong_vad)
+            if prop_motif: proposals.append(prop_motif)
+            
+        # 2. CTC Inquisitor
+        prop_inq = propose_inquisitor(words, s_idx, e_idx, audio_data, model, lang, t_start, t_end)
+        if prop_inq: proposals.append(prop_inq)
+            
+        # 3. Semantic Harpoon
+        prop_harp = propose_harpoon(words, s_idx, e_idx, audio_data, model, lang, t_start, t_end)
+        if prop_harp: proposals.append(prop_harp)
+            
+        # 4. Phonetic Loom (Безопасная гравитация)
+        prop_loom = propose_loom(words, s_idx, e_idx, t_start, t_end, strong_vad, weak_vad)
+        if prop_loom: proposals.append(prop_loom)
+            
+        # Суд
+        winner = the_supreme_judge(proposals, words, s_idx, e_idx, strong_vad, weak_vad)
+        
+        if winner:
+            for k, t in enumerate(winner.timings):
+                mapped_s, mapped_e = enforce_curtains(t["start"], t["end"], self.all_curtains)
+                words[s_idx + k]["start"] = mapped_s
+                words[s_idx + k]["end"] = mapped_e
+        else:
+            log.warning(f"   ⚠️ Арена не выявила победителя для [{s_idx}-{e_idx}]. Оставлено для Абсолютной Гравитации.")
+
+    # ─── ЭТАП 4: ФИНАЛЬНЫЕ ШТРИХИ ──────────────────────────────────────────────
 
     def _apply_absolute_gravity(self, words: list, audio_duration: float, vad_mask: list):
-        """V13: Абсолютная Гравитация (Fail-Safe). Срабатывает в самом финале и заливает всё без лимитов."""
-        log.info("🪐 [Absolute Gravity] Принудительное спасение всех оставшихся слов (Fail-Safe)...")
+        """Fail-Safe: Жестко заливает всё, что Арена не смогла починить."""
+        log.info("🪐 [Absolute Gravity] Принудительное спасение всех оставшихся слов...")
         n = len(words)
         
         def get_available_vad(t_min, t_max):
@@ -456,9 +363,7 @@ class KaraokeAligner:
                 
                 t_start, t_end = get_safe_bounds(words, i, j - 1, audio_duration)
                 active_vads = get_available_vad(t_start, t_end)
-                
-                if not active_vads:
-                    active_vads = [(t_start, t_end)]
+                if not active_vads: active_vads = [(t_start, t_end)]
                     
                 weights = [get_vowel_weight(words[k]["clean_text"], words[k]["line_break"]) for k in range(i, j)]
                 total_w = sum(weights)
@@ -467,7 +372,6 @@ class KaraokeAligner:
                 curr_t = 0.0
                 for k in range(i, j):
                     w_logic_dur = (weights[k-i] / total_w) * total_vad_time
-                    
                     accum, mapped_s, mapped_e = 0.0, active_vads[0][0], active_vads[-1][1]
                     for (vs, ve) in active_vads:
                         dur = ve - vs
@@ -475,7 +379,6 @@ class KaraokeAligner:
                             mapped_s = vs + (curr_t - accum)
                             break
                         accum += dur
-                        
                     accum = 0.0
                     for (vs, ve) in active_vads:
                         dur = ve - vs
@@ -484,17 +387,14 @@ class KaraokeAligner:
                             break
                         accum += dur
                         
-                    words[k]["start"] = mapped_s
-                    words[k]["end"] = mapped_e
-                    words[k]["start"], words[k]["end"] = enforce_curtains(words[k]["start"], words[k]["end"], self.all_curtains)
+                    words[k]["start"], words[k]["end"] = enforce_curtains(mapped_s, mapped_e, self.all_curtains)
                     curr_t += w_logic_dur
                     healed += 1
                 i = j
             else:
                 i += 1
                 
-        if healed > 0:
-            log.info(f"   ✨ Абсолютная Гравитация спасла {healed} слов от исчезновения!")
+        if healed > 0: log.info(f"   ✨ Абсолютная Гравитация спасла {healed} слов!")
 
     def _apply_vad_guillotine(self, words: list, vad_mask: list):
         if not vad_mask: return
@@ -520,10 +420,8 @@ class KaraokeAligner:
     def _smoothing(self, words: list):
         last_e = 0.0
         for w in words:
-            if w["start"] < last_e:
-                w["start"] = last_e + 0.01
-            if w["end"] <= w["start"]:
-                w["end"] = w["start"] + 0.1
+            if w["start"] < last_e: w["start"] = last_e + 0.01
+            if w["end"] <= w["start"]: w["end"] = w["start"] + 0.1
             w["start"], w["end"] = enforce_curtains(w["start"], w["end"], self.all_curtains)
             last_e = w["end"]
 
@@ -533,7 +431,7 @@ class KaraokeAligner:
         self._track_stem = os.path.basename(output_json_path).replace("_(Karaoke Lyrics).json", "")
 
         log.info("=" * 50)
-        log.info(f"Aligner СТАРТ (Symphony V13 Master Plan): {self._track_stem}")
+        log.info(f"Aligner СТАРТ (Symphony V13: The Colosseum): {self._track_stem}")
         
         canon_words_original = prepare_text(raw_lyrics)
         if not canon_words_original:
@@ -545,20 +443,25 @@ class KaraokeAligner:
         canon_words = []
         
         try:
+            # Читаем ОРИГИНАЛЬНОЕ аудио. vocal_sniper теперь отключен (Safe Source).
             audio_data_raw, sr = librosa.load(vocals_path, sr=16000, mono=True)
             audio_duration = len(audio_data_raw) / sr
             
-            gated_audio_data = vocal_sniper(audio_data_raw, sr)
-            iron_curtains = build_iron_curtain(gated_audio_data, sr)
-            vad_mask, onsets, is_harmonic_fn = get_acoustic_maps(gated_audio_data, sr)
+            # Строим информационные карты
+            iron_curtains = build_iron_curtain(audio_data_raw, sr)
+            strong_vad, weak_vad, onsets, is_harmonic_fn = get_acoustic_maps(audio_data_raw, sr)
+            self.all_curtains = sorted(iron_curtains, key=lambda x: x[0])
             
+            # Добавляем длинные проигрыши в Занавесы (Instrumental Void)
+            self._find_instrumental_voids(strong_vad, weak_vad)
+            self.all_curtains = sorted(self.all_curtains, key=lambda x: x[0])
+            combined_vad = sorted(strong_vad + weak_vad, key=lambda x: x[0])
+
             model = stable_whisper.load_model(self.model_name, download_root=self.whisper_model_dir, device=self.device)
             
-            self.all_curtains = sorted(iron_curtains, key=lambda x: x[0])
+            # Авангард и Скелет
             self._vanguard_protocol(model, audio_data_raw, canon_words_original, lang)
-            self.all_curtains = sorted(self.all_curtains, key=lambda x: x[0])
-
-            # Эталонный Аудитор (Forced-Alignment Spot-Check)
+            
             def spot_check_fn(t_start, t_end, target_phrase):
                 log.info(f"   🔍 [Semantic Spot-Check] Проверка эталоном {t_start:.1f}s - {t_end:.1f}s...")
                 crop = audio_data_raw[int(max(0, t_start)*sr) : int(min(audio_duration, t_end)*sr)]
@@ -566,127 +469,68 @@ class KaraokeAligner:
                 try:
                     res = model.align(crop, target_phrase, language=lang, fast_mode=True)
                     valid_words = [w for w in res.all_words() if w.end - w.start >= 0.05]
-                    
-                    if len(valid_words) < len(target_phrase.split()) * 0.4:
-                        log.warning(f"      ❌ Провал проверки! Эталон '{target_phrase}' не ложится на аудио.")
-                        return False
-                        
-                    log.info("      ✅ Проверка эталоном пройдена.")
+                    if len(valid_words) < len(target_phrase.split()) * 0.4: return False
                     return True
-                except:
-                    return True
+                except: return True
 
             best_words = []
             best_score = -1.0
 
             for pass_idx in range(2):
-                aggressive_mode = (pass_idx == 1)
                 canon_words = copy.deepcopy(canon_words_original)
-                
-                if aggressive_mode:
-                    log.warning("⏱️ МАШИНА ВРЕМЕНИ: Суровая оценка забраковала результат. Запуск Aggressive Mode (Pass 2)!")
+                if pass_idx == 1: log.warning("⏱️ МАШИНА ВРЕМЕНИ: Суровая оценка. Запуск Aggressive Mode (Pass 2)!")
 
-                self._platinum_skeleton(model, gated_audio_data, canon_words, lang)
+                self._platinum_skeleton(model, audio_data_raw, canon_words, lang)
 
                 for iteration in range(3):
                     bugs = self._audit_json(canon_words)
-                    gaps = self._find_gaps(canon_words)
+                    self._fix_bugs(canon_words, bugs)
                     
-                    if not bugs and not gaps:
-                        log.info(f"[Critic] Итерация {iteration+1}: Аудит пройден.")
-                        break
-                        
-                    if bugs:
-                        self._fix_bugs(canon_words, bugs)
-                    
-                    if gaps:
-                        for gap in gaps:
-                            self._micro_dtw_surgery(canon_words, gap, gated_audio_data, model, lang, aggressive_mode, vad_mask)
-                
-                for iteration in range(2):
                     anomalies = self._run_tribunal(canon_words, is_harmonic_fn)
-                    if not anomalies: break
-                        
                     for s_idx, e_idx, reason in anomalies:
                         log.info(f"   -> Карантин [{s_idx}-{e_idx}]: {reason}. Сброс таймингов.")
-                        for k in range(s_idx, e_idx + 1):
-                            canon_words[k]["start"] = canon_words[k]["end"] = -1.0
+                        for k in range(s_idx, e_idx + 1): canon_words[k]["start"] = canon_words[k]["end"] = -1.0
+                            
+                    gaps = self._find_gaps(canon_words)
+                    
+                    if not bugs and not anomalies and not gaps:
+                        log.info(f"[Critic] Итерация {iteration+1}: Аудит пройден. Аномалий нет.")
+                        break
                         
+                    for gap in gaps:
+                        s_idx, e_idx = gap
                         t_start, t_end = get_safe_bounds(canon_words, s_idx, e_idx, audio_duration)
                         
-                        # V13: Целевой Остров Повторов. Спасает зацикленные аутро
-                        if is_repetition_island(canon_words, s_idx, e_idx):
-                            if repetition_island_mapper(canon_words, s_idx, e_idx, t_start, t_end, vad_mask):
-                                continue
-
-                        if reason in ["PHYSICAL_IMPOSSIBILITY", "UNRESOLVED_GAP"] and (e_idx - s_idx) >= 2:
-                            if macro_compass(canon_words, s_idx, e_idx, gated_audio_data, t_start, t_end, model, lang):
-                                continue 
+                        # Если дыра большая, проверяем Компасом на сдвиг
+                        if (e_idx - s_idx) >= 2:
+                            shift_idx = diagnostic_compass(canon_words, s_idx, e_idx, audio_data_raw, t_start, t_end, model, lang)
+                            if shift_idx != -1:
+                                log.warning(f"   🔄 [Diagnostic Compass] Найден глобальный сдвиг. Расширяем карантин до {shift_idx} слова.")
+                                for k in range(e_idx + 1, shift_idx + 1):
+                                    canon_words[k]["start"] = canon_words[k]["end"] = -1.0
+                                gap = (s_idx, shift_idx)
                         
-                        # V13: Motif Matrix с магнетизмом к VAD
-                        if heal_by_motif_matrix(canon_words, s_idx, e_idx, audio_duration, vad_mask): continue
-                        if ctc_inquisitor(canon_words, s_idx, e_idx, gated_audio_data, model, lang, t_start, t_end): continue
-                        
-                        if aggressive_mode:
-                            heal_phonetic_loom(canon_words, s_idx, e_idx, t_start, t_end, vad_mask)
+                        # Выпускаем инструменты на Арену
+                        self._the_arena_surgery(canon_words, gap, audio_data_raw, model, lang, strong_vad, weak_vad, audio_duration)
                 
-                self._apply_gravity(canon_words, audio_duration, vad_mask)
-                self._apply_vad_guillotine(canon_words, vad_mask)
+                self._apply_vad_guillotine(canon_words, combined_vad)
                 self._smoothing(canon_words)
 
-                score = evaluate_alignment_quality(canon_words, vad_mask, self.all_curtains, spot_check_fn=spot_check_fn)
+                score = evaluate_alignment_quality(canon_words, strong_vad, weak_vad, self.all_curtains, spot_check_fn=spot_check_fn)
                 log.info(f"📊 Оценка качества после Pass {pass_idx + 1}: {score:.1f}/100")
                 
                 if score > best_score:
                     best_score = score
                     best_words = copy.deepcopy(canon_words)
-                    
-                if score >= 85.0:
-                    break
+                if score >= 85.0: break
             
             canon_words = best_words
             score = best_score
 
-            # ─── V13: ТОЧЕЧНАЯ РЕСТАВРАЦИЯ (FALLBACK) ────────────
-            if score < 85.0:
-                log.warning(f"🚨 [Targeted Fallback] Оценка {score:.1f}/100. Запуск Семантической Реставрации!")
-                
-                bugs = self._audit_json(canon_words)
-                self._fix_bugs(canon_words, bugs)
-                anomalies = self._run_tribunal(canon_words, is_harmonic_fn)
-                for s_idx, e_idx, _ in anomalies:
-                    for k in range(s_idx, e_idx + 1):
-                        canon_words[k]["start"] = canon_words[k]["end"] = -1.0
-                
-                gaps = self._find_gaps(canon_words)
-                harpoon_used = False
-                
-                for (s_idx, e_idx) in gaps:
-                    t_start, t_end = get_safe_bounds(canon_words, s_idx, e_idx, audio_duration)
-                    t_start = max(0.0, t_start - 0.5)
-                    t_end = min(audio_duration, t_end + 0.5)
-                    
-                    # V13: Сначала проверяем на Остров Повторов
-                    if is_repetition_island(canon_words, s_idx, e_idx):
-                        if repetition_island_mapper(canon_words, s_idx, e_idx, t_start, t_end, vad_mask):
-                            harpoon_used = True
-                            continue
-                            
-                    # Иначе бьем Семантическим Гарпуном
-                    if semantic_harpoon(canon_words, s_idx, e_idx, audio_data_raw, t_start, t_end, model, lang):
-                        harpoon_used = True
-                
-                if harpoon_used:
-                    self._apply_gravity(canon_words, audio_duration, vad_mask)
-                    self._apply_vad_guillotine(canon_words, vad_mask)
-                    self._smoothing(canon_words)
-                    score = evaluate_alignment_quality(canon_words, vad_mask, self.all_curtains) 
-                    log.info(f"📊 Оценка качества после Реставрации: {score:.1f}/100")
-
-            # ─── V13: АБСОЛЮТНАЯ ГРАВИТАЦИЯ (ФИНАЛЬНЫЙ ЩИТ) ────────────
+            # ─── АБСОЛЮТНАЯ ГРАВИТАЦИЯ (ФИНАЛЬНЫЙ ЩИТ) ────────────
             if any(w["start"] == -1.0 for w in canon_words):
-                self._apply_absolute_gravity(canon_words, audio_duration, vad_mask)
-                self._apply_vad_guillotine(canon_words, vad_mask)
+                self._apply_absolute_gravity(canon_words, audio_duration, combined_vad)
+                self._apply_vad_guillotine(canon_words, combined_vad)
                 self._smoothing(canon_words)
 
         except Exception as e:
@@ -695,7 +539,6 @@ class KaraokeAligner:
         finally:
             if model: del model
             if 'audio_data_raw' in locals(): del audio_data_raw
-            if 'gated_audio_data' in locals(): del gated_audio_data
             gc.collect()
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
@@ -714,7 +557,7 @@ class KaraokeAligner:
         with open(output_json_path, "w", encoding="utf-8") as f:
             json.dump(final_json, f, ensure_ascii=False, indent=2)
 
-        dump_debug("13_Master_Plan", final_json, self._track_stem)
+        dump_debug("13_Colosseum", final_json, self._track_stem)
         log.info(f"Aligner ГОТОВО → {output_json_path}")
         log.info("=" * 50)
         

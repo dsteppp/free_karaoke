@@ -43,11 +43,7 @@ def prepare_text(text: str) -> list:
     return words_list
 
 def is_repetition_island(words: list, s_idx: int, e_idx: int) -> bool:
-    """
-    Адаптивный целевой сканер Острова Повторов.
-    Вызывается ТОЛЬКО для пустых дыр (тайминги -1.0). Проверяет, 
-    является ли этот нераспознанный кусок зацикленным текстом.
-    """
+    """Адаптивный целевой сканер Острова Повторов."""
     length = e_idx - s_idx + 1
     if length < 5: return False
     
@@ -58,7 +54,6 @@ def is_repetition_island(words: list, s_idx: int, e_idx: int) -> bool:
     ratio = len(unique_words) / len(text_chunk)
     max_repeats = max(text_chunk.count(w) for w in unique_words)
     
-    # Жесткий детект: если уникальных слов <= 40% ИЛИ одно слово повторяется 3+ раз (при ratio < 60%)
     return ratio <= 0.40 or (max_repeats >= 3 and ratio < 0.60)
 
 # ─── ФОНЕТИЧЕСКАЯ МАТЕМАТИКА ────────────────────────────────────────────────
@@ -109,12 +104,21 @@ def get_safe_bounds(words: list, s_idx: int, e_idx: int, audio_duration: float) 
         
     return t_start, t_end
 
+def calculate_overlap(t_start: float, t_end: float, mask: list) -> float:
+    """Вычисляет, сколько времени из отрезка попадает внутрь переданной маски VAD."""
+    overlap = 0.0
+    for ms, me in mask:
+        o_s = max(t_start, ms)
+        o_e = min(t_end, me)
+        if o_e > o_s:
+            overlap += (o_e - o_s)
+    return overlap
+
 # ─── СЕМАНТИЧЕСКАЯ СИСТЕМА ОЦЕНКИ (SEMANTIC EVALUATOR) ──────────────────────
 
-def evaluate_alignment_quality(words: list, vad_mask: list, curtains: list, spot_check_fn=None) -> float:
+def evaluate_alignment_quality(words: list, strong_vad: list, weak_vad: list, curtains: list, spot_check_fn=None) -> float:
     """
-    Суровый контроль за макро-структурой.
-    Внедрены: Void Penalty (-5 за слово) и Orphan VAD Penalty (штраф за брошенный вокал).
+    Суровый контроль за макро-структурой на основе Vocal Heatmap.
     """
     score = 100.0
     total = len(words)
@@ -126,6 +130,8 @@ def evaluate_alignment_quality(words: list, vad_mask: list, curtains: list, spot
     torn_lines = 0
     hallucinations = 0
 
+    combined_vad = sorted(strong_vad + weak_vad, key=lambda x: x[0])
+
     for i, w in enumerate(words):
         if w["start"] == -1.0:
             unresolved += 1
@@ -133,25 +139,16 @@ def evaluate_alignment_quality(words: list, vad_mask: list, curtains: list, spot
         
         dur = w["end"] - w["start"]
         
-        # 1. Физическая деформация
-        if dur < 0.06:
-            squeezed += 1
+        if dur < 0.06: squeezed += 1
         min_dur, max_dur = get_phonetic_bounds(w["clean_text"], w["line_break"])
-        if dur > max_dur * 1.5: 
-            overstretched += 1
+        if dur > max_dur * 1.5: overstretched += 1
 
-        # 2. Галлюцинации (VAD-Overlap)
-        overlap = 0.0
-        for vs, ve in vad_mask:
-            o_s = max(w["start"], vs)
-            o_e = min(w["end"], ve)
-            if o_e > o_s:
-                overlap += (o_e - o_s)
-        
+        # Галлюцинации (VAD-Overlap)
+        overlap = calculate_overlap(w["start"], w["end"], combined_vad)
         if dur > 0 and (overlap / dur) < 0.1:
             hallucinations += 1
 
-        # 3. Мягкая проверка натяжения (Smart Line Tension)
+        # Мягкая проверка натяжения (Smart Line Tension)
         if i < total - 1 and not w["line_break"]:
             next_w = words[i+1]
             if next_w["start"] != -1.0:
@@ -159,14 +156,13 @@ def evaluate_alignment_quality(words: list, vad_mask: list, curtains: list, spot
                 if gap > 3.0: 
                     has_curtain = any(c_s >= w["end"] and c_e <= next_w["start"] for c_s, c_e in curtains)
                     if not has_curtain:
-                        vad_in_gap = sum((min(next_w["start"], ve) - max(w["end"], vs)) 
-                                         for vs, ve in vad_mask if min(next_w["start"], ve) > max(w["end"], vs))
+                        vad_in_gap = calculate_overlap(w["end"], next_w["start"], combined_vad)
                         if vad_in_gap > 1.5:
                             torn_lines += 1
 
-    # 4. Поиск Брошенного Голоса (Orphan VAD Penalty - Защита от пустот Доры)
+    # Поиск Брошенного Голоса (Orphan VAD Penalty)
     orphan_vad_time = 0.0
-    for vs, ve in vad_mask:
+    for vs, ve in strong_vad:
         has_words = False
         for w in words:
             if w["start"] != -1.0 and min(w["end"], ve) - max(w["start"], vs) > 0:
@@ -174,39 +170,31 @@ def evaluate_alignment_quality(words: list, vad_mask: list, curtains: list, spot
                 break
         
         vad_dur = ve - vs
-        # Если кусок голоса длится больше 2 секунд, и на нем нет ни одного слова
         if not has_words and vad_dur > 2.0:
             orphan_vad_time += vad_dur
             
-    # За каждые 1.5 секунды потерянного вокала снимаем 10 баллов
     if orphan_vad_time > 1.5:
         score -= (orphan_vad_time * 10.0)
 
-    # 5. Жестокий Оценщик Пустот (Void Penalty)
     score -= unresolved * 5.0
     score -= (squeezed / total) * 100 * 0.5
     score -= (overstretched / total) * 100 * 0.5 
     score -= torn_lines * 5.0 
     score -= hallucinations * 5.0
 
-    # 6. Смысловой Аудитор (Spot-Check с использованием Forced Alignment)
     if score >= 80.0 and spot_check_fn is not None:
         valid_indices = [i for i, w in enumerate(words) if w["start"] != -1.0 and (w["end"] - w["start"]) > 0.2]
-        
         if len(valid_indices) >= 10:
             check_points = random.sample(valid_indices[5:-5], min(2, len(valid_indices) - 10))
-            
             failed_checks = 0
             for idx in check_points:
                 w = words[idx]
                 t_start = max(0.0, w["start"] - 0.5)
                 t_end = w["end"] + 0.5
                 target_phrase = " ".join([words[k]["clean_text"] for k in range(max(0, idx-1), min(total, idx+2))])
-                
                 if not spot_check_fn(t_start, t_end, target_phrase):
                     failed_checks += 1
-                    
             if failed_checks > 0:
-                score -= 30.0 # Огромный штраф за семантический рассинхрон
+                score -= 30.0 
 
     return max(0.0, score)
