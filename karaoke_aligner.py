@@ -3,19 +3,20 @@ import gc
 import json
 import torch
 import librosa
+import numpy as np
 import stable_whisper
 
 from app_logger import get_logger, dump_debug
 from aligner_utils import detect_language, prepare_text, clean_word, evaluate_alignment_quality
-from aligner_acoustics import get_vocal_intervals, get_vocal_onsets, constrain_to_vad, filter_whisper_hallucinations
+from aligner_acoustics import get_vocal_intervals, get_clean_onsets, constrain_to_vad, filter_whisper_hallucinations
 from aligner_orchestra import execute_sequence_matching
 
 log = get_logger("aligner")
 
 class KaraokeAligner:
     """
-    V9.0 Neural Sequence Paradigm (Self-Healing & Anchor Onsets)
-    Абсолютная защита от орфанных якорей. Магнитная сетка ритма. Модуль аудита.
+    V10.0 Atomic & Monolithic Paradigm
+    Инструментальный Анти-Маскинг, Строгая монотонность времени, Атомарные строки.
     """
     
     def __init__(self, model_name="medium"):
@@ -32,9 +33,9 @@ class KaraokeAligner:
         self._track_stem = os.path.basename(output_json_path).replace("_(Karaoke Lyrics).json", "")
         
         log.info("=" * 60)
-        log.info(f"🚀 Aligner СТАРТ (V9.0 Self-Healing): {self._track_stem}")
+        log.info(f"🚀 Aligner СТАРТ (V10.0 Monolithic Core): {self._track_stem}")
         
-        # 1. Подготовка текста
+        # 1. Подготовка текста (С мгновенным расчетом физики слова)
         canon_words = prepare_text(raw_lyrics)
         if not canon_words:
             log.warning("⚠️ Текст пуст! Сохраняем пустой JSON.")
@@ -43,22 +44,36 @@ class KaraokeAligner:
             return output_json_path
             
         lang = detect_language(raw_lyrics)
-
         model = None
+        
         try:
-            # 2. Физический анализ звука (VAD Radar)
+            # 2. V10 Anti-Masking: Загрузка вокала и инструментала
+            inst_path = vocals_path.replace("_(Vocals).mp3", "_(Instrumental).mp3")
+            
+            log.info("🎧 Загрузка аудио-стемов для DSP-анализа...")
             audio_data, sr = librosa.load(vocals_path, sr=16000, mono=True)
             audio_duration = len(audio_data) / sr
             
-            vad_intervals = get_vocal_intervals(audio_data, sr, top_db=35.0)
+            if os.path.exists(inst_path):
+                inst_data, _ = librosa.load(inst_path, sr=16000, mono=True)
+                # Защита от рассинхрона длины файлов на пару семплов
+                if len(inst_data) != len(audio_data):
+                    min_len = min(len(inst_data), len(audio_data))
+                    inst_data = inst_data[:min_len]
+                    audio_data = audio_data[:min_len]
+            else:
+                log.warning("⚠️ Инструментал не найден! Анти-Маскинг работает в слепом режиме.")
+                inst_data = np.zeros_like(audio_data)
+            
+            # 3. Физический анализ звука (V10 VAD & Clean Onsets)
+            vad_intervals = get_vocal_intervals(audio_data, inst_data, sr, top_db=35.0)
             if not vad_intervals:
-                log.warning("⚠️ VAD не нашел голоса в треке! Сценарий глухой тишины.")
+                log.warning("⚠️ VAD не нашел голоса! Сценарий глухой тишины.")
                 vad_intervals = [(0.0, audio_duration)]
 
-            # V9.0: Извлекаем магнитную сетку пиков энергии (Onsets)
-            onsets = get_vocal_onsets(audio_data, sr)
+            onsets = get_clean_onsets(audio_data, inst_data, sr)
 
-            # 3. Слух Нейросети
+            # 4. Слух Нейросети
             log.info("🧠 Транскрибация Stable-Whisper...")
             model = stable_whisper.load_model(self.model_name, download_root=self.whisper_model_dir, device=self.device)
             
@@ -82,47 +97,48 @@ class KaraokeAligner:
                             "probability": w.probability
                         })
 
-            # 4. ФИЛЬТР №1: Очистка галлюцинаций
+            # 5. ФИЛЬТР №1: Очистка галлюцинаций (Жесткий контроль вероятности)
             heard_words = filter_whisper_hallucinations(raw_heard_words, vad_intervals)
 
-            # 5. Оркестратор V9.0 (Sequence Matching + Self-Healing + Onsets Snap)
+            # 6. Оркестратор V10.0 (Атомарная сборка строк и монотонная матрица)
             canon_words = execute_sequence_matching(canon_words, heard_words, vad_intervals, onsets, audio_duration)
             
-            # 6. Физический Контроль (Мягкий Магнит VAD)
+            # 7. Физический Контроль
             log.info("🛡️ [Physics Check] Финальная шлифовка таймингов...")
             shifted_count = 0
             for w in canon_words:
-                # В V9.0 мы доверяем жестким якорям (locked), но все равно проверяем вылеты за пределы VAD
-                w["start"], w["end"], was_shifted = constrain_to_vad(w["start"], w["end"], vad_intervals, max_shift_sec=1.0)
+                w["start"], w["end"], was_shifted = constrain_to_vad(w["start"], w["end"], vad_intervals, max_shift_sec=0.5)
                 if was_shifted:
                     shifted_count += 1
                 
-                # Защита от нулевой длины
-                if w["end"] - w["start"] < 0.05:
-                    w["end"] = w["start"] + 0.1
+                # Защита от нулевой длины с использованием расчетной физики V10
+                dur = w["end"] - w["start"]
+                if dur < w["min_dur"]:
+                    w["end"] = w["start"] + w["min_dur"]
                     
             if shifted_count > 0:
                 log.info(f"   🧲 [VAD-Magnet] Сдвинуто к голосу слов: {shifted_count}")
                     
-            # 7. Устранение нахлестов с микро-паузами
-            self._resolve_overlaps(canon_words)
+            # 8. V10 Монотонность времени
+            self._enforce_strict_monotonicity(canon_words)
 
-            # 8. Оценка качества (Инспектор V9.0)
+            # 9. Строгая оценка качества
             score = evaluate_alignment_quality(canon_words, vad_intervals)
 
         except Exception as e:
             log.error(f"❌ Фатальная ошибка Aligner: {e}")
             raise e
         finally:
-            # Освобождение памяти
+            # Абсолютная зачистка VRAM
             if model: del model
             if 'audio_data' in locals(): del audio_data
+            if 'inst_data' in locals(): del inst_data
             gc.collect()
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
                 torch.cuda.ipc_collect()
 
-        # Формирование JSON
+        # Формирование итогового JSON
         final_json = []
         for w in canon_words:
             final_json.append({
@@ -136,32 +152,48 @@ class KaraokeAligner:
         with open(output_json_path, "w", encoding="utf-8") as f:
             json.dump(final_json, f, ensure_ascii=False, indent=2)
 
-        dump_debug("Neural_Matched_V9.0", final_json, self._track_stem)
+        dump_debug("Neural_Matched_V10.0", final_json, self._track_stem)
         log.info(f"✅ Aligner УСПЕШНО ЗАВЕРШЕН → {output_json_path}")
         log.info("=" * 60)
         
         return output_json_path
 
-    def _resolve_overlaps(self, words: list):
+    def _enforce_strict_monotonicity(self, words: list):
         """
-        Создает 'Breath-gaps' (микро-паузы) и устраняет нахлесты.
+        V10.0 Жесткая Монотонность.
+        Ни одно слово физически не может начаться раньше, чем закончится предыдущее.
+        Ликвидирует парадоксы путешествий во времени.
         """
         resolves = 0
         micro_gap = 0.05 
         
+        # Проход 1: Сдвиг границ нахлеста
         for i in range(len(words) - 1):
-            if words[i]["end"] >= words[i+1]["start"] - micro_gap:
-                midpoint = (words[i]["end"] + words[i+1]["start"]) / 2
+            curr_w = words[i]
+            next_w = words[i+1]
+            
+            if curr_w["end"] >= next_w["start"] - micro_gap:
+                midpoint = (curr_w["end"] + next_w["start"]) / 2
                 
-                words[i]["end"] = midpoint - (micro_gap / 2)
-                words[i+1]["start"] = midpoint + (micro_gap / 2)
+                curr_w["end"] = midpoint - (micro_gap / 2)
+                next_w["start"] = midpoint + (micro_gap / 2)
                 
-                if words[i]["end"] <= words[i]["start"]:
-                    words[i]["end"] = words[i]["start"] + 0.05
-                if words[i+1]["end"] <= words[i+1]["start"]:
-                    words[i+1]["end"] = words[i+1]["start"] + 0.05
+                # Защита от выворачивания слов наизнанку
+                if curr_w["end"] <= curr_w["start"]:
+                    curr_w["end"] = curr_w["start"] + curr_w["min_dur"]
+                    next_w["start"] = curr_w["end"] + micro_gap
+                    
+                if next_w["end"] <= next_w["start"]:
+                    next_w["end"] = next_w["start"] + next_w["min_dur"]
                     
                 resolves += 1
                 
+        # Проход 2: Эффект домино (Проталкивание времени вперед)
+        for i in range(len(words) - 1):
+            if words[i]["end"] > words[i+1]["start"]:
+                words[i+1]["start"] = words[i]["end"] + 0.01
+                if words[i+1]["end"] <= words[i+1]["start"]:
+                     words[i+1]["end"] = words[i+1]["start"] + words[i+1]["min_dur"]
+                     
         if resolves > 0:
-            log.info(f"   📏 [Smoothing] Исправлено нахлестов (созданы микро-паузы): {resolves}")
+            log.info(f"   📏 [Monotonicity] Устранено временных парадоксов (нахлестов): {resolves}")
