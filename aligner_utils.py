@@ -1,6 +1,5 @@
 import re
 import string
-import rapidfuzz
 from app_logger import get_logger
 
 log = get_logger("aligner_utils")
@@ -19,7 +18,7 @@ def clean_word(word: str) -> str:
 
 def prepare_text(raw_lyrics: str) -> list:
     """
-    Разбирает сырой текст с Genius. Сохраняет флаг конца строки и абзац.
+    Разбирает сырой текст с Genius. Сохраняет флаг конца строки.
     """
     log.info("📝 [Utils] Подготовка эталонного текста...")
     if not raw_lyrics: 
@@ -53,100 +52,78 @@ def prepare_text(raw_lyrics: str) -> list:
                 "start": -1.0,
                 "end": -1.0,
                 "line_break": is_last_in_line,
-                "stanza_idx": stanza_idx
+                "stanza_idx": stanza_idx,
+                "locked": False  # V9.0: Флаг жесткого якоря
             })
             
-    log.info(f"   ✅ Обработано слов: {len(words)}, Абзацев: {stanza_idx + 1}")
+    log.info(f"   ✅ Обработано слов: {len(words)}, Строф: {stanza_idx + 1}")
     return words
 
+
+# ==============================================================================
+# V9.0 G2P & Syllable Estimator (Фонетический анализ)
+# ==============================================================================
+
+class SyllableEstimator:
+    """Продвинутый анализатор слогов для точного расчета физики слова."""
+    
+    @staticmethod
+    def count_en(word: str) -> int:
+        word = word.lower()
+        if len(word) <= 3:
+            return 1
+        word = re.sub(r'(?:[^laeiouy]es|ed|[^laeiouy]e)$', '', word)
+        word = re.sub(r'^y', '', word)
+        syllables = len(re.findall(r'[aeiouy]{1,2}', word))
+        return max(1, syllables)
+
+    @staticmethod
+    def count_ru(word: str) -> int:
+        vowels = "аеёиоуыэюя"
+        return sum(1 for char in word.lower() if char in vowels)
+
+    @classmethod
+    def estimate(cls, word: str) -> int:
+        ru_chars = sum(1 for c in word.lower() if c in "абвгдеёжзийклмнопрстуфхцчшщъыьэюя")
+        return cls.count_ru(word) if ru_chars > 0 else cls.count_en(word)
+
 def count_vowels(word: str) -> int:
-    """Считает количество слогов (гласных) в слове."""
-    vowels = "аеёиоуыэюяaeiouy"
-    return sum(1 for char in word.lower() if char in vowels)
-
-def extract_rhythm_dna(words: list) -> dict:
-    """Извлекает ритм трека для резиновой сборки слепых зон"""
-    dna = {"velocity": 0.25, "micro_gap": 0.1, "macro_gap": 1.2}
-    
-    valid_words = [w for w in words if w["start"] != -1.0]
-    if len(valid_words) < 5:
-        log.warning("   ⚠️ Мало якорей. Используем стандартную ДНК.")
-        return dna
-
-    total_vowels = sum(max(1, count_vowels(w["clean_text"])) for w in valid_words)
-    total_dur = sum(w["end"] - w["start"] for w in valid_words)
-    if total_vowels > 0:
-        dna["velocity"] = min(max(0.1, total_dur / total_vowels), 0.5)
-
-    micro_gaps = []
-    macro_gaps = []
-    
-    for i in range(len(words) - 1):
-        w1 = words[i]
-        w2 = words[i+1]
-        
-        if w1["start"] != -1.0 and w2["start"] != -1.0:
-            gap = w2["start"] - w1["end"]
-            if gap >= 0:
-                if w1["line_break"]:
-                    if gap < 4.0:
-                        macro_gaps.append(gap)
-                else:
-                    if gap < 1.0:
-                        micro_gaps.append(gap)
-
-    if micro_gaps:
-        dna["micro_gap"] = min(max(0.05, sum(micro_gaps) / len(micro_gaps)), 0.3)
-    if macro_gaps:
-        dna["macro_gap"] = min(max(0.4, sum(macro_gaps) / len(macro_gaps)), 2.5)
-
-    log.info(f"🧬 [Rhythm DNA] Извлечен ритм трека:")
-    log.info(f"   ┣ Скорость слога: {dna['velocity']:.2f}s")
-    log.info(f"   ┣ Внутристрочная (Micro): {dna['micro_gap']:.2f}s")
-    log.info(f"   ┗ Межстрочная (Macro): {dna['macro_gap']:.2f}s")
-    
-    return dna
-
-def check_sdr_sanity(words: list, start_idx: int, end_idx: int, duration_sec: float, is_same_line: bool = False) -> tuple:
-    """SDR-Guard: Проверяет, реально ли человеку спеть слова за это время."""
-    if duration_sec <= 0: return False, 999.0
-    if is_same_line and duration_sec > 2.5: return False, 0.0
-    total_syllables = sum(max(1, count_vowels(words[k]["clean_text"])) for k in range(start_idx, end_idx + 1))
-    sdr = total_syllables / duration_sec
-    is_sane = (0.3 <= sdr <= 9.0)
-    return is_sane, sdr
+    """Обертка для обратной совместимости."""
+    return SyllableEstimator.estimate(word)
 
 def get_vowel_weight(word: str, is_line_end: bool = False) -> float:
-    """Рассчитывает фонетический вес слова."""
-    vowels = "аеёиоуыэюяaeiouy"
-    base_weight = 0.5
-    for char in word.lower():
-        if char in vowels:
-            base_weight += 0.8
-        else:
-            base_weight += 0.2
-            
+    """Рассчитывает 'фонетический вес' слова на базе реальных слогов."""
+    syllables = SyllableEstimator.estimate(word)
+    # 1 слог ~ 0.3 сек базового веса
+    base_weight = max(0.4, syllables * 0.3)
     if is_line_end:
         base_weight *= 1.5
     return base_weight
 
 def get_phonetic_bounds(word: str, is_line_end: bool = False) -> tuple:
-    """Возвращает физиологический предел длительности слова."""
-    weight = get_vowel_weight(word, is_line_end)
-    min_dur = max(0.05, weight * 0.15)
-    max_dur = weight * 0.8 + 0.5
+    """Возвращает физиологический предел длительности слова (min_dur, max_dur)."""
+    syllables = SyllableEstimator.estimate(word)
+    min_dur = max(0.08, syllables * 0.12)  # Не быстрее 120мс на слог
+    max_dur = (syllables * 0.7) + (0.5 if is_line_end else 0.2)
     return min_dur, max_dur
 
-def calculate_word_duration(word: str, dna: dict, is_line_end: bool = False) -> float:
-    """Определяет идеальную длину слова на основе ДНК трека."""
-    vowel_count = max(1, count_vowels(word))
-    dur = vowel_count * dna["velocity"]
-    if is_line_end:
-        dur *= 1.2
-    return dur
+def check_sdr_sanity(words: list, start_idx: int, end_idx: int, duration_sec: float, is_same_line: bool = False) -> tuple:
+    """SDR-Guard (Syllable Delivery Rate)."""
+    if duration_sec <= 0:
+        return False, 999.0
+        
+    if is_same_line and duration_sec > 2.5:
+        return False, 0.0
+
+    total_syllables = sum(SyllableEstimator.estimate(words[k]["clean_text"]) for k in range(start_idx, end_idx + 1))
+    sdr = total_syllables / duration_sec
+    
+    # Расширенные пределы для рэпа и мелизмов (0.3 - 9.0 -> 0.2 - 10.0)
+    is_sane = (0.2 <= sdr <= 10.0)
+    return is_sane, sdr
 
 def calculate_overlap(s1: float, e1: float, intervals: list) -> float:
-    """Считает суммарное время пересечения отрезка с физическими VAD-интервалами."""
+    """Считает суммарное время пересечения отрезка [s1, e1] с физическими VAD-интервалами."""
     if e1 <= s1 or not intervals: 
         return 0.0
         
@@ -158,14 +135,82 @@ def calculate_overlap(s1: float, e1: float, intervals: list) -> float:
             overlap += (o_e - o_s)
     return overlap
 
-def get_semantic_similarity(heard_phrase: str, canon_phrase: str) -> float:
-    """
-    V8.8: Семантический радар (Смысловой фильтр).
-    Ищет подстроку (остров Whisper) в полном тексте Genius.
-    Возвращает % уверенности (от 0 до 100).
-    """
-    if not heard_phrase or not canon_phrase: return 0.0
-    return rapidfuzz.fuzz.partial_ratio(heard_phrase.lower(), canon_phrase.lower())
+
+# ==============================================================================
+# V9.0 Anomaly Inspector (Детектор болячек для Self-Healing)
+# ==============================================================================
+
+class AnomalyInspector:
+    """Модуль аудита. Ищет физически невозможные зоны в таймингах."""
+    
+    @staticmethod
+    def scan(words: list, vad_intervals: list) -> list:
+        anomalies = []
+        n = len(words)
+        
+        i = 0
+        while i < n:
+            w = words[i]
+            if w["start"] == -1.0 or w["end"] == -1.0:
+                i += 1
+                continue
+                
+            dur = w["end"] - w["start"]
+            min_dur, max_dur = get_phonetic_bounds(w["clean_text"], w["line_break"])
+            overlap = calculate_overlap(w["start"], w["end"], vad_intervals)
+            vad_ratio = overlap / dur if dur > 0 else 0
+            
+            # Ищем кластеры ошибок (собираем проблемные слова вместе)
+            reason = None
+            if vad_ratio < 0.15:
+                reason = "VAD_VIOLATION"
+            elif dur < min_dur * 0.7:
+                reason = "MACHINEGUN"
+            elif dur > max_dur * 1.5:
+                reason = "RUBBER_WORD"
+                
+            if reason:
+                # Расширяем зону аномалии на соседние слова в той же строке
+                start_idx = i
+                end_idx = i
+                
+                # Захват контекста влево
+                while start_idx > 0 and not words[start_idx-1]["line_break"] and (words[i]["start"] - words[start_idx-1]["end"]) < 1.0:
+                    start_idx -= 1
+                    
+                # Захват контекста вправо
+                while end_idx < n - 1 and not words[end_idx]["line_break"] and (words[end_idx+1]["start"] - words[i]["end"]) < 1.0:
+                    end_idx += 1
+                    
+                anomalies.append({
+                    "type": reason,
+                    "start_idx": start_idx,
+                    "end_idx": end_idx,
+                    "t_start": words[start_idx]["start"],
+                    "t_end": words[end_idx]["end"]
+                })
+                i = end_idx + 1 # Прыгаем за пределы найденного кластера
+            else:
+                i += 1
+                
+        # Дедупликация пересекающихся зон
+        merged = []
+        for a in anomalies:
+            if not merged:
+                merged.append(a)
+            else:
+                last = merged[-1]
+                if a["start_idx"] <= last["end_idx"]:
+                    last["end_idx"] = max(last["end_idx"], a["end_idx"])
+                    last["t_end"] = max(last["t_end"], a["t_end"])
+                    last["type"] = "COMPLEX_ANOMALY"
+                else:
+                    merged.append(a)
+                    
+        if merged:
+            log.warning(f"   🚨 [Inspector] Найдено аномальных зон: {len(merged)}")
+            
+        return merged
 
 def evaluate_alignment_quality(words: list, vad_intervals: list) -> float:
     """Оценивает качество таймингов."""
@@ -192,7 +237,7 @@ def evaluate_alignment_quality(words: list, vad_intervals: list) -> float:
         dur = w["end"] - w["start"]
         min_dur, max_dur = get_phonetic_bounds(w["clean_text"], w["line_break"])
         
-        if dur < 0.05 or dur > max_dur * 2.0:
+        if dur < min_dur * 0.7 or dur > max_dur * 1.5:
             score -= 1.0
             physics_violators += 1
             

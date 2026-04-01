@@ -7,15 +7,15 @@ import stable_whisper
 
 from app_logger import get_logger, dump_debug
 from aligner_utils import detect_language, prepare_text, clean_word, evaluate_alignment_quality
-from aligner_acoustics import get_vocal_intervals, build_void_map, constrain_to_vad
+from aligner_acoustics import get_vocal_intervals, get_vocal_onsets, constrain_to_vad, filter_whisper_hallucinations
 from aligner_orchestra import execute_sequence_matching
 
 log = get_logger("aligner")
 
 class KaraokeAligner:
     """
-    Neural Sequence Paradigm (V8.8 - The Void Matrix)
-    Многофакторный комбайн пустот. Семантический радар. Резиновая сборка (Bungee).
+    V9.0 Neural Sequence Paradigm (Self-Healing & Anchor Onsets)
+    Абсолютная защита от орфанных якорей. Магнитная сетка ритма. Модуль аудита.
     """
     
     def __init__(self, model_name="medium"):
@@ -32,9 +32,9 @@ class KaraokeAligner:
         self._track_stem = os.path.basename(output_json_path).replace("_(Karaoke Lyrics).json", "")
         
         log.info("=" * 60)
-        log.info(f"🚀 Aligner СТАРТ (V8.8 The Void Matrix): {self._track_stem}")
+        log.info(f"🚀 Aligner СТАРТ (V9.0 Self-Healing): {self._track_stem}")
         
-        # 1. Подготовка структурного текста (сохраняем stanza_idx)
+        # 1. Подготовка текста
         canon_words = prepare_text(raw_lyrics)
         if not canon_words:
             log.warning("⚠️ Текст пуст! Сохраняем пустой JSON.")
@@ -46,7 +46,7 @@ class KaraokeAligner:
 
         model = None
         try:
-            # 2. Физический анализ звука (VAD Radar - 35dB)
+            # 2. Физический анализ звука (VAD Radar)
             audio_data, sr = librosa.load(vocals_path, sr=16000, mono=True)
             audio_duration = len(audio_data) / sr
             
@@ -54,6 +54,9 @@ class KaraokeAligner:
             if not vad_intervals:
                 log.warning("⚠️ VAD не нашел голоса в треке! Сценарий глухой тишины.")
                 vad_intervals = [(0.0, audio_duration)]
+
+            # V9.0: Извлекаем магнитную сетку пиков энергии (Onsets)
+            onsets = get_vocal_onsets(audio_data, sr)
 
             # 3. Слух Нейросети
             log.info("🧠 Транскрибация Stable-Whisper...")
@@ -79,17 +82,18 @@ class KaraokeAligner:
                             "probability": w.probability
                         })
 
-            # 4. ФИЛЬТР №1: The Void Matrix (Многофакторный комбайн Пустот)
-            heard_words, voids = build_void_map(raw_heard_words, vad_intervals, canon_words, audio_duration)
+            # 4. ФИЛЬТР №1: Очистка галлюцинаций
+            heard_words = filter_whisper_hallucinations(raw_heard_words, vad_intervals)
 
-            # 5. Оркестратор (Bungee Assembly в обход Стен Пустот)
-            canon_words = execute_sequence_matching(canon_words, heard_words, vad_intervals, audio_duration, voids)
+            # 5. Оркестратор V9.0 (Sequence Matching + Self-Healing + Onsets Snap)
+            canon_words = execute_sequence_matching(canon_words, heard_words, vad_intervals, onsets, audio_duration)
             
             # 6. Физический Контроль (Мягкий Магнит VAD)
-            log.info("🛡️ [Physics Check] Финальная шлифовка (Soft Magnet)...")
+            log.info("🛡️ [Physics Check] Финальная шлифовка таймингов...")
             shifted_count = 0
             for w in canon_words:
-                w["start"], w["end"], was_shifted = constrain_to_vad(w["start"], w["end"], vad_intervals, max_shift_sec=1.5)
+                # В V9.0 мы доверяем жестким якорям (locked), но все равно проверяем вылеты за пределы VAD
+                w["start"], w["end"], was_shifted = constrain_to_vad(w["start"], w["end"], vad_intervals, max_shift_sec=1.0)
                 if was_shifted:
                     shifted_count += 1
                 
@@ -100,10 +104,10 @@ class KaraokeAligner:
             if shifted_count > 0:
                 log.info(f"   🧲 [VAD-Magnet] Сдвинуто к голосу слов: {shifted_count}")
                     
-            # 7. Устранение нахлестов с микро-паузами (Дыхание плеера)
+            # 7. Устранение нахлестов с микро-паузами
             self._resolve_overlaps(canon_words)
 
-            # 8. Оценка качества
+            # 8. Оценка качества (Инспектор V9.0)
             score = evaluate_alignment_quality(canon_words, vad_intervals)
 
         except Exception as e:
@@ -126,14 +130,13 @@ class KaraokeAligner:
                 "start": round(w["start"], 3),
                 "end": round(w["end"], 3),
                 "line_break": w["line_break"],
-                "stanza_idx": w["stanza_idx"],
                 "letters": [] 
             })
             
         with open(output_json_path, "w", encoding="utf-8") as f:
             json.dump(final_json, f, ensure_ascii=False, indent=2)
 
-        dump_debug("Neural_Matched_V8.8", final_json, self._track_stem)
+        dump_debug("Neural_Matched_V9.0", final_json, self._track_stem)
         log.info(f"✅ Aligner УСПЕШНО ЗАВЕРШЕН → {output_json_path}")
         log.info("=" * 60)
         
