@@ -14,8 +14,8 @@ log = get_logger("aligner")
 
 class KaraokeAligner:
     """
-    Neural Sequence Paradigm (V8.5 - Anchor-Centric)
-    Строгая синхронизация от якорей. Асимметричный VAD. Умные паузы.
+    Neural Sequence Paradigm (V8.6 - Rhythm DNA & Anchor Healing)
+    Извлечение темпа. Хирургия ложных якорей. Жесткие монолитные блоки.
     """
     
     def __init__(self, model_name="medium"):
@@ -32,7 +32,7 @@ class KaraokeAligner:
         self._track_stem = os.path.basename(output_json_path).replace("_(Karaoke Lyrics).json", "")
         
         log.info("=" * 60)
-        log.info(f"🚀 Aligner СТАРТ (V8.5 Anchor-Centric): {self._track_stem}")
+        log.info(f"🚀 Aligner СТАРТ (V8.6 Rhythm DNA): {self._track_stem}")
         
         # 1. Подготовка текста
         canon_words = prepare_text(raw_lyrics)
@@ -46,11 +46,12 @@ class KaraokeAligner:
 
         model = None
         try:
-            # 2. Физический анализ звука (VAD Radar)
+            # 2. Физический анализ звука (VAD Radar - Strict Mode)
             audio_data, sr = librosa.load(vocals_path, sr=16000, mono=True)
             audio_duration = len(audio_data) / sr
             
-            vad_intervals = get_vocal_intervals(audio_data, sr, top_db=35.0)
+            # В V8.6 порог снижен до 25.0, чтобы игнорировать вдохи и шум
+            vad_intervals = get_vocal_intervals(audio_data, sr, top_db=25.0)
             if not vad_intervals:
                 log.warning("⚠️ VAD не нашел голоса в треке! Сценарий глухой тишины.")
                 vad_intervals = [(0.0, audio_duration)]
@@ -82,14 +83,15 @@ class KaraokeAligner:
             # 4. ФИЛЬТР №1: Очистка галлюцинаций
             heard_words = filter_whisper_hallucinations(raw_heard_words, vad_intervals)
 
-            # 5. Оркестратор (Anchor-Centric Assembly)
+            # 5. Оркестратор (ДНК ритма, Хирургия, Монолиты)
             canon_words = execute_sequence_matching(canon_words, heard_words, vad_intervals, audio_duration)
             
-            # 6. Физический Контроль (Асимметричный Магнит VAD)
-            log.info("🛡️ [Physics Check] Финальная шлифовка таймингов...")
+            # 6. Физический Контроль (Умный Магнит VAD)
+            log.info("🛡️ [Physics Check] Финальная шлифовка (Умный Магнит)...")
             shifted_count = 0
             for w in canon_words:
-                w["start"], w["end"], was_shifted = constrain_to_vad(w["start"], w["end"], vad_intervals, max_shift_sec=1.5)
+                # В V8.6 магнит сдвигает максимум на 0.5с (доводка до транзиента)
+                w["start"], w["end"], was_shifted = constrain_to_vad(w["start"], w["end"], vad_intervals, max_shift_sec=0.5)
                 if was_shifted:
                     shifted_count += 1
                 
@@ -132,7 +134,7 @@ class KaraokeAligner:
         with open(output_json_path, "w", encoding="utf-8") as f:
             json.dump(final_json, f, ensure_ascii=False, indent=2)
 
-        dump_debug("Neural_Matched_V8.5", final_json, self._track_stem)
+        dump_debug("Neural_Matched_V8.6", final_json, self._track_stem)
         log.info(f"✅ Aligner УСПЕШНО ЗАВЕРШЕН → {output_json_path}")
         log.info("=" * 60)
         
@@ -141,6 +143,7 @@ class KaraokeAligner:
     def _resolve_overlaps(self, words: list):
         """
         Создает 'Breath-gaps' (микро-паузы) и устраняет нахлесты.
+        Обеспечивает плавное дыхание плеера.
         """
         resolves = 0
         micro_gap = 0.05 

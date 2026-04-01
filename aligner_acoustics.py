@@ -4,14 +4,15 @@ from app_logger import get_logger
 
 log = get_logger("aligner_acoustics")
 
-def get_vocal_intervals(audio_data: np.ndarray, sr: int, top_db: float = 35.0) -> list:
+def get_vocal_intervals(audio_data: np.ndarray, sr: int, top_db: float = 25.0) -> list:
     """
-    Сканирует изолированный вокальный стем и возвращает точные интервалы звука.
-    Использует RMS энергию. Сводный лог.
+    V8.6: Сканирует вокальный стем. Порог top_db снижен с 35.0 до 25.0.
+    Радар стал "глухим" к вдохам, эху и скрипам. Ищет только плотный вокал.
     """
     log.info("🎙️ [Acoustics] Сканирование вокального стема (VAD Radar)...")
     
     audio_clean = librosa.effects.preemphasis(audio_data)
+    # Используем более грубый фильтр, чтобы отсечь мусор
     intervals_samples = librosa.effects.split(audio_clean, top_db=top_db, frame_length=2048, hop_length=512)
     
     intervals_sec = [(s / sr, e / sr) for s, e in intervals_samples]
@@ -22,20 +23,22 @@ def get_vocal_intervals(audio_data: np.ndarray, sr: int, top_db: float = 35.0) -
             merged_intervals.append((start, end))
         else:
             last_start, last_end = merged_intervals[-1]
+            # Склеиваем острова, если между ними микро-пауза меньше 0.4с
             if start - last_end <= 0.4:
                 merged_intervals[-1] = (last_start, end)
             else:
                 merged_intervals.append((start, end))
                 
     total_vocal_time = sum(e - s for s, e in merged_intervals)
-    log.info(f"   ✅ Найдено VAD-островов: {len(merged_intervals)} (Чистый голос: {total_vocal_time:.2f}s)")
+    log.info(f"   ✅ Найдено плотных VAD-островов: {len(merged_intervals)} (Голос: {total_vocal_time:.2f}s)")
     return merged_intervals
 
 def filter_whisper_hallucinations(heard_words: list, vad_intervals: list) -> list:
     """
     ФИЛЬТР №1: Удаляет мусор и галлюцинации Whisper.
+    Теперь, когда VAD стал строже, этот фильтр убьет больше ложных слов.
     """
-    log.info("🧹 [VAD Filter] Старт очистки галлюцинаций Whisper...")
+    log.info("🧹 [VAD Filter] Очистка галлюцинаций Whisper...")
     cleaned_words = []
     removed_prob = 0
     removed_vad = 0
@@ -66,14 +69,15 @@ def filter_whisper_hallucinations(heard_words: list, vad_intervals: list) -> lis
         else:
             removed_vad += 1
             
-    log.info(f"   ✨ Фильтр удалил {removed_prob} слов (Low Prob) и {removed_vad} слов (Вне VAD). Осталось: {len(cleaned_words)}")
+    log.info(f"   ✨ Убито галлюцинаций: {removed_prob} (Low Prob), {removed_vad} (Вне VAD). Осталось: {len(cleaned_words)}")
     return cleaned_words
 
-def constrain_to_vad(start: float, end: float, vad_intervals: list, max_shift_sec: float = 1.5) -> tuple:
+def constrain_to_vad(start: float, end: float, vad_intervals: list, max_shift_sec: float = 0.5) -> tuple:
     """
-    V8.5 Асимметричный Физический Ограничитель.
-    НИКОГДА не тянет слова влево (в прошлое), чтобы не красить текст на вдохах.
-    Обрезает хвосты или толкает слова вправо (в будущее) к началу вокала.
+    V8.6 Умный Асимметричный Магнит (Ювелирная доводка).
+    - Никогда не тянет слова влево (в прошлое), чтобы не красить текст на вдохах.
+    - Обрезает хвосты, если они вылезли за остров (в музыку).
+    - Толкает слова вправо МАКСИМУМ на 0.5с (доводка до транзиента).
     """
     if not vad_intervals:
         return start, end, False
@@ -115,11 +119,10 @@ def constrain_to_vad(start: float, end: float, vad_intervals: list, max_shift_se
                 best_e = min(vs + dur, ve)
         elif start > ve:
             # Слово стоит ПОСЛЕ голоса. 
-            # V8.5: Мы запрещаем тянуть его ВЛЕВО (в прошлое). 
-            # Если потянем - текст закрасится раньше звука. Оставляем на месте.
+            # V8.6: Мы запрещаем тянуть его ВЛЕВО (в прошлое). 
             pass
 
-    # Применяем сдвиг вправо, только если он в пределах лимита
+    # Применяем сдвиг вправо, только если он в пределах безопасного лимита (0.5с)
     if best_s != start and abs(best_s - start) <= max_shift_sec:
         return best_s, best_e, True
         
