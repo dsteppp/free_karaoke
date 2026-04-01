@@ -7,7 +7,7 @@ from aligner_utils import (
     calculate_overlap, is_repetition_island
 )
 
-log = get_logger("aligner_orchestra")
+log = get_logger("aligner")
 
 class Proposal:
     """Обертка для предложенных таймингов от инструмента на Арене."""
@@ -140,12 +140,12 @@ def propose_harpoon(words: list, s_idx: int, e_idx: int, audio_data: np.ndarray,
         pass
     return None
 
-# ─── АРЕНА: КАНДИДАТ 4 (SOLID BOX LOOM V6.0) ────────────────────────────────
+# ─── АРЕНА: КАНДИДАТ 4 (SMART ELASTIC LOOM V6.1) ────────────────────────────
 
 def propose_loom(words: list, s_idx: int, e_idx: int, t_start: float, t_end: float, strong_vad: list, weak_vad: list, empirical_data: dict = None) -> Proposal:
     """
-    V6.0: Твердотельный Ткацкий Станок (Solid Box).
-    Никогда не растягивает строки за пределы их Эталонного веса.
+    V6.1: Умный Гибкий Короб (Smart Elastic Box).
+    Если певец тянет ноту (Strong VAD длиннее эталона) - коробка эластично растягивается!
     """
     combined_vad = sorted(strong_vad + weak_vad, key=lambda x: x[0])
     
@@ -176,7 +176,7 @@ def propose_loom(words: list, s_idx: int, e_idx: int, t_start: float, t_end: flo
             
     total_vad_time = sum(e - s for s, e in valid_vads)
 
-    # Вычисляем Эмпирическую потребность для каждой строки (ТВЕРДЫЙ КОРОБ)
+    # 1. Вычисляем Эмпирическую потребность (Базовый Твердый Короб)
     req_durs = []
     for line in lines:
         if empirical_data:
@@ -197,14 +197,31 @@ def propose_loom(words: list, s_idx: int, e_idx: int, t_start: float, t_end: flo
     total_req = sum(req_durs)
     breath_gap = min(empirical_data.get("avg_breath_gap", 0.5), 1.0) if empirical_data else 0.4
 
-    # V6.0 SOLID LOGIC: Сжимаем, если не влезает. НО НЕ РАСТЯГИВАЕМ, если есть пустота.
+    # V6.1 VAD-GUIDED ELASTICITY: Растягиваем коробки, если вокал реально длиннее!
+    if total_req < total_vad_time and len(lines) > 0:
+        for i, L in enumerate(req_durs):
+            # Проверяем, сколько реального Strong VAD есть в окне этой строки
+            pseudo_s = sum(req_durs[:i]) + (i * breath_gap)
+            pseudo_e = pseudo_s + L
+            
+            real_s = _map_time(pseudo_s, valid_vads)
+            real_e = _map_time(pseudo_e, valid_vads)
+            
+            strong_capacity = calculate_overlap(real_s, real_e + 2.0, strong_vad) 
+            
+            if strong_capacity > L * 1.2:
+                # Вокал тянется дольше эталона! Эластично растягиваем коробку до 1.5х
+                req_durs[i] = min(strong_capacity, L * 1.5)
+                
+        total_req = sum(req_durs)
+        log.debug(f"   [Loom] VAD-Упругость применена. Масса коробок стала: {total_req:.1f}s.")
+
+    # Если даже после растяжения места не хватает - сжимаем
     if total_req > total_vad_time and total_req > 0:
         scale = total_vad_time / total_req
         req_durs = [d * scale for d in req_durs]
-        breath_gap = 0.1 # Экономим место
+        breath_gap = 0.1 
         log.debug(f"   [Loom] Окно мало ({total_vad_time:.1f}s < {total_req:.1f}s). Сжатие коробок.")
-    else:
-        log.debug(f"   [Loom] Твердая укладка. Масса коробок: {total_req:.1f}s. В окне {total_vad_time:.1f}s VAD.")
 
     line_boxes = []
     curr_vad_t = 0.0
@@ -220,7 +237,6 @@ def propose_loom(words: list, s_idx: int, e_idx: int, t_start: float, t_end: flo
     for l_idx, line in enumerate(lines):
         l_logic_s, l_logic_e = line_boxes[l_idx]
         
-        # Магическое отображение на реальный VAD: автоматически перепрыгивает Железные Занавесы!
         l_real_s = _map_time(l_logic_s, valid_vads)
         l_real_e = _map_time(l_logic_e, valid_vads)
 
@@ -247,16 +263,15 @@ def propose_loom(words: list, s_idx: int, e_idx: int, t_start: float, t_end: flo
             timings.append({"start": w_s, "end": w_e})
             w_curr_vad_t += w_dur
             
-    return Proposal("Solid Box Loom", timings)
+    return Proposal("Smart Elastic Loom", timings)
 
 
-# ─── THE SUPREME JUDGE (АБСОЛЮТНЫЙ СУДЬЯ V6.0) ─────────────────────────────
+# ─── THE SUPREME JUDGE (АБСОЛЮТНЫЙ СУДЬЯ V6.1) ─────────────────────────────
 
 def the_supreme_judge(proposals: list, words: list, s_idx: int, e_idx: int, strong_vad: list, weak_vad: list, curtains: list, empirical_data: dict = None) -> Proposal:
     """
-    V6.0: Штрафует за отклонение от Эталона, 
-    Жесточайше штрафует за попадание в Мертвые Зоны (Curtains),
-    Дает Индульгенцию перед Стеной.
+    V6.1: Штрафует за попадание в Мертвые Зоны (Curtains),
+    Использует VAD-Индульгенцию для растянутых слов.
     """
     best_prop = None
     best_score = -99999.0
@@ -283,9 +298,6 @@ def the_supreme_judge(proposals: list, words: list, s_idx: int, e_idx: int, stro
             elif dur < min_dur: 
                 score -= 200.0 * (min_dur - dur)
                 
-            if dur > max_dur * 1.5: 
-                score -= 100.0 * (dur - max_dur)
-            
             # ЗАПРЕТ НА МЕРТВЫЕ ЗОНЫ (Iron Curtains)
             overlap_curtain = calculate_overlap(t["start"], t["end"], curtains)
             if overlap_curtain > 0.05:
@@ -296,7 +308,14 @@ def the_supreme_judge(proposals: list, words: list, s_idx: int, e_idx: int, stro
             silence_dur = dur - overlap_strong - overlap_weak
             
             if overlap_strong > 0.1: score += 5.0
-            if silence_dur > 0.15: score -= (silence_dur * 200.0) 
+            
+            # V6.1 VAD-ИНДУЛЬГЕНЦИЯ НА ПЕРЕРАСТЯЖЕНИЕ
+            if dur > max_dur * 1.5: 
+                if (overlap_strong / dur) < 0.8: # Если резина легла не на вокал
+                    score -= 100.0 * (dur - max_dur)
+            
+            if silence_dur > 0.15: 
+                score -= (silence_dur * 200.0) 
 
         # 2. Макро-оценка Строки (Эмпирическая защита)
         lines = []

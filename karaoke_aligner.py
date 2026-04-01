@@ -11,12 +11,12 @@ import numpy as np
 
 from app_logger import get_logger, dump_debug
 
-# ─── ИМПОРТЫ ИЗ НАШЕЙ НОВОЙ МОДУЛЬНОЙ СИСТЕМЫ (SYMPHONY V6.0) ───────────────
+# ─── ИМПОРТЫ ИЗ НАШЕЙ НОВОЙ МОДУЛЬНОЙ СИСТЕМЫ (SYMPHONY V6.1) ───────────────
 from aligner_utils import (
     detect_language, prepare_text, get_vowel_weight, 
     get_phonetic_bounds, get_vad_capacity,
     get_empirical_data, get_safe_bounds, evaluate_alignment_quality,
-    is_repetition_island, calculate_overlap
+    is_repetition_island, calculate_overlap, crosscheck_oracle
 )
 from aligner_acoustics import (
     enforce_curtains, get_acoustic_maps
@@ -30,8 +30,8 @@ log = get_logger("aligner")
 
 class KaraokeAligner:
     """
-    Главный Дирижер "Symphony V6.0: Bi-Directional Solid-State Pipeline".
-    Слепой Оракул, Цикл Ковки, Великая Сверка.
+    Главный Дирижер "Symphony V6.1: Dual-Engine Crosscheck".
+    Черновик (Align) + Детектор Лжи (Transcribe) = Истина.
     """
 
     def __init__(self, model_name="medium"):
@@ -44,75 +44,82 @@ class KaraokeAligner:
         
         self._track_stem = ""
         self.all_curtains = [] 
-        self.blind_words = [] # Слепок реальности
+        self.blind_words = [] # Слепок реальности (Оракул)
 
-    # ─── ЭТАП 2 и 3: СЛЕПОЙ ОРАКУЛ И МАТРИЦА (V6.0) ─────────────────────────────
+    # ─── ЭТАП 2 и 3: ДВОЙНОЙ ДВИЖОК (V6.1: DUAL-ENGINE MATRIX) ──────────────────
 
-    def _blind_oracle_and_matrix(self, model, audio_data: np.ndarray, canon_words: list, lang: str):
-        """Создает слепок физической реальности и накладывает Идеальный Текст (Матрица)."""
-        log.info("🔮 [Oracle] Запуск Слепого Оракула (чистая транскрипция)...")
+    def _dual_engine_matrix(self, model, audio_data: np.ndarray, canon_words: list, lang: str):
+        """
+        V6.1: Строит черновик таймингов через align, а затем пропускает
+        каждую строку через детектор лжи (transcribe).
+        """
+        log.info("🤖 [Dual-Engine] Шаг 1: Генерация Черновика (model.align)...")
+        text_for_whisper = " ".join([w["word"] for w in canon_words])
         
+        try:
+            res = model.align(audio_data, text_for_whisper, language=lang)
+            sw_words = res.all_words()
+            
+            # Накладываем черновик на наш каноничный текст
+            c_idx = 0
+            for sw in sw_words:
+                cl = re.sub(r'[^\w]', '', sw.word.lower())
+                if not cl: continue
+                for j in range(c_idx, min(c_idx + 4, len(canon_words))):
+                    if canon_words[j]["clean_text"] == cl:
+                        if sw.end - sw.start >= 0.05: # Защита от мусорных микро-таймингов
+                            canon_words[j]["start"] = sw.start
+                            canon_words[j]["end"] = sw.end
+                        c_idx = j + 1
+                        break
+        except Exception as e:
+            log.warning(f"   -> Ошибка построения черновика: {e}")
+
+        log.info("🔮 [Oracle] Шаг 2: Слепой Оракул (model.transcribe)...")
         result = model.transcribe(audio_data, language=lang)
         self.blind_words = []
         for w in result.all_words():
             c = re.sub(r'[^\w]', '', w.word.lower())
             if c and (w.end - w.start) > 0.05: 
                 self.blind_words.append({"clean": c, "start": w.start, "end": w.end})
-                
         log.info(f"   -> Распознано {len(self.blind_words)} слепых фрагментов.")
 
-        log.info("🧬 [Matrix] Стыковка Идеального Текста со Слепым Оракулом...")
+        log.info("🧬 [Matrix] Шаг 3: Пересечение Истин (Crosscheck)...")
         lines = {}
         for i, w in enumerate(canon_words):
             lines.setdefault(w["line_num"], []).append(i)
             
-        b_idx = 0
         anchored_count = 0
-        
         for l_num, w_indices in sorted(lines.items()):
-            line_clean = "".join([canon_words[i]["clean_text"] for i in w_indices])
-            best_score = 0
-            best_match = None
+            valid_w = [i for i in w_indices if canon_words[i]["start"] != -1.0]
+            if not valid_w:
+                continue
+                
+            t_s = canon_words[valid_w[0]]["start"]
+            t_e = canon_words[valid_w[-1]]["end"]
+            draft_text = " ".join([canon_words[i]["clean_text"] for i in w_indices])
             
-            # Скользим окном Слепого Оракула для поиска строки
-            search_limit = min(b_idx + 40, len(self.blind_words))
-            for i in range(b_idx, search_limit):
-                for j in range(i + 1, min(i + len(w_indices) + 6, len(self.blind_words) + 1)):
-                    b_text = "".join([bw["clean"] for bw in self.blind_words[i:j]])
-                    score = rapidfuzz.fuzz.ratio(line_clean, b_text)
-                    if score > 85: # Железобетонный порог цементирования
-                        if score > best_score:
-                            best_score = score
-                            best_match = (i, j)
-                            
-            if best_match:
-                match_s, match_e = best_match
-                t_s = self.blind_words[match_s]["start"]
-                t_e = self.blind_words[match_e - 1]["end"]
-                
-                # Распределяем слова внутри найденного блока по фонетическому весу
-                lw_total = sum(get_vowel_weight(canon_words[k]["clean_text"], False) for k in w_indices)
-                if lw_total == 0: lw_total = 1.0
-                
-                curr_t = t_s
-                for k in w_indices:
-                    w_dur = (get_vowel_weight(canon_words[k]["clean_text"], False) / lw_total) * (t_e - t_s)
-                    canon_words[k]["start"] = curr_t
-                    canon_words[k]["end"] = curr_t + w_dur
-                    canon_words[k]["locked"] = True # 🔒 Защита от сдвига
-                    curr_t += w_dur
+            # Пропускаем строку Черновика через Детектор Лжи
+            is_truth = crosscheck_oracle(draft_text, t_s, t_e, self.blind_words)
+            
+            if is_truth:
+                for i in valid_w:
+                    canon_words[i]["locked"] = True
+                anchored_count += len(valid_w)
+            else:
+                log.debug(f"   -> 🚫 Оракул отверг строку {l_num} ('{draft_text[:15]}...'). Сброс якорей черновика.")
+                for i in w_indices:
+                    canon_words[i]["start"] = -1.0
+                    canon_words[i]["end"] = -1.0
+                    canon_words[i]["locked"] = False
                     
-                b_idx = match_e
-                anchored_count += len(w_indices)
-                
-        log.info(f"   -> Матрица зацементировала {anchored_count}/{len(canon_words)} слов.")
+        log.info(f"   -> Dual-Engine зацементировал {anchored_count}/{len(canon_words)} слов.")
 
-    # ─── ЭТАП 5: ДВУНАПРАВЛЕННЫЙ РАДАР (V6.0) ───────────────────────────────────
+    # ─── ЭТАП 5: ДВУНАПРАВЛЕННЫЙ РАДАР (V6.1) ───────────────────────────────────
 
     def _bi_directional_radar(self, words: list, empirical_data: dict):
         log.info("🔄 [Radar] Двунаправленный аудит аномалий...")
         
-        # 1. L->R: Точечная микрохирургия (Без эффекта домино!)
         isolated = 0
         for w in words:
             if w["start"] != -1.0:
@@ -124,7 +131,6 @@ class KaraokeAligner:
         if isolated > 0:
             log.info(f"   -> [L->R] Сингулярности устранены: {isolated} слов изолировано.")
 
-        # 2. R->L: Разрывы Строф (Защита от фейкового интро Монеточки)
         emp_gap = empirical_data.get("avg_breath_gap", 0.5)
         critical_gap = max(5.0, emp_gap * 10)
         
@@ -138,20 +144,19 @@ class KaraokeAligner:
                     has_curtain = any(c_s >= prev_w["end"] and c_e <= curr_w["start"] for c_s, c_e in self.all_curtains)
                     if not has_curtain:
                         log.warning(f"   -> [R->L] АНОМАЛИЯ: Разрыв в строфе №{curr_w['stanza_num']} ({gap:.1f}s). Сброс мусора слева.")
-                        # Всё, что левее разрыва в этой же строфе - это мусор, натянутый на бит
                         for k in range(i):
                             if words[k]["stanza_num"] == curr_w["stanza_num"]:
                                 words[k]["start"] = words[k]["end"] = -1.0
                                 words[k]["locked"] = False
-                        break # Один крупный сброс за итерацию
+                        break 
 
-    # ─── ЭТАП 8: ВЕЛИКАЯ СВЕРКА (THE GRAND VERIFICATION) ────────────────────────
+    # ─── ЭТАП 8: ВЕЛИКАЯ СВЕРКА (THE GRAND VERIFICATION V6.1) ───────────────────
 
     def _grand_verification(self, words: list, audio_duration: float) -> int:
         log.info("👁️ [Verification] ВЕЛИКАЯ СВЕРКА со Слепым Оракулом...")
         braks = 0
         
-        # 1. Forward Check (Проверка наложенного текста на реальность)
+        # 1. Forward Check (Используем ту же логику Детектора Лжи!)
         lines = {}
         for i, w in enumerate(words):
             if w["start"] != -1: lines.setdefault(w["line_num"], []).append(i)
@@ -159,26 +164,18 @@ class KaraokeAligner:
         for l_num, idxs in lines.items():
             l_s = words[idxs[0]]["start"]
             l_e = words[idxs[-1]]["end"]
+            my_text = " ".join([words[i]["clean_text"] for i in idxs])
             
-            oracle_text = "".join([bw["clean"] for bw in self.blind_words if bw["end"] > l_s and bw["start"] < l_e])
-            my_text = "".join([words[i]["clean_text"] for i in idxs])
+            is_truth = crosscheck_oracle(my_text, l_s, l_e, self.blind_words)
             
-            if not oracle_text and (l_e - l_s > 1.0): 
-                log.debug(f"   -> [L->R] Строка {l_num} ({l_s:.1f}s): Оракул слышит тишину! БРАК.")
+            if not is_truth:
+                log.debug(f"   -> [L->R] Строка {l_num} ({l_s:.1f}s) забракована Оракулом!")
                 for i in idxs: 
                     words[i]["start"] = words[i]["end"] = -1.0
                     words[i]["locked"] = False
                 braks += 1
-            elif oracle_text:
-                score = rapidfuzz.fuzz.partial_ratio(my_text, oracle_text)
-                if score < 30 and len(my_text) > 5:
-                    log.debug(f"   -> [L->R] Строка {l_num} ({l_s:.1f}s): Текст не совпадает (Score: {score:.1f}). БРАК.")
-                    for i in idxs: 
-                        words[i]["start"] = words[i]["end"] = -1.0
-                        words[i]["locked"] = False
-                    braks += 1
 
-        # 2. Reverse Check (Поиск съехавшего Аутро / Эффект Золото)
+        # 2. Reverse Check (Эффект ZOLOTO: защита аутро)
         last_word_time = 0.0
         for w in reversed(words):
             if w["start"] != -1:
@@ -190,7 +187,6 @@ class KaraokeAligner:
         
         if oracle_last_time - last_word_time > 10.0:
             log.warning(f"   -> [R->L] Оракул слышит вокал до {oracle_last_time:.1f}s, а текст кончился на {last_word_time:.1f}s! Сброс финала.")
-            # Разблокируем последние 2 строфы для сдвига вправо
             target_stanzas = set(w["stanza_num"] for w in words[-15:])
             for w in words:
                 if w["stanza_num"] in target_stanzas:
@@ -290,7 +286,7 @@ class KaraokeAligner:
         self._track_stem = os.path.basename(output_json_path).replace("_(Karaoke Lyrics).json", "")
 
         log.info("=" * 50)
-        log.info(f"Aligner СТАРТ (Symphony V6.0: Bi-Directional Solid-State): {self._track_stem}")
+        log.info(f"Aligner СТАРТ (Symphony V6.1: Dual-Engine Crosscheck): {self._track_stem}")
         
         canon_words = prepare_text(raw_lyrics)
         if not canon_words:
@@ -311,8 +307,8 @@ class KaraokeAligner:
 
             model = stable_whisper.load_model(self.model_name, download_root=self.whisper_model_dir, device=self.device)
 
-            # ЭТАП 2 и 3: Слепой Оракул и Матрица Якорей
-            self._blind_oracle_and_matrix(model, audio_data_raw, canon_words, lang)
+            # ЭТАП 2 и 3: Двойной Движок (Черновик + Детектор Лжи)
+            self._dual_engine_matrix(model, audio_data_raw, canon_words, lang)
 
             # ЭТАП 4: Паспорт Песни
             empirical_data = get_empirical_data(canon_words)

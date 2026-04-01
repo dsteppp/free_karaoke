@@ -4,9 +4,10 @@ import rapidfuzz
 import numpy as np
 from app_logger import get_logger
 
-log = get_logger("aligner_utils")
+# 🛠️ V6.1 ИСПРАВЛЕНИЕ ТЕЛЕМЕТРИИ: Единый канал связи, чтобы Судью было видно в консоли!
+log = get_logger("aligner")
 
-# ─── ЛИНГВИСТИКА И ПОДГОТОВКА ТЕКСТА (V6.0: MACRO-MAPPING) ───────────────────
+# ─── ЛИНГВИСТИКА И ПОДГОТОВКА ТЕКСТА (V6.1: MACRO-MAPPING) ───────────────────
 
 def detect_language(text: str) -> str:
     """Определяет язык текста (ru, ko, en) по количеству символов."""
@@ -111,7 +112,7 @@ def is_repetition_island(words: list, s_idx: int, e_idx: int) -> bool:
     
     return ratio <= 0.40 or (max_repeats >= 3 and ratio < 0.60)
 
-# ─── ФОНЕТИЧЕСКАЯ МАТЕМАТИКА И ЭМПИРИКА (V6.0) ──────────────────────────────
+# ─── ФОНЕТИЧЕСКАЯ МАТЕМАТИКА И ЭМПИРИКА (V6.1) ──────────────────────────────
 
 def get_vowel_weight(word: str, is_line_end: bool) -> float:
     """Вычисляет фонетический вес слова (абстрактный)."""
@@ -258,13 +259,37 @@ def get_vad_capacity(t_start: float, t_end: float, combined_vad: list) -> float:
     """Сколько физического голоса есть в "Дыре"."""
     return calculate_overlap(t_start, t_end, combined_vad)
 
-# ─── АБСОЛЮТНЫЙ СУДЬЯ (V6.0: SCORING SYSTEM) ────────────────────────────────
+# ─── ДЕТЕКТОР ЛЖИ И АБСОЛЮТНЫЙ СУДЬЯ (V6.1) ──────────────────────────────────
+
+def crosscheck_oracle(draft_text: str, t_start: float, t_end: float, blind_words: list) -> bool:
+    """
+    V6.1: Детектор Лжи (The Crosscheck).
+    Сравнивает черновик (align) со Слепым Оракулом (transcribe).
+    """
+    # Собираем то, что услышал Оракул в этом окне (+- 0.5с на погрешность)
+    oracle_chunk = [bw["clean"] for bw in blind_words if bw["end"] >= t_start - 0.5 and bw["start"] <= t_end + 0.5]
+    oracle_text = "".join(oracle_chunk)
+    
+    clean_draft = re.sub(r'[^\w]', '', draft_text.lower())
+    if not clean_draft: return True
+    
+    if not oracle_text:
+        # Оракул слышит тишину (Инструментал/шум).
+        if t_end - t_start > 1.5: 
+            return False # Явная галлюцинация на длинном отрезке
+        return True # Короткий огрызок, Оракул мог не услышать, прощаем
+        
+    score = rapidfuzz.fuzz.partial_ratio(clean_draft, oracle_text)
+    
+    # Порог 40: достаточно низкий, чтобы простить огрехи Whisper (дисторшн/эхо), 
+    # но достаточный, чтобы отсечь чужой текст (разговор с залом Монеточки).
+    return score >= 40
 
 def evaluate_alignment_quality(words: list, strong_vad: list, weak_vad: list, curtains: list) -> float:
     """
-    V6.0: АБСОЛЮТНЫЙ СУДЬЯ.
-    Оценивает выравнивание по строгим, прозрачным правилам.
-    Выводит детальную телеметрию по каждому штрафу.
+    V6.1: АБСОЛЮТНЫЙ СУДЬЯ.
+    Оценивает выравнивание по строгим правилам, но с VAD-индульгенцией.
+    Выводит детальную телеметрию в главную консоль.
     """
     score = 100.0
     total = len(words)
@@ -273,6 +298,7 @@ def evaluate_alignment_quality(words: list, strong_vad: list, weak_vad: list, cu
     unresolved = 0
     hallucinations = 0
     singularities = 0
+    overstretched = 0
     stanza_tears = 0
 
     combined_vad = sorted(strong_vad + weak_vad, key=lambda x: x[0])
@@ -293,7 +319,16 @@ def evaluate_alignment_quality(words: list, strong_vad: list, weak_vad: list, cu
         if dur > 0 and (overlap / dur) < 0.1:
             hallucinations += 1
             
-        # 3. Разрыв строфы (Stanza Tear)
+        # 3. Перерастяжение (Резиновый эффект)
+        _, max_dur = get_phonetic_bounds(w["clean_text"], w["line_break"])
+        if dur > max_dur * 1.5:
+            # V6.1 ИНДУЛЬГЕНЦИЯ: Если слово растянуто, но 80% слова лежит на Strong VAD (Красная зона),
+            # значит певец реально тянет гласную ноту (как в "Непроизошло"). Мы это прощаем!
+            strong_overlap = calculate_overlap(w["start"], w["end"], strong_vad)
+            if dur > 0 and (strong_overlap / dur) < 0.8:
+                overstretched += 1
+            
+        # 4. Разрыв строфы (Stanza Tear)
         if i < total - 1:
             next_w = words[i+1]
             if next_w["start"] != -1.0 and w["stanza_num"] == next_w["stanza_num"]:
@@ -310,14 +345,16 @@ def evaluate_alignment_quality(words: list, strong_vad: list, weak_vad: list, cu
     penalty_unresolved = unresolved * 2.0
     penalty_hallucinations = hallucinations * 5.0
     penalty_singularities = singularities * 3.0
+    penalty_overstretch = overstretched * 1.0 # Легкий штраф за резину вне голоса
     penalty_tears = stanza_tears * 10.0
 
-    score -= (penalty_unresolved + penalty_hallucinations + penalty_singularities + penalty_tears)
+    score -= (penalty_unresolved + penalty_hallucinations + penalty_singularities + penalty_overstretch + penalty_tears)
 
     log.info(f"⚖️ [Absolute Judge] Телеметрия Штрафов:")
     log.info(f"   -> Нераспределенные слова ({unresolved}): -{penalty_unresolved:.1f}")
     log.info(f"   -> Галлюцинации ({hallucinations}): -{penalty_hallucinations:.1f}")
     log.info(f"   -> Сингулярности ({singularities}): -{penalty_singularities:.1f}")
+    log.info(f"   -> Резина вне голоса ({overstretched}): -{penalty_overstretch:.1f}")
     log.info(f"   -> Разрывы Строф ({stanza_tears}): -{penalty_tears:.1f}")
     log.info(f"⚖️ [Absolute Judge] ИТОГОВЫЙ БАЛЛ ТРЕКА: {max(0.0, score):.1f} / 100.0")
 
