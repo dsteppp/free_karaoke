@@ -4,80 +4,38 @@ from app_logger import get_logger
 
 log = get_logger("aligner_acoustics")
 
-# ─── V5.0: NON-DESTRUCTIVE ACOUSTICS (VOCAL HEATMAP) ────────────────────────────
-
-def vocal_sniper(audio_data: np.ndarray, sr: int) -> np.ndarray:
-    """
-    V5.0: Оружие разряжено (Safe Source).
-    Мы не вырезаем тихие звуки физически, чтобы не повредить шепот (например, Кристина Си).
-    Возвращаем оригинальное аудио без изменений. Whisper и Арена будут слушать чистый оригинал.
-    """
-    log.info("🎯 [Vocal Sniper] Режим Read-Only. Аудио сохранено в оригинале.")
-    return audio_data
-
-def build_iron_curtain(audio_data: np.ndarray, sr: int) -> list:
-    """
-    V5.0: Soft Iron Curtain (Поиск Великой Пустоты).
-    Определяет только зоны АБСОЛЮТНОЙ тишины или чистого минуса (> 3 сек).
-    В V5.0 (Line-First) эти зоны используются для запрета разрыва строк (Void Integrity).
-    """
-    log.info("🛡️ [Iron Curtain] Сканирование зон абсолютной пустоты (Soft Threshold)...")
-    hop_length = 512
-    rms = librosa.feature.rms(y=audio_data, frame_length=2048, hop_length=hop_length)[0]
-    
-    # Смягчаем порог: берем 5-й перцентиль (самые тихие участки)
-    noise_floor = np.percentile(rms, 5)
-    # Жесткий лимит -60 dB 
-    thresh = max(10 ** (-60 / 20), noise_floor * 1.1)
-    
-    silence_mask = rms < thresh
-    
-    curtains = []
-    in_silence = False
-    start_t = 0.0
-    times = librosa.frames_to_time(np.arange(len(silence_mask)), sr=sr, hop_length=hop_length)
-    
-    for i, is_silent in enumerate(silence_mask):
-        if is_silent and not in_silence:
-            in_silence = True
-            start_t = times[i]
-        elif not is_silent and in_silence:
-            in_silence = False
-            end_t = times[i]
-            if end_t - start_t > 3.0:
-                curtains.append((start_t, end_t))
-                log.info(f"   🧱 Soft Curtain установлен: {start_t:.2f}s - {end_t:.2f}s")
-                
-    if in_silence:
-        end_t = times[-1]
-        if end_t - start_t > 3.0:
-            curtains.append((start_t, end_t))
-            log.info(f"   🧱 Soft Curtain установлен (конец): {start_t:.2f}s - {end_t:.2f}s")
-            
-    return curtains
+# ─── V6.0: TRUE VOCAL CANVAS (ИСТИННАЯ ВОКАЛЬНАЯ КАРТА) ─────────────────────────
 
 def enforce_curtains(start: float, end: float, curtains: list) -> tuple:
-    """Сдвигает тайминги, чтобы слово физически не заходило за занавес (Instrumental Void)."""
+    """
+    V6.0: Строгая изоляция Мертвых Зон.
+    Выталкивает тайминги из Железного Занавеса (Instrumental Void).
+    """
     for c_s, c_e in curtains:
-        if start < c_s and end > c_s: 
+        # Если слово полностью внутри занавеса - выталкиваем вправо (Бульдозер)
+        if start >= c_s and end <= c_e:
+            dur = end - start
+            start = c_e + 0.01
+            end = start + dur
+        # Если слово налезает на занавес слева
+        elif start < c_s and end > c_s: 
             end = c_s - 0.01
+        # Если слово налезает на занавес справа
         elif start < c_e and end > c_e: 
             start = c_e + 0.01
-        elif start >= c_s and end <= c_e:
-            start = c_e + 0.01
-            end = start + 0.1
+            
     return start, max(start + 0.05, end)
-
-# ─── СЕМАНТИЧЕСКИЙ VAD И АКУСТИЧЕСКАЯ ТОПОГРАФИЯ ─────────────────────────
 
 def get_acoustic_maps(audio_data: np.ndarray, sr: int) -> tuple:
     """
-    V5.0: Генерация Vocal Heatmap (Информационная карта).
-    Выдает базис для расчета Емкости VAD (VAD Capacity) в главном скрипте.
+    V6.0: Генерация Истинной Вокальной Карты (The Canvas).
+    Возвращает: strong_vad, weak_vad, iron_curtains, onsets, is_harmonic.
+    Мертвые Зоны (Curtains) теперь вычисляются строго по отсутствию голоса, а не по тишине!
     """
-    log.info("🗺️ [Orchestra] Генерация акустической топографии (Vocal Heatmap, Onsets)...")
+    log.info("🗺️ [Acoustics] Генерация Истинной Вокальной Карты (VAD & Curtains)...")
     hop_length = 512
     times = librosa.frames_to_time(np.arange(len(audio_data)//hop_length + 1), sr=sr, hop_length=hop_length)
+    audio_duration = len(audio_data) / sr
 
     rms = librosa.feature.rms(y=audio_data, frame_length=2048, hop_length=hop_length)[0]
     rms_norm = rms / (np.max(rms) + 1e-8)
@@ -102,7 +60,7 @@ def get_acoustic_maps(audio_data: np.ndarray, sr: int) -> tuple:
 
     flatness = librosa.feature.spectral_flatness(y=audio_data, hop_length=hop_length)[0]
 
-    # Строим карту сильного голоса (с учетом тональности)
+    # 1. Строим карту сильного голоса (с учетом тональности)
     raw_strong = frames_to_intervals(strong_vad_frames, pad=0.2)
     strong_vad_mask = []
     for s, e in raw_strong:
@@ -119,13 +77,45 @@ def get_acoustic_maps(audio_data: np.ndarray, sr: int) -> tuple:
                     elif e - s > 0.1:
                         strong_vad_mask.append((s, e))
                         
-    # Слабая зона (шепот Кристины Си)
+    # 2. Слабая зона (например, шепот)
     weak_vad_mask = frames_to_intervals(weak_vad_frames, pad=0.1)
 
+    # 3. Вычисляем Мертвые Зоны (Iron Curtains) на основе VAD, а не тишины!
+    combined_vad = sorted(strong_vad_mask + weak_vad_mask, key=lambda x: x[0])
+    merged_vad = []
+    for s, e in combined_vad:
+        if not merged_vad: merged_vad.append((s, e))
+        else:
+            last_s, last_e = merged_vad[-1]
+            if s - last_e < 1.0: # Склеиваем микро-паузы внутри вокала
+                merged_vad[-1] = (last_s, max(last_e, e))
+            else:
+                merged_vad.append((s, e))
+                
+    iron_curtains = []
+    last_e = 0.0
+    for s, e in merged_vad:
+        if s - last_e > 4.0: # Если голоса нет больше 4 секунд - это Железный Занавес!
+            iron_curtains.append((last_e, s))
+        last_e = e
+        
+    # Проверка хвоста трека
+    if audio_duration - last_e > 4.0:
+        iron_curtains.append((last_e, audio_duration))
+
+    # 📡 ТЕЛЕМЕТРИЯ V6.0
+    total_vocal = sum(e - s for s, e in merged_vad)
+    total_instrumental = audio_duration - total_vocal
+    
+    log.info(f"🎤 [Acoustics] Вокал: {total_vocal:.1f}s. Инструментал/Мертвые зоны: {total_instrumental:.1f}s.")
+    log.info(f"🧱 [Acoustics] Установлено Железных Занавесов (Iron Curtains): {len(iron_curtains)}")
+    for i, (cs, ce) in enumerate(iron_curtains):
+        log.debug(f"   -> Занавес {i+1}: {cs:.1f}s - {ce:.1f}s")
+
+    # 4. Onsets и Гармоники
     o_env = librosa.onset.onset_strength(y=audio_data, sr=sr)
     raw_onsets = librosa.onset.onset_detect(onset_envelope=o_env, sr=sr, units='time')
     
-    # Onsets берем и из сильной, и из слабой зоны
     onsets = [o_t for o_t in raw_onsets if any(vs <= o_t <= ve for (vs, ve) in strong_vad_mask) or 
                                            any(ws <= o_t <= we for (ws, we) in weak_vad_mask)]
 
@@ -135,12 +125,4 @@ def get_acoustic_maps(audio_data: np.ndarray, sr: int) -> tuple:
         if s_frame >= e_frame or s_frame >= len(flatness): return False
         return np.median(flatness[s_frame:e_frame]) < 0.05
 
-    return strong_vad_mask, weak_vad_mask, onsets, is_harmonic
-
-def apply_vad_deafness(crop_audio: np.ndarray, sr: int, t_start: float, vad_mask: list) -> np.ndarray:
-    """
-    V5.0: Функция отключена (Safe Source).
-    Хирургическая глухота больше не модифицирует аудио, 
-    чтобы не лишать Whisper контекста на этапе Арены (Semantic Harpoon).
-    """
-    return crop_audio
+    return strong_vad_mask, weak_vad_mask, iron_curtains, onsets, is_harmonic

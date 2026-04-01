@@ -2,8 +2,11 @@ import re
 import random
 import rapidfuzz
 import numpy as np
+from app_logger import get_logger
 
-# ─── ЛИНГВИСТИКА И ПОДГОТОВКА ТЕКСТА (V5.2: MACRO-MAPPING) ───────────────────
+log = get_logger("aligner_utils")
+
+# ─── ЛИНГВИСТИКА И ПОДГОТОВКА ТЕКСТА (V6.0: MACRO-MAPPING) ───────────────────
 
 def detect_language(text: str) -> str:
     """Определяет язык текста (ru, ko, en) по количеству символов."""
@@ -17,10 +20,8 @@ def detect_language(text: str) -> str:
 
 def prepare_text(text: str) -> list:
     """
-    V5.2: Очищает текст и размечает Макро-Структуру:
-    - line_num: Привязка к строке.
-    - stanza_num: Привязка к строфе (куплет/припев).
-    - homologous_id: Привязка к фонетически подобным строкам (для эмпирических якорей).
+    V6.0: Очищает текст и размечает Макро-Структуру.
+    Добавлен флаг `locked` для защиты здоровых строк в Цикле Ковки.
     """
     text = re.sub(r'[\x5B\x28].*?[\x5D\x29]', '', text)
     text = re.sub(r'([a-zA-Z\u0400-\u04FFёЁ])([\x2D\u2013\u2014]+)([a-zA-Z\u0400-\u04FFёЁ])', r'\1\2 \3', text)
@@ -58,6 +59,7 @@ def prepare_text(text: str) -> list:
                         "homologous_id": -1, # Заполнится ниже
                         "start": -1.0,
                         "end": -1.0,
+                        "locked": False,     # 🔒 V6.0: Бетонная защита
                         "dtw_tried": False
                     })
                     
@@ -67,7 +69,7 @@ def prepare_text(text: str) -> list:
                 lines_text_map[line_global_idx] = {"text": line_str, "vowels": max(1, vowels)}
                 line_global_idx += 1
 
-    # Homologous Lines Detection (Поиск подобных строк для базы эталонов)
+    # Homologous Lines Detection (Поиск подобных строк для Клонатора и Паспорта)
     homologous_groups = []
     for l_idx, l_data in lines_text_map.items():
         placed = False
@@ -109,7 +111,7 @@ def is_repetition_island(words: list, s_idx: int, e_idx: int) -> bool:
     
     return ratio <= 0.40 or (max_repeats >= 3 and ratio < 0.60)
 
-# ─── ФОНЕТИЧЕСКАЯ МАТЕМАТИКА И ЭМПИРИКА (V5.2) ──────────────────────────────
+# ─── ФОНЕТИЧЕСКАЯ МАТЕМАТИКА И ЭМПИРИКА (V6.0) ──────────────────────────────
 
 def get_vowel_weight(word: str, is_line_end: bool) -> float:
     """Вычисляет фонетический вес слова (абстрактный)."""
@@ -143,10 +145,7 @@ def get_line_phonetic_bounds(words: list, s_idx: int, e_idx: int) -> tuple:
     return total_min, total_max
 
 def calculate_sdr(words: list, s_idx: int, e_idx: int, t_start: float, t_end: float) -> float:
-    """
-    V5.2: Считает Syllable Delivery Rate (Темп слогов/сек) для отрезка.
-    Используется для обнаружения ложного растяжения (Монеточка).
-    """
+    """Считает Syllable Delivery Rate (Темп слогов/сек) для отрезка."""
     dur = t_end - t_start
     if dur <= 0: return 0.0
     vowels = sum(1 for k in range(s_idx, e_idx + 1) for c in words[k]["clean_text"] if c in "аеёиоуыэюяaeiouy")
@@ -154,12 +153,8 @@ def calculate_sdr(words: list, s_idx: int, e_idx: int, t_start: float, t_end: fl
 
 def get_empirical_data(words: list) -> dict:
     """
-    V5.2 (ЯДРО СТРУКТУРАЛИЗМА): Изучает ЗДОРОВУЮ часть песни и создает эталон.
-    Возвращает:
-    - global_sdr: Средний темп по всему треку.
-    - stanza_sdr: Темп для каждого куплета/припева отдельно.
-    - homo_durations: Физическая длина (сек) для конкретных повторяющихся строк.
-    - avg_breath_gap: Естественная пауза певца на вдох между строками.
+    V6.0: ЭМПИРИЧЕСКИЙ ПАСПОРТ.
+    Создает паспорт физики певца только на основе здоровых строк.
     """
     stanza_stats = {}
     homo_stats = {}
@@ -173,6 +168,7 @@ def get_empirical_data(words: list) -> dict:
             lines[l_num].append(w)
             
     last_line_end = -1.0
+    valid_lines_count = 0
     
     for l_num, l_words in sorted(lines.items()):
         if not l_words: continue
@@ -184,26 +180,24 @@ def get_empirical_data(words: list) -> dict:
         t_end = l_words[-1]["end"]
         dur = t_end - t_start
         
-        # Защита от мусора (исключаем аномально сжатые строки из статистики)
+        # Защита от мусора
         if dur <= 0.4: continue 
+        valid_lines_count += 1
         
         vowels = max(1, sum(1 for w in l_words for c in w["clean_text"] if c in "аеёиоуыэюяaeiouy"))
         
         # Сбор пауз между строками
         if last_line_end != -1.0 and t_start > last_line_end:
             gap = t_start - last_line_end
-            # Если пауза < 4 сек, это вдох/пауза. Если больше - это гитарное соло, его не берем.
             if gap < 4.0: gaps.append(gap)
         
         last_line_end = t_end
         
-        # Статистика по куплетам
         if s_num not in stanza_stats:
             stanza_stats[s_num] = {"vowels": 0, "dur": 0.0}
         stanza_stats[s_num]["vowels"] += vowels
         stanza_stats[s_num]["dur"] += dur
         
-        # Статистика по одинаковым строкам
         if h_id not in homo_stats:
             homo_stats[h_id] = []
         homo_stats[h_id].append(dur)
@@ -211,17 +205,19 @@ def get_empirical_data(words: list) -> dict:
     sdr_by_stanza = {}
     total_vowels = sum(s["vowels"] for s in stanza_stats.values())
     total_dur = sum(s["dur"] for s in stanza_stats.values())
-    global_sdr = total_vowels / total_dur if total_dur > 0 else 3.0 # Fallback
+    global_sdr = total_vowels / total_dur if total_dur > 0 else 3.0
     
     for s_num, st in stanza_stats.items():
         sdr_by_stanza[s_num] = st["vowels"] / st["dur"] if st["dur"] > 0 else global_sdr
         
     dur_by_homo = {}
     for h_id, durs in homo_stats.items():
-        # Медиана позволяет отсечь редкие ошибки и найти реальный эталон длины строки
         dur_by_homo[h_id] = float(np.median(durs))
         
     avg_gap = float(np.median(gaps)) if gaps else 1.0
+    
+    log.info(f"🛂 [Passport] Сгенерирован на базе {valid_lines_count} здоровых строк.")
+    log.info(f"   -> Темп: {global_sdr:.2f} слог/сек. Вдох: {avg_gap:.2f}s.")
     
     return {
         "global_sdr": global_sdr,
@@ -262,21 +258,22 @@ def get_vad_capacity(t_start: float, t_end: float, combined_vad: list) -> float:
     """Сколько физического голоса есть в "Дыре"."""
     return calculate_overlap(t_start, t_end, combined_vad)
 
-# ─── СЕМАНТИЧЕСКАЯ СИСТЕМА ОЦЕНКИ (SEMANTIC EVALUATOR) ──────────────────────
+# ─── АБСОЛЮТНЫЙ СУДЬЯ (V6.0: SCORING SYSTEM) ────────────────────────────────
 
-def evaluate_alignment_quality(words: list, strong_vad: list, weak_vad: list, curtains: list, spot_check_fn=None) -> float:
+def evaluate_alignment_quality(words: list, strong_vad: list, weak_vad: list, curtains: list) -> float:
     """
-    V5.2: Динамический контроль за макро-структурой.
+    V6.0: АБСОЛЮТНЫЙ СУДЬЯ.
+    Оценивает выравнивание по строгим, прозрачным правилам.
+    Выводит детальную телеметрию по каждому штрафу.
     """
     score = 100.0
     total = len(words)
     if total == 0: return 0.0
 
     unresolved = 0
-    squeezed = 0
-    overstretched = 0
-    torn_lines = 0
     hallucinations = 0
+    singularities = 0
+    stanza_tears = 0
 
     combined_vad = sorted(strong_vad + weak_vad, key=lambda x: x[0])
 
@@ -284,49 +281,44 @@ def evaluate_alignment_quality(words: list, strong_vad: list, weak_vad: list, cu
         if w["start"] == -1.0:
             unresolved += 1
             continue
-        
+            
         dur = w["end"] - w["start"]
         
-        if dur < 0.06: squeezed += 1
-        min_dur, max_dur = get_phonetic_bounds(w["clean_text"], w["line_break"])
-        if dur > max_dur * 1.5: overstretched += 1
-
+        # 1. Сингулярность
+        if dur < 0.06:
+            singularities += 1
+            
+        # 2. Галлюцинация в тишине (меньше 10% слова опирается на голос)
         overlap = calculate_overlap(w["start"], w["end"], combined_vad)
         if dur > 0 and (overlap / dur) < 0.1:
             hallucinations += 1
-
-        if i < total - 1 and w["line_num"] == words[i+1]["line_num"]:
+            
+        # 3. Разрыв строфы (Stanza Tear)
+        if i < total - 1:
             next_w = words[i+1]
-            if next_w["start"] != -1.0:
+            if next_w["start"] != -1.0 and w["stanza_num"] == next_w["stanza_num"]:
                 gap = next_w["start"] - w["end"]
-                allowed_pause = max(1.5, max_dur * 2.0) 
                 
-                if gap > allowed_pause: 
+                # Если пауза > 5 секунд внутри одной строфы - это разрыв!
+                if gap > 5.0:
+                    # ИНДУЛЬГЕНЦИЯ: Если между словами Железный Занавес - прощаем!
                     has_curtain = any(c_s >= w["end"] and c_e <= next_w["start"] for c_s, c_e in curtains)
                     if not has_curtain:
-                        vad_in_gap = calculate_overlap(w["end"], next_w["start"], combined_vad)
-                        if vad_in_gap > 1.0: 
-                            torn_lines += 1
+                        stanza_tears += 1
 
-    score -= unresolved * 5.0
-    score -= (squeezed / total) * 100 * 0.5
-    score -= (overstretched / total) * 100 * 0.5 
-    score -= torn_lines * 5.0 
-    score -= hallucinations * 5.0
+    # Применяем штрафы
+    penalty_unresolved = unresolved * 2.0
+    penalty_hallucinations = hallucinations * 5.0
+    penalty_singularities = singularities * 3.0
+    penalty_tears = stanza_tears * 10.0
 
-    if score >= 80.0 and spot_check_fn is not None:
-        valid_indices = [i for i, w in enumerate(words) if w["start"] != -1.0 and (w["end"] - w["start"]) > 0.2]
-        if len(valid_indices) >= 10:
-            check_points = random.sample(valid_indices[5:-5], min(2, len(valid_indices) - 10))
-            failed_checks = 0
-            for idx in check_points:
-                w = words[idx]
-                t_start = max(0.0, w["start"] - 0.5)
-                t_end = w["end"] + 0.5
-                target_phrase = " ".join([words[k]["clean_text"] for k in range(max(0, idx-1), min(total, idx+2))])
-                if not spot_check_fn(t_start, t_end, target_phrase):
-                    failed_checks += 1
-            if failed_checks > 0:
-                score -= 30.0 
+    score -= (penalty_unresolved + penalty_hallucinations + penalty_singularities + penalty_tears)
+
+    log.info(f"⚖️ [Absolute Judge] Телеметрия Штрафов:")
+    log.info(f"   -> Нераспределенные слова ({unresolved}): -{penalty_unresolved:.1f}")
+    log.info(f"   -> Галлюцинации ({hallucinations}): -{penalty_hallucinations:.1f}")
+    log.info(f"   -> Сингулярности ({singularities}): -{penalty_singularities:.1f}")
+    log.info(f"   -> Разрывы Строф ({stanza_tears}): -{penalty_tears:.1f}")
+    log.info(f"⚖️ [Absolute Judge] ИТОГОВЫЙ БАЛЛ ТРЕКА: {max(0.0, score):.1f} / 100.0")
 
     return max(0.0, score)

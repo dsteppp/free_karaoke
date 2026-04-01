@@ -140,10 +140,13 @@ def propose_harpoon(words: list, s_idx: int, e_idx: int, audio_data: np.ndarray,
         pass
     return None
 
-# ─── АРЕНА: КАНДИДАТ 4 (ELASTIC LINE-LOOM V5.3) ─────────────────────────────
+# ─── АРЕНА: КАНДИДАТ 4 (SOLID BOX LOOM V6.0) ────────────────────────────────
 
 def propose_loom(words: list, s_idx: int, e_idx: int, t_start: float, t_end: float, strong_vad: list, weak_vad: list, empirical_data: dict = None) -> Proposal:
-    """V5.3: Эластичный Ткацкий станок. Равномерно распределяет коробки по доступному окну VAD."""
+    """
+    V6.0: Твердотельный Ткацкий Станок (Solid Box).
+    Никогда не растягивает строки за пределы их Эталонного веса.
+    """
     combined_vad = sorted(strong_vad + weak_vad, key=lambda x: x[0])
     
     valid_vads = []
@@ -163,7 +166,6 @@ def propose_loom(words: list, s_idx: int, e_idx: int, t_start: float, t_end: flo
             accum += d
         return vads[-1][1]
 
-    # 1. Группируем слова в Строки
     lines = []
     curr_line = []
     for k in range(s_idx, e_idx + 1):
@@ -174,16 +176,7 @@ def propose_loom(words: list, s_idx: int, e_idx: int, t_start: float, t_end: flo
             
     total_vad_time = sum(e - s for s, e in valid_vads)
 
-    # 2. Ищем "Железные Занавесы" (Стены > 1.5с) на логическом таймлайне
-    logic_voids = []
-    accum = 0.0
-    for i in range(len(valid_vads) - 1):
-        accum += (valid_vads[i][1] - valid_vads[i][0])
-        gap = valid_vads[i+1][0] - valid_vads[i][1]
-        if gap > 1.5:  
-            logic_voids.append(accum)
-
-    # 3. Вычисляем Эмпирическую потребность для каждой строки
+    # Вычисляем Эмпирическую потребность для каждой строки (ТВЕРДЫЙ КОРОБ)
     req_durs = []
     for line in lines:
         if empirical_data:
@@ -202,43 +195,32 @@ def propose_loom(words: list, s_idx: int, e_idx: int, t_start: float, t_end: flo
         req_durs.append(dur)
 
     total_req = sum(req_durs)
-    
-    # 4. Rubber Loom (Эластичное растяжение)
-    # Если эталонного времени требуется меньше, чем есть в окне (например, Золото) — мы растягиваем паузы!
-    breath_gap = min(empirical_data["avg_breath_gap"], 0.5) if empirical_data else 0.15
-    expansion_ratio = 1.0
+    breath_gap = min(empirical_data.get("avg_breath_gap", 0.5), 1.0) if empirical_data else 0.4
 
+    # V6.0 SOLID LOGIC: Сжимаем, если не влезает. НО НЕ РАСТЯГИВАЕМ, если есть пустота.
     if total_req > total_vad_time and total_req > 0:
-        # Места не хватает: пропорционально сжимаем коробки
         scale = total_vad_time / total_req
         req_durs = [d * scale for d in req_durs]
-    elif total_req < total_vad_time and len(lines) > 1:
-        # Места с избытком: увеличиваем паузы между строками (Rubber effect)
-        free_space = total_vad_time - total_req
-        breath_gap = free_space / len(lines)
+        breath_gap = 0.1 # Экономим место
+        log.debug(f"   [Loom] Окно мало ({total_vad_time:.1f}s < {total_req:.1f}s). Сжатие коробок.")
+    else:
+        log.debug(f"   [Loom] Твердая укладка. Масса коробок: {total_req:.1f}s. В окне {total_vad_time:.1f}s VAD.")
 
-    # 5. Расставляем "коробки" строк, перепрыгивая Стены
     line_boxes = []
-    curr_logic_t = 0.0
+    curr_vad_t = 0.0
 
     for L in req_durs:
-        # VOID INTEGRITY: Проверяем, не налезла ли коробка на Стену
-        for B in logic_voids:
-            if curr_logic_t + 0.1 < B < curr_logic_t + L - 0.1:
-                # Если налезла - принудительно сдвигаем всю строку ЗА стену!
-                curr_logic_t = B
-                break 
-
-        if curr_logic_t + L > total_vad_time:
-            L = max(0.1, total_vad_time - curr_logic_t)
+        if curr_vad_t + L > total_vad_time:
+            L = max(0.1, total_vad_time - curr_vad_t)
             
-        line_boxes.append((curr_logic_t, curr_logic_t + L))
-        curr_logic_t += L + breath_gap
+        line_boxes.append((curr_vad_t, curr_vad_t + L))
+        curr_vad_t += L + breath_gap
 
-    # 6. Распределяем слова строго внутри монолитных коробок
     timings = []
     for l_idx, line in enumerate(lines):
         l_logic_s, l_logic_e = line_boxes[l_idx]
+        
+        # Магическое отображение на реальный VAD: автоматически перепрыгивает Железные Занавесы!
         l_real_s = _map_time(l_logic_s, valid_vads)
         l_real_e = _map_time(l_logic_e, valid_vads)
 
@@ -265,13 +247,17 @@ def propose_loom(words: list, s_idx: int, e_idx: int, t_start: float, t_end: flo
             timings.append({"start": w_s, "end": w_e})
             w_curr_vad_t += w_dur
             
-    return Proposal("Phonetic Loom", timings)
+    return Proposal("Solid Box Loom", timings)
 
 
-# ─── THE SUPREME JUDGE (ЭМПИРИЧЕСКИЙ СУДЬЯ V5.3) ─────────────────────────────
+# ─── THE SUPREME JUDGE (АБСОЛЮТНЫЙ СУДЬЯ V6.0) ─────────────────────────────
 
-def the_supreme_judge(proposals: list, words: list, s_idx: int, e_idx: int, strong_vad: list, weak_vad: list, empirical_data: dict = None) -> Proposal:
-    """V5.3: Штрафует за отклонение от Эталона, но дает Индульгенцию перед Железным Занавесом."""
+def the_supreme_judge(proposals: list, words: list, s_idx: int, e_idx: int, strong_vad: list, weak_vad: list, curtains: list, empirical_data: dict = None) -> Proposal:
+    """
+    V6.0: Штрафует за отклонение от Эталона, 
+    Жесточайше штрафует за попадание в Мертвые Зоны (Curtains),
+    Дает Индульгенцию перед Стеной.
+    """
     best_prop = None
     best_score = -99999.0
     
@@ -281,32 +267,30 @@ def the_supreme_judge(proposals: list, words: list, s_idx: int, e_idx: int, stro
     clean_texts = [words[i]["clean_text"] for i in range(s_idx, e_idx + 1)]
     line_breaks = [words[i]["line_break"] for i in range(s_idx, e_idx + 1)]
     
-    # Собираем границы Железных Занавесов для Индульгенции
-    combined_vad = sorted(strong_vad + weak_vad, key=lambda x: x[0])
-    walls = []
-    for i in range(len(combined_vad) - 1):
-        if combined_vad[i+1][0] - combined_vad[i][1] > 1.5:
-            walls.append(combined_vad[i][1]) # Время начала пустоты (стены)
-            
     for prop in proposals:
         if prop is None or len(prop.timings) != (e_idx - s_idx + 1):
             continue
             
         score = 100.0
         
-        # 1. Пословная оценка (Микро-акустика)
+        # 1. Пословная оценка (Микро-акустика и Нарушение Мертвых Зон)
         for i, t in enumerate(prop.timings):
             dur = t["end"] - t["start"]
             min_dur, max_dur = get_phonetic_bounds(clean_texts[i], line_breaks[i])
             
             if dur < 0.08:
-                score -= 1000.0  # 🚨 СМЕРТНЫЙ ПРИГОВОР ЗА СИНГУЛЯРНОСТЬ
+                score -= 1000.0  # СМЕРТНЫЙ ПРИГОВОР ЗА СИНГУЛЯРНОСТЬ
             elif dur < min_dur: 
                 score -= 200.0 * (min_dur - dur)
                 
             if dur > max_dur * 1.5: 
                 score -= 100.0 * (dur - max_dur)
             
+            # ЗАПРЕТ НА МЕРТВЫЕ ЗОНЫ (Iron Curtains)
+            overlap_curtain = calculate_overlap(t["start"], t["end"], curtains)
+            if overlap_curtain > 0.05:
+                score -= 2000.0 * overlap_curtain
+                
             overlap_strong = calculate_overlap(t["start"], t["end"], strong_vad)
             overlap_weak = calculate_overlap(t["start"], t["end"], weak_vad)
             silence_dur = dur - overlap_strong - overlap_weak
@@ -328,25 +312,23 @@ def the_supreme_judge(proposals: list, words: list, s_idx: int, e_idx: int, stro
             l_e = prop.timings[line[-1]]["end"]
             l_dur = l_e - l_s
             
-            # ЭМПИРИЧЕСКИЙ ПРЕДЕЛ
             if empirical_data:
                 w_abs_idx = s_idx + line[0]
                 h_id = words[w_abs_idx].get("homologous_id", -1)
                 s_num = words[w_abs_idx].get("stanza_num", -1)
                 
                 if h_id != -1 and h_id in empirical_data["homo_durations"]:
-                    l_min = empirical_data["homo_durations"][h_id] * 0.75 # Макс. сжатие 25% от эталона
+                    l_min = empirical_data["homo_durations"][h_id] * 0.75 
                 else:
                     vowels = sum(1 for k in line for c in clean_texts[k] if c in "аеёиоуыэюяaeiouy")
                     sdr = empirical_data["stanza_sdr"].get(s_num, empirical_data.get("global_sdr", 3.0))
-                    l_min = (max(1, vowels) / sdr) * 0.7 # Макс. сжатие 30% от эталонного темпа
+                    l_min = (max(1, vowels) / sdr) * 0.7 
             else:
                 l_min = sum(get_phonetic_bounds(clean_texts[k], line_breaks[k])[0] for k in line)
             
             if l_dur < l_min:
                 # WALL EXEMPTION (Индульгенция перед Стеной)
-                # Если строка упирается в стену (зазор < 0.5с), мы не штрафуем инструмент за сжатие!
-                hit_the_wall = any(abs(w_time - l_e) < 0.5 for w_time in walls)
+                hit_the_wall = any(abs(c_s - l_e) < 0.5 for c_s, c_e in curtains)
                 
                 if not hit_the_wall:
                     score -= 500.0 * (l_min - l_dur) 
@@ -365,13 +347,11 @@ def the_supreme_judge(proposals: list, words: list, s_idx: int, e_idx: int, stro
         
     return best_prop
 
-
 # ─── ДИАГНОСТИЧЕСКИЙ КОМПАС (ADVISORY COMPASS) ──────────────────────────────
 
 def diagnostic_compass(words: list, s_idx: int, e_idx: int, audio_data: np.ndarray, t_start: float, t_end: float, model, lang: str) -> int:
-    """Щупает будущее на предмет глобальных сдвигов. Отключается внутри Островов Повторов."""
+    """Щупает будущее на предмет глобальных сдвигов."""
     if is_repetition_island(words, s_idx, e_idx):
-        log.debug("   🧭 [Diagnostic Compass] Обнаружен цикл (Остров). Компас отключен для защиты от ложного сдвига.")
         return -1
 
     if (e_idx - s_idx) < 2: return -1 
