@@ -2,8 +2,10 @@
    РЕЖИМ РЕДАКТОРА (body.edit-mode)
    ───────────────────────────────────────────────────────────────────────────── */
 
-/* Отключаем маску-затухание по краям и делаем огромные отступы для центровки */
+/* Отключаем маску-затухание по краям, меняем flex на block для правильного скролла */
 body.edit-mode lyrics-display {
+    display: block !important; 
+    text-align: center !important;
     -webkit-mask-image: none !important;
     mask-image: none !important;
     overflow-y: auto !important;
@@ -32,6 +34,7 @@ body.edit-mode .lyric-line {
     pointer-events: auto !important; /* Делаем текст кликабельным */
     position: relative;
     z-index: 10; /* Базовый слой для строк в редакторе */
+    margin-bottom: 0.5rem; /* Гарантированный отступ между строками */
 }
 
 /* Подсветка текущей строки */
@@ -47,27 +50,24 @@ body.edit-mode .lyric-line.active-line {
    ───────────────────────────────────────────────────────────────────────────── */
 body.edit-mode .word {
     cursor: pointer;
-    border-radius: 0.2rem;
+    border-radius: 4px;
     padding: 0 0.2rem;
     margin: 0 -0.2rem;
-    transition: transform 0.1s, outline 0.1s;
+    transition: transform 0.1s, box-shadow 0.1s;
     position: relative;
     z-index: 20; /* Вытаскиваем слова поверх всего */
-    /* Убираем любой фон */
-    background: transparent !important;
 }
 
 body.edit-mode .word:hover {
-    /* ПРОЗРАЧНАЯ РАМКА С ЧЕТКИМ КОНТУРОМ */
-    outline: 2px solid rgba(255, 255, 255, 0.8);
-    box-shadow: 0 0 10px rgba(255, 255, 255, 0.2);
+    /* ПРОЗРАЧНАЯ РАМКА С ЧЕТКИМ КОНТУРОМ БЕЗ ЗАЛИВКИ ФОНА */
+    box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.7), 0 0 15px rgba(255, 255, 255, 0.2);
     transform: scale(1.05);
     z-index: 100; /* При наведении слово выпрыгивает поверх UI */
 }
 
 body.edit-mode .word:active {
     transform: scale(0.95);
-    outline-color: var(--accent);
+    box-shadow: 0 0 0 2px var(--accent), 0 0 15px var(--accent);
 }
 
 /* Индикаторы ручных правок (Золотые точки) */
@@ -226,10 +226,10 @@ body.edit-mode .word:active {
 .editor-controls-wrapper {
     position: absolute;
     top: 1rem;
-    right: 3.5rem; /* Отступ от кнопки Fullscreen */
+    right: 3.5rem;
     display: flex;
     gap: 0.5rem;
-    z-index: 100; /* Поверх всего */
+    z-index: 100;
 }
 
 .editor-btn {

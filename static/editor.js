@@ -99,22 +99,18 @@
         const t = window.currentTrack;
         const cvr = document.getElementById("cover-img").src;
         
-        // Запускаем стандартную загрузку трека
         loadKar(t, cvr);
         
-        // Ожидаем загрузки метаданных нового аудио, чтобы применить сохраненное время
         const restoreHandler = () => {
             window.instAudio.currentTime = savedTime;
             window.vocAudio.currentTime = savedTime;
             
-            // Искусственно вызываем событие change для ползунка, чтобы плеер отрендерил нужную строку
             const seekEl = document.getElementById("seek-bar");
             if (seekEl) {
                 seekEl.value = savedTime;
                 seekEl.dispatchEvent(new Event("change"));
             }
             
-            // Удаляем обработчик, чтобы он сработал только один раз
             window.instAudio.removeEventListener("loadedmetadata", restoreHandler);
         };
         
@@ -131,6 +127,18 @@
             window.instAudio.pause();
             window.vocAudio.pause();
             backupLyricsData = JSON.parse(JSON.stringify(window.lyricsData));
+
+            // Даем браузеру 50мс на применение новых отступов (45vh) из CSS,
+            // после чего находим текущую строку и ставим её по центру экрана
+            setTimeout(() => {
+                const activeLine = document.querySelector(".lyric-line.active-line");
+                if (activeLine) {
+                    activeLine.scrollIntoView({ block: "center", behavior: "smooth" });
+                } else if (lyricsDisp.firstElementChild) {
+                    lyricsDisp.firstElementChild.scrollIntoView({ block: "center", behavior: "smooth" });
+                }
+            }, 50);
+
         } else {
             document.body.classList.remove("edit-mode", "popover-open");
             popover.classList.remove("visible");
@@ -146,7 +154,6 @@
         if (!activeTargetSpan || !popover.classList.contains("visible")) return;
         const rect = activeTargetSpan.getBoundingClientRect();
         
-        // Позиция: по центру слова, чуть выше него
         let top = rect.top - 10;
         let left = rect.left + (rect.width / 2);
 
@@ -154,7 +161,6 @@
         popover.style.left = `${left}px`;
     }
 
-    // Привязываем пересчет позиции к скроллу и ресайзу, чтобы меню не отрывалось
     lyricsDisp.addEventListener("scroll", updatePopoverPosition);
     window.addEventListener("resize", updatePopoverPosition);
 
@@ -162,17 +168,14 @@
         currentWordIndex = flatIdx;
         activeTargetSpan = targetSpan;
         
-        // Ставим на паузу при клике
         window.instAudio.pause();
         window.vocAudio.pause();
 
-        // Центрируем строку на экране
         const lineElement = targetSpan.closest(".lyric-line");
         if (lineElement) {
             lineElement.scrollIntoView({ block: "center", behavior: "smooth" });
         }
 
-        // Заполняем данные меню
         epText.value = wordData.word;
         epValStart.innerText = formatMs(wordData.start);
         epValEnd.innerText = formatMs(wordData.end);
@@ -180,7 +183,6 @@
         epBtnStart.classList.toggle("is-set", !!wordData.is_manual_start);
         epBtnEnd.classList.toggle("is-set", !!wordData.is_manual_end);
 
-        // Позиционируем меню
         updatePopoverPosition();
         popover.classList.add("visible");
         document.body.classList.add("popover-open");
@@ -222,7 +224,6 @@
         if (span) {
             span.textContent = w.word;
             span.classList.add("manual-text");
-            // Поскольку длина текста изменилась, пересчитываем позицию меню
             updatePopoverPosition(); 
         }
     });
@@ -232,18 +233,15 @@
         const w = window.lyricsData[currentWordIndex];
         const currentTime = window.instAudio.currentTime;
 
-        // Вычисляем оригинальную длительность слова (но не менее 0.1с)
         const originalDuration = Math.max(0.1, w.end - w.start);
 
         w.start = currentTime;
         w.is_manual_start = true;
         
-        // ВАЖНО: Сдвигаем конец слова, чтобы сохранить его физическую длительность,
-        // если пользователь не фиксировал конец вручную.
         if (!w.is_manual_end) {
             w.end = w.start + originalDuration;
         } else if (w.start >= w.end) {
-            w.end = w.start + 0.2; // Экстренный фикс парадокса
+            w.end = w.start + 0.2;
         }
 
         epValStart.innerText = formatMs(w.start);
