@@ -41,6 +41,7 @@
     let isEditMode = false;
     let backupLyricsData = null; // Для отмены изменений
     let currentWordIndex = -1;   // Глобальный индекс редактируемого слова
+    let activeTargetSpan = null; // DOM элемент текущего слова для обновления позиции меню
 
     // ── Утилиты форматирования времени ───────────────────────────────────────
     function formatMs(seconds) {
@@ -51,7 +52,7 @@
         return `${m}:${s.toString().padStart(2, '0')}.${ms.toString().padStart(2, '0')}`;
     }
 
-    // Синхронизация данных с движком плеера (script.js копирует значения, нам надо обновить оригинал)
+    // Синхронизация данных с движком плеера
     function updatePlayerEngineWord(flatIdx, key, value) {
         if (!window.playerLines) return;
         let curr = 0;
@@ -59,7 +60,6 @@
             for (let w of line.words) {
                 if (curr === flatIdx) {
                     w[key] = parseFloat(value);
-                    // Сбрасываем кэш закраски, чтобы плеер сразу перерисовал градиент
                     w.lastPct = "-1"; 
                     return;
                 }
@@ -68,7 +68,7 @@
         }
     }
 
-    // Обновляет закраску слова мгновенно без запуска всего цикла плеера
+    // Обновляет закраску слова мгновенно
     function forceWordRepaint(flatIdx) {
         if (!window.playerLines || !window.instAudio) return;
         const time = window.instAudio.currentTime;
@@ -91,54 +91,97 @@
         }
     }
 
+    // Перезагрузка трека с сохранением позиции ползунка времени
+    function reloadTrackAndRestoreTime() {
+        if (typeof loadKar !== "function" || !window.currentTrack) return;
+        
+        const savedTime = window.instAudio.currentTime;
+        const t = window.currentTrack;
+        const cvr = document.getElementById("cover-img").src;
+        
+        // Запускаем стандартную загрузку трека
+        loadKar(t, cvr);
+        
+        // Ожидаем загрузки метаданных нового аудио, чтобы применить сохраненное время
+        const restoreHandler = () => {
+            window.instAudio.currentTime = savedTime;
+            window.vocAudio.currentTime = savedTime;
+            
+            // Искусственно вызываем событие change для ползунка, чтобы плеер отрендерил нужную строку
+            const seekEl = document.getElementById("seek-bar");
+            if (seekEl) {
+                seekEl.value = savedTime;
+                seekEl.dispatchEvent(new Event("change"));
+            }
+            
+            // Удаляем обработчик, чтобы он сработал только один раз
+            window.instAudio.removeEventListener("loadedmetadata", restoreHandler);
+        };
+        
+        window.instAudio.addEventListener("loadedmetadata", restoreHandler);
+    }
+
     // ── Логика Режима ────────────────────────────────────────────────────────
     function toggleEditMode(enable) {
         if (!window.currentTrack || !window.lyricsData) return;
         isEditMode = enable;
 
         if (enable) {
-            // Включаем редактор
             document.body.classList.add("edit-mode");
             window.instAudio.pause();
             window.vocAudio.pause();
-            
-            // Делаем глубокую копию на случай отмены
             backupLyricsData = JSON.parse(JSON.stringify(window.lyricsData));
         } else {
-            // Выключаем редактор
             document.body.classList.remove("edit-mode", "popover-open");
             popover.classList.remove("visible");
             currentWordIndex = -1;
+            activeTargetSpan = null;
         }
     }
 
     // ── Логика Popover (Меню) ────────────────────────────────────────────────
-    function openPopover(targetSpan, wordData, flatIdx) {
-        currentWordIndex = flatIdx;
+    
+    // Динамический пересчет позиции меню
+    function updatePopoverPosition() {
+        if (!activeTargetSpan || !popover.classList.contains("visible")) return;
+        const rect = activeTargetSpan.getBoundingClientRect();
         
-        // Ставим на паузу при клике для удобства
-        window.instAudio.pause();
-        window.vocAudio.pause();
-
-        // Заполняем данные
-        epText.value = wordData.word;
-        epValStart.innerText = formatMs(wordData.start);
-        epValEnd.innerText = formatMs(wordData.end);
-
-        // Обновляем визуальные стейты кнопок
-        epBtnStart.classList.toggle("is-set", !!wordData.is_manual_start);
-        epBtnEnd.classList.toggle("is-set", !!wordData.is_manual_end);
-
-        // Позиционируем меню над словом
-        const rect = targetSpan.getBoundingClientRect();
-        
-        // Вычисляем позицию: по центру слова, чуть выше
+        // Позиция: по центру слова, чуть выше него
         let top = rect.top - 10;
         let left = rect.left + (rect.width / 2);
 
         popover.style.top = `${top}px`;
         popover.style.left = `${left}px`;
+    }
 
+    // Привязываем пересчет позиции к скроллу и ресайзу, чтобы меню не отрывалось
+    lyricsDisp.addEventListener("scroll", updatePopoverPosition);
+    window.addEventListener("resize", updatePopoverPosition);
+
+    function openPopover(targetSpan, wordData, flatIdx) {
+        currentWordIndex = flatIdx;
+        activeTargetSpan = targetSpan;
+        
+        // Ставим на паузу при клике
+        window.instAudio.pause();
+        window.vocAudio.pause();
+
+        // Центрируем строку на экране
+        const lineElement = targetSpan.closest(".lyric-line");
+        if (lineElement) {
+            lineElement.scrollIntoView({ block: "center", behavior: "smooth" });
+        }
+
+        // Заполняем данные меню
+        epText.value = wordData.word;
+        epValStart.innerText = formatMs(wordData.start);
+        epValEnd.innerText = formatMs(wordData.end);
+
+        epBtnStart.classList.toggle("is-set", !!wordData.is_manual_start);
+        epBtnEnd.classList.toggle("is-set", !!wordData.is_manual_end);
+
+        // Позиционируем меню
+        updatePopoverPosition();
         popover.classList.add("visible");
         document.body.classList.add("popover-open");
     }
@@ -147,6 +190,7 @@
         popover.classList.remove("visible");
         document.body.classList.remove("popover-open");
         currentWordIndex = -1;
+        activeTargetSpan = null;
     }
 
     // ── Обработчики кликов по словам ─────────────────────────────────────────
@@ -155,7 +199,7 @@
         
         const target = e.target.closest(".word");
         if (!target) {
-            closePopover(); // Клик мимо слова закрывает меню
+            closePopover(); 
             return;
         }
 
@@ -168,49 +212,52 @@
 
     // ── Обработчики внутри Popover ───────────────────────────────────────────
     
-    // 1. Изменение текста
     epText.addEventListener("input", (e) => {
         if (currentWordIndex === -1) return;
         const w = window.lyricsData[currentWordIndex];
         w.word = e.target.value;
         w.is_manual_text = true;
         
-        // Обновляем DOM
         const span = document.querySelector(`.word[data-index="${currentWordIndex}"]`);
         if (span) {
             span.textContent = w.word;
             span.classList.add("manual-text");
+            // Поскольку длина текста изменилась, пересчитываем позицию меню
+            updatePopoverPosition(); 
         }
     });
 
-    // 2. Установка СТАРТА
     epBtnStart.addEventListener("click", () => {
         if (currentWordIndex === -1) return;
         const w = window.lyricsData[currentWordIndex];
         const currentTime = window.instAudio.currentTime;
 
+        // Вычисляем оригинальную длительность слова (но не менее 0.1с)
+        const originalDuration = Math.max(0.1, w.end - w.start);
+
         w.start = currentTime;
         w.is_manual_start = true;
         
-        // Защита: если старт залез за конец
-        if (w.start >= w.end) {
-            w.end = w.start + 0.2;
-            epValEnd.innerText = formatMs(w.end);
-            updatePlayerEngineWord(currentWordIndex, "end", w.end);
+        // ВАЖНО: Сдвигаем конец слова, чтобы сохранить его физическую длительность,
+        // если пользователь не фиксировал конец вручную.
+        if (!w.is_manual_end) {
+            w.end = w.start + originalDuration;
+        } else if (w.start >= w.end) {
+            w.end = w.start + 0.2; // Экстренный фикс парадокса
         }
 
         epValStart.innerText = formatMs(w.start);
+        epValEnd.innerText = formatMs(w.end);
         epBtnStart.classList.add("is-set");
 
-        // Обновляем данные плеера и DOM
         updatePlayerEngineWord(currentWordIndex, "start", w.start);
+        updatePlayerEngineWord(currentWordIndex, "end", w.end);
         forceWordRepaint(currentWordIndex);
         
         const span = document.querySelector(`.word[data-index="${currentWordIndex}"]`);
         if (span) span.classList.add("manual-start");
     });
 
-    // 3. Установка КОНЦА
     epBtnEnd.addEventListener("click", () => {
         if (currentWordIndex === -1) return;
         const w = window.lyricsData[currentWordIndex];
@@ -219,7 +266,6 @@
         w.end = currentTime;
         w.is_manual_end = true;
 
-        // Защита: если конец залез перед стартом
         if (w.end <= w.start) {
             w.start = Math.max(0, w.end - 0.2);
             epValStart.innerText = formatMs(w.start);
@@ -229,7 +275,6 @@
         epValEnd.innerText = formatMs(w.end);
         epBtnEnd.classList.add("is-set");
 
-        // Обновляем данные плеера и DOM
         updatePlayerEngineWord(currentWordIndex, "end", w.end);
         forceWordRepaint(currentWordIndex);
 
@@ -237,11 +282,9 @@
         if (span) span.classList.add("manual-end");
     });
 
-    // 4. Сброс якоря
     epBtnReset.addEventListener("click", () => {
         if (currentWordIndex === -1 || !backupLyricsData) return;
         
-        // Восстанавливаем из бэкапа
         const orig = backupLyricsData[currentWordIndex];
         const w = window.lyricsData[currentWordIndex];
         
@@ -252,41 +295,34 @@
         w.is_manual_end = false;
         w.is_manual_text = false;
 
-        // Обновляем UI меню
         epText.value = w.word;
         epValStart.innerText = formatMs(w.start);
         epValEnd.innerText = formatMs(w.end);
         epBtnStart.classList.remove("is-set");
         epBtnEnd.classList.remove("is-set");
 
-        // Обновляем движок плеера
         updatePlayerEngineWord(currentWordIndex, "start", w.start);
         updatePlayerEngineWord(currentWordIndex, "end", w.end);
         forceWordRepaint(currentWordIndex);
 
-        // Убираем классы-индикаторы с DOM элемента
         const span = document.querySelector(`.word[data-index="${currentWordIndex}"]`);
         if (span) {
             span.textContent = w.word;
             span.classList.remove("manual-start", "manual-end", "manual-text");
+            updatePopoverPosition();
         }
     });
 
-    // Предотвращаем закрытие меню при клике внутри него
     popover.addEventListener("click", e => e.stopPropagation());
 
-    // ── Кнопки основной панели (Старт / Применить / Отмена) ────────────────
+    // ── Кнопки основной панели ───────────────────────────────────────────────
     
     btnStart.addEventListener("click", () => toggleEditMode(true));
     
     btnCancel.addEventListener("click", () => {
-        // Восстанавливаем данные и перерисовываем текст
         window.lyricsData = backupLyricsData;
         toggleEditMode(false);
-        // Запускаем перерисовку из script.js, имитируя переключение на тот же трек
-        const t = window.currentTrack;
-        const cvr = document.getElementById("cover-img").src;
-        if (typeof loadKar === "function") loadKar(t, cvr);
+        reloadTrackAndRestoreTime();
     });
 
     btnApply.addEventListener("click", async () => {
@@ -295,7 +331,6 @@
         const trackId = window.currentTrack.id;
         const payload = { words: window.lyricsData };
 
-        // Визуальный фидбек
         btnApply.innerHTML = "⏳ Сохранение...";
         btnApply.style.pointerEvents = "none";
 
@@ -311,17 +346,12 @@
                 throw new Error(err.detail || "Ошибка сервера");
             }
 
-            // Успех! Выходим из режима и перезагружаем трек
             toggleEditMode(false);
-            
-            const t = window.currentTrack;
-            const cvr = document.getElementById("cover-img").src;
-            if (typeof loadKar === "function") loadKar(t, cvr);
+            reloadTrackAndRestoreTime();
 
         } catch (e) {
             alert("Ошибка при сохранении: " + e.message);
         } finally {
-            // Возвращаем кнопку в норму
             btnApply.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"></polyline></svg>Применить`;
             btnApply.style.pointerEvents = "auto";
         }

@@ -30,6 +30,14 @@ class EditorWord(BaseModel):
 class EditPayload(BaseModel):
     words: List[EditorWord]
 
+def estimate_phonetic_duration(word: str) -> float:
+    """Оценивает вокальную длительность слова на основе количества гласных."""
+    vowels = "aeiouyаеёиоуыэюя"
+    count = sum(1 for char in word.lower() if char in vowels)
+    if count == 0: 
+        count = 1
+    return count * 0.25  # 250мс на слог (оптимально для пения)
+
 @router.post("/api/tracks/{track_id}/edit_lyrics")
 async def apply_lyrics_edit(track_id: str, payload: EditPayload, db: Session = Depends(get_db)):
     track = db.query(Track).filter(Track.id == track_id).first()
@@ -41,7 +49,7 @@ async def apply_lyrics_edit(track_id: str, payload: EditPayload, db: Session = D
 
     log.info(f"✏️ [Editor] Применение ручных правок для трека: {track.original_name}")
 
-    # 1. Загрузка VAD (кэш или рекалькуляция)
+    # 1. Загрузка VAD
     base_name = os.path.splitext(track.filename)[0]
     vad_path = os.path.join(LIBRARY_DIR, f"{base_name}_(VAD).json")
     vocals_path = track.vocals_path
@@ -83,48 +91,58 @@ async def apply_lyrics_edit(track_id: str, payload: EditPayload, db: Session = D
             "is_manual_end": w.is_manual_end
         })
 
-    # 3. Хронологическая зачистка (Сбрасываем автоматические слова, которые раздавили ручными якорями)
-    # Идем слева направо и сбрасываем всё, что нарушает поток времени
+    # 3. Фонетическая коррекция полу-якорей и Хронологическая Зачистка
     valid_cursor = 0.0
+    
     for i in range(len(words_data)):
         w = words_data[i]
         
-        # Если слово автоматическое и нарушает тайминги - сбрасываем его
-        if not w["is_manual_start"] and w["start"] < valid_cursor:
-            w["start"] = -1.0
-            
-        if not w["is_manual_end"] and w["end"] <= w["start"]:
-            w["end"] = -1.0
-            
-        if w["start"] == -1.0 or w["end"] == -1.0:
-            w["start"] = -1.0
-            w["end"] = -1.0
-        else:
-            valid_cursor = w["end"]
+        # Если юзер задал только Старт или только Конец - защищаем длительность фонетикой
+        if w["is_manual_start"] and not w["is_manual_end"]:
+            est = estimate_phonetic_duration(w["clean_text"])
+            if w["end"] <= w["start"] + 0.15:  # Если слово сплющено
+                w["end"] = w["start"] + est
+                
+        if w["is_manual_end"] and not w["is_manual_start"]:
+            est = estimate_phonetic_duration(w["clean_text"])
+            if w["start"] >= w["end"] - 0.15:
+                w["start"] = max(0.0, w["end"] - est)
 
-    # Идем справа налево, чтобы убедиться, что автоматические слова не залезают на следующие ручные
-    valid_cursor = audio_duration
-    for i in range(len(words_data) - 1, -1, -1):
-        w = words_data[i]
-        
-        if w["end"] != -1.0:
-            if not w["is_manual_end"] and w["end"] > valid_cursor:
-                w["start"] = -1.0
-                w["end"] = -1.0
-            elif not w["is_manual_start"] and w["start"] > valid_cursor:
+        # Ищем следующий ручной якорь в будущем
+        next_anchor_start = audio_duration
+        for j in range(i + 1, len(words_data)):
+            if words_data[j]["is_manual_start"] or words_data[j]["is_manual_end"]:
+                if words_data[j]["start"] != -1.0:
+                    next_anchor_start = words_data[j]["start"]
+                break
+
+        if w["is_manual_start"] or w["is_manual_end"]:
+            # Защита от парадоксов ручных якорей
+            if w["start"] < valid_cursor and w["start"] != -1.0:
+                w["start"] = valid_cursor
+            
+            if w["end"] > next_anchor_start:
+                w["end"] = next_anchor_start - 0.05
+                
+            if w["end"] <= w["start"] and w["end"] != -1.0:
+                w["end"] = w["start"] + 0.1
+                
+            valid_cursor = w["end"] if w["end"] != -1.0 else w["start"] + 0.1
+        else:
+            # Автоматические слова: если раздавлены - обнуляем
+            if w["start"] < valid_cursor or w["end"] > next_anchor_start or w["end"] <= w["start"]:
                 w["start"] = -1.0
                 w["end"] = -1.0
             else:
-                valid_cursor = w["start"]
+                valid_cursor = w["end"]
 
-    # 4. Вызов эластичной сборки для заполнения дыр
+    # 4. Вызов эластичной сборки
     log.info("   🧲 Запуск эластичной заливки для пересчета таймингов...")
     _elastic_vad_assembly(words_data, vad_intervals, audio_duration)
 
     # 5. Сохранение итогового результата
     final_json = []
     for w in words_data:
-        # Убираем системные флаги перед сохранением
         final_json.append({
             "word": w["word"],
             "start": round(w["start"], 3),

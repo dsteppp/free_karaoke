@@ -2,12 +2,13 @@
    РЕЖИМ РЕДАКТОРА (body.edit-mode)
    ───────────────────────────────────────────────────────────────────────────── */
 
-/* Отключаем маску-затухание по краям и возвращаем скролл */
+/* Отключаем маску-затухание по краям и делаем огромные отступы для центровки */
 body.edit-mode lyrics-display {
     -webkit-mask-image: none !important;
     mask-image: none !important;
     overflow-y: auto !important;
-    padding: 2rem 1rem 30vh 1rem !important; /* Оставляем место снизу */
+    /* 45vh сверху и снизу позволяют прокрутить ЛЮБУЮ строку в абсолютный центр экрана */
+    padding: 45vh 1rem 45vh 1rem !important; 
     scrollbar-width: thin !important;
     scrollbar-color: var(--accent) transparent !important;
 }
@@ -25,17 +26,20 @@ body.edit-mode lyrics-display::-webkit-scrollbar-thumb {
 body.edit-mode .lyric-line {
     opacity: 1 !important;
     transform: none !important;
-    filter: brightness(0.6) !important; /* Слегка приглушаем неактивные строки */
+    filter: brightness(0.4) !important; /* Сильнее приглушаем неактивные строки */
     text-shadow: none !important;
     transition: filter 0.2s, background 0.2s !important;
     pointer-events: auto !important; /* Делаем текст кликабельным */
+    position: relative;
+    z-index: 10; /* Базовый слой для строк в редакторе */
 }
 
-/* Подсветка текущей строки (чисто для ориентира) */
+/* Подсветка текущей строки */
 body.edit-mode .lyric-line.active-line {
     filter: brightness(1) !important;
     background: rgba(255, 255, 255, 0.05);
     border-radius: var(--radius-md);
+    z-index: 15;
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
@@ -44,28 +48,36 @@ body.edit-mode .lyric-line.active-line {
 body.edit-mode .word {
     cursor: pointer;
     border-radius: 0.2rem;
-    padding: 0 0.1rem;
-    margin: 0 -0.1rem;
-    transition: background 0.2s, transform 0.1s;
+    padding: 0 0.2rem;
+    margin: 0 -0.2rem;
+    transition: transform 0.1s, outline 0.1s;
+    position: relative;
+    z-index: 20; /* Вытаскиваем слова поверх всего */
+    /* Убираем любой фон */
+    background: transparent !important;
 }
 
 body.edit-mode .word:hover {
-    background: rgba(59, 130, 246, 0.25); /* Легкая синяя подсветка при наведении */
+    /* ПРОЗРАЧНАЯ РАМКА С ЧЕТКИМ КОНТУРОМ */
+    outline: 2px solid rgba(255, 255, 255, 0.8);
+    box-shadow: 0 0 10px rgba(255, 255, 255, 0.2);
     transform: scale(1.05);
+    z-index: 100; /* При наведении слово выпрыгивает поверх UI */
 }
 
 body.edit-mode .word:active {
     transform: scale(0.95);
+    outline-color: var(--accent);
 }
 
 /* Индикаторы ручных правок (Золотые точки) */
 .word.manual-start::before {
     content: '';
     position: absolute;
-    bottom: 0.2rem;
-    left: -0.2rem;
-    width: 0.45rem;
-    height: 0.45rem;
+    bottom: -0.1rem;
+    left: -0.1rem;
+    width: 0.5rem;
+    height: 0.5rem;
     background: var(--warning);
     border-radius: 50%;
     box-shadow: 0 0 8px var(--warning);
@@ -75,10 +87,10 @@ body.edit-mode .word:active {
 .word.manual-end::after {
     content: '';
     position: absolute;
-    bottom: 0.2rem;
-    right: -0.2rem;
-    width: 0.45rem;
-    height: 0.45rem;
+    bottom: -0.1rem;
+    right: -0.1rem;
+    width: 0.5rem;
+    height: 0.5rem;
     background: var(--warning);
     border-radius: 50%;
     box-shadow: 0 0 8px var(--warning);
@@ -95,7 +107,7 @@ body.edit-mode .word:active {
    ───────────────────────────────────────────────────────────────────────────── */
 #editor-popover {
     position: fixed;
-    z-index: 100000;
+    z-index: 100000; /* Гарантированно выше всего */
     background: rgba(20, 20, 25, 0.95);
     backdrop-filter: blur(12px);
     border: 1px solid var(--border);
@@ -217,7 +229,7 @@ body.edit-mode .word:active {
     right: 3.5rem; /* Отступ от кнопки Fullscreen */
     display: flex;
     gap: 0.5rem;
-    z-index: 30;
+    z-index: 100; /* Поверх всего */
 }
 
 .editor-btn {
