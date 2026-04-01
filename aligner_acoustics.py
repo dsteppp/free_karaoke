@@ -14,7 +14,7 @@ def get_vocal_intervals(audio_data: np.ndarray, sr: int, top_db: float = 35.0) -
     """
     log.info("🎙️ [Acoustics] Сканирование вокального стема на наличие энергии...")
     
-    # Очищаем сигнал от низкочастотного гула (DC offset и rumble)
+    # Очищаем сигнал от низкочастотного гула (DC offset и rumble) для точности
     audio_clean = librosa.effects.preemphasis(audio_data)
     
     # Находим интервалы, где звук превышает порог тишины
@@ -24,14 +24,14 @@ def get_vocal_intervals(audio_data: np.ndarray, sr: int, top_db: float = 35.0) -
     for start_s, end_s in intervals_samples:
         intervals_sec.append((start_s / sr, end_s / sr))
         
-    # Склеиваем микро-паузы (меньше 0.3 секунд), так как это обычно дыхание или смыкание губ
+    # Склеиваем микро-паузы (меньше 0.4 секунд), так как это обычно дыхание или смыкание губ
     merged_intervals = []
     for start, end in intervals_sec:
         if not merged_intervals:
             merged_intervals.append((start, end))
         else:
             last_start, last_end = merged_intervals[-1]
-            if start - last_end <= 0.3:
+            if start - last_end <= 0.4:
                 merged_intervals[-1] = (last_start, end)
             else:
                 merged_intervals.append((start, end))
@@ -40,6 +40,49 @@ def get_vocal_intervals(audio_data: np.ndarray, sr: int, top_db: float = 35.0) -
     log.info(f"   ✅ Найдено вокальных блоков: {len(merged_intervals)} (общая длительность: {total_vocal_time:.2f}s)")
     
     return merged_intervals
+
+def filter_whisper_hallucinations(heard_words: list, vad_intervals: list) -> list:
+    """
+    ФИЛЬТР №1: Анти-Галлюциноген + Защита от вздохов.
+    Удаляет слова из транскрипта Whisper, если они физически попадают в тишину (гитарное соло)
+    или если нейросеть в них сильно не уверена (вероятность < 40%).
+    """
+    log.info("🧹 [VAD Filter] Очистка галлюцинаций Whisper...")
+    cleaned_words = []
+    removed_count = 0
+    
+    for w in heard_words:
+        start = w["start"]
+        end = w["end"]
+        dur = end - start
+        
+        if dur <= 0:
+            continue
+            
+        # 1. Проверка уверенности нейросети (Probability)
+        prob = w.get("probability", 1.0)
+        if prob < 0.40:
+            log.debug(f"      🗑️ [Low Prob] Удален мусор/вздох: '{w['word']}' (Prob: {prob:.2f})")
+            removed_count += 1
+            continue
+            
+        # 2. Проверка физического пересечения с VAD
+        overlap = 0.0
+        for vs, ve in vad_intervals:
+            o_s = max(start, vs)
+            o_e = min(end, ve)
+            if o_e > o_s:
+                overlap += (o_e - o_s)
+                
+        # Если слово хотя бы на 15% попадает в вокальный блок - оставляем
+        if (overlap / dur) > 0.15:
+            cleaned_words.append(w)
+        else:
+            log.debug(f"      🗑️ [Ghost VAD] Удалена галлюцинация в тишине: '{w['word']}' ({start:.2f}s - {end:.2f}s)")
+            removed_count += 1
+            
+    log.info(f"   ✨ Фильтр удалил {removed_count} фантомных слов. Осталось: {len(cleaned_words)}")
+    return cleaned_words
 
 def constrain_to_vad(start: float, end: float, vad_intervals: list) -> tuple:
     """
@@ -54,35 +97,34 @@ def constrain_to_vad(start: float, end: float, vad_intervals: list) -> tuple:
     valid_ends = []
     
     for vs, ve in vad_intervals:
-        # Если слово пересекается с интервалом
         if start <= ve and end >= vs:
             valid_starts.append(max(start, vs))
             valid_ends.append(min(end, ve))
             
     if valid_starts and valid_ends:
-        # Возвращаем самую широкую рамку из доступных
         return min(valid_starts), max(valid_ends)
         
-    # Если слово вообще не попало в VAD (аномалия), примагничиваем его к ближайшему звуку
+    # Если слово вообще не попало в VAD, примагничиваем его к ближайшему звуку
     closest_dist = float('inf')
     best_s = start
     best_e = end
+    dur = end - start
     
     for vs, ve in vad_intervals:
-        # Слово до VAD-блока
+        # Слово до VAD-блока -> толкаем вправо
         if end < vs:
             dist = vs - end
             if dist < closest_dist:
                 closest_dist = dist
                 best_s = vs
-                best_e = min(vs + (end - start), ve)
-        # Слово после VAD-блока
+                best_e = min(vs + dur, ve)
+        # Слово после VAD-блока -> толкаем влево
         elif start > ve:
             dist = start - ve
             if dist < closest_dist:
                 closest_dist = dist
                 best_e = ve
-                best_s = max(ve - (end - start), vs)
+                best_s = max(ve - dur, vs)
 
     return best_s, best_e
 
