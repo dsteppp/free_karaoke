@@ -14,9 +14,17 @@ from huey_config import huey
 from ai_pipeline import get_audio_metadata
 from app_logger import get_logger
 
+# --- ВРЕЗКА РЕДАКТОРА ---
+from editor_backend import router as editor_router
+# ------------------------
+
 log = get_logger("api")
 
 app = FastAPI(title="AI-Karaoke Pro")
+
+# --- ПОДКЛЮЧЕНИЕ РОУТЕРА РЕДАКТОРА ---
+app.include_router(editor_router)
+# -------------------------------------
 
 
 # ── Анти-кэш прослойка ────────────────────────────────────────────────────────

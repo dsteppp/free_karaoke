@@ -55,6 +55,16 @@ class KaraokeAligner:
                 log.warning("⚠️ VAD не нашел голоса в треке! Сценарий глухой тишины.")
                 vad_intervals = [(0.0, audio_duration)]
 
+            # --- ВРЕЗКА РЕДАКТОРА (Сохраняем VAD для мгновенного пересчета) ---
+            vad_path = output_json_path.replace("_(Karaoke Lyrics).json", "_(VAD).json")
+            try:
+                with open(vad_path, "w", encoding="utf-8") as vf:
+                    json.dump({"duration": audio_duration, "intervals": vad_intervals}, vf)
+                log.info("   💾 VAD-кэш успешно сохранен для редактора")
+            except Exception as e:
+                log.warning(f"   ⚠️ Не удалось сохранить VAD-кэш: {e}")
+            # ------------------------------------------------------------------
+
             # 3. Слух Нейросети
             log.info("🧠 Транскрибация Stable-Whisper...")
             model = stable_whisper.load_model(self.model_name, download_root=self.whisper_model_dir, device=self.device)

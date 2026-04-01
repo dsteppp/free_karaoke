@@ -5,6 +5,10 @@ let allTracks = [];
 const instAudio = new Audio();
 const vocAudio  = new Audio();
 
+// Экспортируем в глобальную область видимости для editor.js
+window.instAudio = instAudio;
+window.vocAudio = vocAudio;
+
 let lyricsData  = [];
 let playerLines = []; // Кэшированная структура (теперь по СЛОВАМ, а не по буквам)
 let animationFrameId = null;
@@ -423,6 +427,7 @@ async function clearLibrary() {
 }
 
 function resetPlayerUI() {
+    document.body.classList.remove("edit-mode", "popover-open");
     document.getElementById("cv-title").innerText  = "Трек не выбран";
     document.getElementById("cv-title").title      = "Трек не выбран";
     document.getElementById("cv-artist").innerText = "Артист не выбран";
@@ -433,12 +438,16 @@ function resetPlayerUI() {
     bg.className = "bg-slide";
     els.lDisp.innerHTML = "";
     currentTrack = null;
+    window.currentTrack = null;
     playerLines = [];
 }
 
 async function loadKar(t, cvr) {
     stopPlay();
+    document.body.classList.remove("edit-mode", "popover-open");
+    
     currentTrack   = t;
+    window.currentTrack = t;
     els.seek.value = 0;
     syncSliders();
 
@@ -474,6 +483,8 @@ async function loadKar(t, cvr) {
         lyricsData = await fetch(`/library/${bn}_(Karaoke Lyrics).json`)
             .then(r => { if (!r.ok) throw new Error("no lyrics"); return r.json(); });
 
+        window.lyricsData = lyricsData;
+
         let cur = [];
         let rawLines = [];
         for (const w of lyricsData) {
@@ -485,6 +496,7 @@ async function loadKar(t, cvr) {
         renderLyrics(rawLines);
     } catch (_) {
         lyricsData = [];
+        window.lyricsData = [];
         playerLines = [];
         els.lDisp.innerHTML = '<div style="color:var(--warning);padding:2rem;">Текст не готов</div>';
     }
@@ -496,6 +508,7 @@ async function loadKar(t, cvr) {
 function renderLyrics(rawLines) {
     els.lDisp.innerHTML = "";
     playerLines = []; 
+    let globalWordIndex = 0; // Для привязки DOM-элементов к JSON-массиву
 
     rawLines.forEach((lineArr, lineIndex) => {
         const div = document.createElement("div");
@@ -513,6 +526,12 @@ function renderLyrics(rawLines) {
             const wordSpan = document.createElement("span");
             wordSpan.className = "word";
             wordSpan.textContent = w.word;
+            wordSpan.dataset.index = globalWordIndex++; // Привязываем индекс для редактора
+            
+            // Восстанавливаем визуальные классы якорей, если они есть
+            if (w.is_manual_start) wordSpan.classList.add("manual-start");
+            if (w.is_manual_end) wordSpan.classList.add("manual-end");
+            if (w.is_manual_text) wordSpan.classList.add("manual-text");
             
             lineObj.words.push({
                 domNode: wordSpan,
@@ -532,12 +551,17 @@ function renderLyrics(rawLines) {
         els.lDisp.appendChild(div);
         playerLines.push(lineObj);
     });
+    
+    window.playerLines = playerLines;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ПРОКРУТКА К СТРОКЕ С ТОЧНЫМ ПОЗИЦИОНИРОВАНИЕМ
 // ─────────────────────────────────────────────────────────────────────────────
 function scrollToActiveLine(idx, behavior = 'smooth') {
+    // ВАЖНО: Блокируем автоскролл в режиме редактора
+    if (document.body.classList.contains("edit-mode")) return; 
+
     if (idx < 0 || idx >= playerLines.length) return;
     const container = els.lDisp;
     const lineNode = playerLines[idx].domNode;
@@ -590,7 +614,11 @@ function stopPlay() {
     lastActiveLineIdx = -1;
     lastScrollTarget  = -1;
     forceRepaintFills(0);
-    if (playerLines.length > 0) els.lDisp.scrollTop = 0;
+    
+    // В режиме редактора не сбрасываем скролл наверх при остановке
+    if (playerLines.length > 0 && !document.body.classList.contains("edit-mode")) {
+        els.lDisp.scrollTop = 0;
+    }
 }
 
 function forceRepaintFills(time) {
