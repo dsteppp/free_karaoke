@@ -165,14 +165,8 @@
         window.instAudio.pause();
         window.vocAudio.pause();
 
-        // ФИКС БАГА: Скрытно перематываем плеер на время этого слова и перевешиваем классы строк!
-        window.instAudio.currentTime = wordData.start;
-        window.vocAudio.currentTime = wordData.start;
-        if (typeof forceRepaintFills === "function") {
-            forceRepaintFills(wordData.start);
-        }
-
-        // Теперь активная строка 100% правильная, центрируем её
+        // Центрируем строку визуально, но НЕ трогаем время аудио-плеера!
+        // Плеер остается на той же миллисекунде, где его оставил пользователь.
         const lineElement = targetSpan.closest(".lyric-line");
         if (lineElement) {
             lineElement.scrollIntoView({ block: "center", behavior: "smooth" });
@@ -233,6 +227,8 @@
     epBtnStart.addEventListener("click", () => {
         if (currentWordIndex === -1) return;
         const w = window.lyricsData[currentWordIndex];
+        
+        // Берем РЕАЛЬНОЕ время плеера, которое пользователь накрутил ползунком
         const currentTime = window.instAudio.currentTime;
 
         const originalDuration = Math.max(0.1, w.end - w.start);
@@ -261,6 +257,8 @@
     epBtnEnd.addEventListener("click", () => {
         if (currentWordIndex === -1) return;
         const w = window.lyricsData[currentWordIndex];
+        
+        // Берем РЕАЛЬНОЕ время плеера
         const currentTime = window.instAudio.currentTime;
 
         w.end = currentTime;
