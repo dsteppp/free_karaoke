@@ -1,6 +1,6 @@
 import rapidfuzz
 from aligner_utils import (
-    get_phonetic_bounds, get_vowel_weight, check_sdr_sanity
+    get_phonetic_bounds, get_vowel_weight, check_sdr_sanity, calculate_line_breaks_pause
 )
 from app_logger import get_logger
 
@@ -8,11 +8,11 @@ log = get_logger("aligner_orchestra")
 
 def execute_sequence_matching(canon_words: list, heard_words: list, vad_intervals: list, audio_duration: float) -> list:
     """
-    V8.4 Elastic Cluster Alignment.
-    Математика кластеров + Эластичная заливка VAD.
+    V8.5 Anchor-Centric Paradigm.
+    Строгая синхронизация от якорей с учетом пауз между строками.
     """
     log.info("=" * 50)
-    log.info("🧠 [Orchestra] Старт Elastic Sequence Matching...")
+    log.info("🧠 [Orchestra] Старт Anchor-Centric Sequence Matching...")
     
     n_canon = len(canon_words)
     n_heard = len(heard_words)
@@ -93,8 +93,7 @@ def execute_sequence_matching(canon_words: list, heard_words: list, vad_interval
         
     raw_sequence.reverse()
     
-    # 3. V8.4 Cluster Filter (Убийца галлюцинаций в интро/аутро)
-    # Группируем якоря, которые стоят близко друг к другу (меньше 5 секунд между ними)
+    # 3. Cluster Filter (Убийца галлюцинаций)
     clusters = []
     current_cluster = []
     
@@ -113,7 +112,6 @@ def execute_sequence_matching(canon_words: list, heard_words: list, vad_interval
     if current_cluster:
         clusters.append(current_cluster)
         
-    # Удаляем "сиротские" кластеры (1-2 слова), так как это гарантированно музыкальный шум/эхо
     valid_sequence = []
     orphans_removed = 0
     for cluster in clusters:
@@ -132,7 +130,7 @@ def execute_sequence_matching(canon_words: list, heard_words: list, vad_interval
         cw["start"] = match["start"]
         cw["end"] = match["end"]
         
-    # 4. Elastic VAD Assembly (Резиновая заливка слепых зон)
+    # 4. Elastic Anchor Assembly
     _elastic_vad_assembly(canon_words, vad_intervals, audio_duration)
     
     log.info("🧠 [Orchestra] Sequence Matching завершен.")
@@ -141,10 +139,10 @@ def execute_sequence_matching(canon_words: list, heard_words: list, vad_interval
 
 def _elastic_vad_assembly(words: list, vad_intervals: list, audio_duration: float):
     """
-    ФИЛЬТР №3: Elastic VAD Assembly (V8.4).
-    Ищет голос внутри слепых зон и растягивает слова ровно по контуру этого голоса.
+    ФИЛЬТР №3: Anchor-Centric Assembly (V8.5).
+    Умные паузы для переноса строк и математический отсчет интро (без VAD).
     """
-    log.info("   🧲 [Elastic Assembly] Старт эластичной заливки слепых зон...")
+    log.info("   🧲 [Anchor Assembly] Старт эластичной сборки слепых зон...")
     
     n = len(words)
     i = 0
@@ -157,77 +155,90 @@ def _elastic_vad_assembly(words: list, vad_intervals: list, audio_duration: floa
             while j < n and words[j]["start"] == -1.0:
                 j += 1
                 
-            gap_size = j - i
             anchor_prev_end = words[i-1]["end"] if i > 0 and words[i-1]["start"] != -1.0 else 0.0
             anchor_next_start = words[j]["start"] if j < n and words[j]["start"] != -1.0 else audio_duration
             
-            # Собираем VAD-острова, которые находятся ВНУТРИ этой дыры
-            available_vads = []
-            for vs, ve in vad_intervals:
-                # Остров должен быть строго между якорями (с микро-отступом 0.05с)
-                if ve > anchor_prev_end + 0.05 and vs < anchor_next_start - 0.05:
-                    o_s = max(anchor_prev_end + 0.05, vs)
-                    o_e = min(anchor_next_start - 0.05, ve)
-                    if o_e - o_s > 0.1: # Игнорируем микро-шумы
-                        available_vads.append((o_s, o_e))
-                        
             # СЦЕНАРИЙ 1: ИНТРО (До первого якоря)
-            if i == 0 and available_vads:
-                # В интро текст прижимается к первому якорю (вправо)
-                # Берем только последний VAD-остров перед якорем, чтобы избежать шума зала на 0-й секунде
-                target_vad = available_vads[-1]
-                t_start, t_end = target_vad[0], target_vad[1]
+            # V8.5: Полный отказ от VAD в интро! Математический отсчет назад.
+            if i == 0:
+                needed_dur = sum((get_phonetic_bounds(words[k]["clean_text"], words[k]["line_break"])[0] + 
+                                  get_phonetic_bounds(words[k]["clean_text"], words[k]["line_break"])[1]) / 2 
+                                 for k in range(i, j))
+                pauses_dur = calculate_line_breaks_pause(words, i, j)
+                total_needed = needed_dur + pauses_dur
+                
+                t_start = anchor_next_start - total_needed - 0.05
+                t_start = max(0.0, t_start)
+                t_end = anchor_next_start - 0.05
                 
             # СЦЕНАРИЙ 2: АУТРО (После последнего якоря)
-            elif j == n and available_vads:
-                # В аутро текст должен лечь на первый вокальный остров после якоря (Island Hopping)
-                target_vad = available_vads[0]
-                t_start, t_end = target_vad[0], target_vad[1]
+            elif j == n:
+                # В аутро прыгаем на последний вокальный остров
+                target_vad = None
+                for vs, ve in vad_intervals:
+                    if vs >= anchor_prev_end + 0.05:
+                        target_vad = (vs, ve)
+                        break
                 
+                if target_vad:
+                    t_start = target_vad[0]
+                    t_end = target_vad[1]
+                else:
+                    t_start = anchor_prev_end + 0.05
+                    t_end = audio_duration
+                    
             # СЦЕНАРИЙ 3: ДЫРА В СЕРЕДИНЕ (Между якорями)
             else:
+                available_vads = []
+                for vs, ve in vad_intervals:
+                    if ve > anchor_prev_end + 0.05 and vs < anchor_next_start - 0.05:
+                        o_s = max(anchor_prev_end + 0.05, vs)
+                        o_e = min(anchor_next_start - 0.05, ve)
+                        if o_e - o_s > 0.1:
+                            available_vads.append((o_s, o_e))
+                            
                 if available_vads:
-                    # Растягиваем слова от начала первого острова до конца последнего острова в этой дыре
                     t_start = available_vads[0][0]
                     t_end = available_vads[-1][1]
                 else:
-                    # Аварийный сценарий: VAD вообще не услышал голос в этой дыре.
-                    # Равномерно заполняем пространство между якорями.
                     t_start = anchor_prev_end + 0.05
                     t_end = anchor_next_start - 0.05
 
             if t_start >= t_end:
                 t_start = max(anchor_prev_end + 0.01, t_end - 0.1)
                 
-            # ELASTIC PACKING (Резиновое распределение по весу гласных)
-            # Это решает проблему "недокрашивания" Доры
+            # ELASTIC PACKING С УЧЕТОМ ПАУЗ (Решение для "Непроизошло")
             weights = [get_vowel_weight(words[k]["clean_text"], words[k]["line_break"]) for k in range(i, j)]
             total_weight = sum(weights)
-            total_time = t_end - t_start
+            
+            # Вычитаем время, необходимое на паузы между строками
+            pauses_dur = calculate_line_breaks_pause(words, i, j)
+            available_time_for_words = max(0.1, (t_end - t_start) - pauses_dur)
             
             current_time = t_start
-            micro_gap = 0.05 # 50мс пауза между словами для дыхания плеера
+            micro_gap = 0.05
             
             for k in range(i, j):
                 w = words[k]
-                # Доля времени для этого слова (пропорционально количеству гласных)
-                word_share = (weights[k-i] / total_weight) * total_time
+                word_share = (weights[k-i] / total_weight) * available_time_for_words
                 
-                # Защита от бесконечного растягивания одного слова
                 min_p, max_p = get_phonetic_bounds(w["clean_text"], w["line_break"])
-                actual_dur = min(max(word_share, min_p), max_p * 1.5) # Позволяем растянуть до 1.5 от максимума
+                actual_dur = min(max(word_share, min_p), max_p * 1.5) 
                 
                 w["start"] = current_time
                 w["end"] = min(current_time + actual_dur, t_end)
                 
-                # Сдвигаем курсор времени
                 current_time = w["end"] + micro_gap
                 healed_count += 1
                 
+                # V8.5 ВАЖНО: Если это конец строки - принудительно делаем паузу на вдох (0.4с)
+                if w["line_break"]:
+                    current_time += 0.4
+                    
             zones_processed += 1
             i = j
         else:
             i += 1
             
     if healed_count > 0:
-        log.info(f"   🧲 [Elastic Assembly] Заполнено {zones_processed} слепых зон ({healed_count} слов).")
+        log.info(f"   🧲 [Anchor Assembly] Заполнено {zones_processed} слепых зон ({healed_count} слов).")

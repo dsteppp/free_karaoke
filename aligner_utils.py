@@ -17,9 +17,7 @@ def clean_word(word: str) -> str:
     return re.sub(r'[^\w]', '', word.lower())
 
 def prepare_text(raw_lyrics: str) -> list:
-    """
-    Разбирает сырой текст с Genius. Сохраняет флаг конца строки.
-    """
+    """Разбирает сырой текст с Genius. Сохраняет флаг конца строки."""
     log.info("📝 [Utils] Подготовка эталонного текста...")
     if not raw_lyrics: 
         return []
@@ -65,14 +63,13 @@ def count_vowels(word: str) -> int:
 
 def check_sdr_sanity(words: list, start_idx: int, end_idx: int, duration_sec: float, is_same_line: bool = False) -> tuple:
     """
-    SDR-Guard (Syllable Delivery Rate) v8.4.
+    SDR-Guard (Syllable Delivery Rate) v8.5.
     Проверяет, реально ли человеку спеть указанные слова за указанное время.
-    Работает тихо, без спама в логи.
     """
     if duration_sec <= 0:
         return False, 999.0
         
-    # Защита от разрыва одной строки огромной паузой (Убивает галлюцинации в интро)
+    # Защита от разрыва одной строки огромной паузой
     if is_same_line and duration_sec > 2.5:
         return False, 0.0
 
@@ -85,9 +82,7 @@ def check_sdr_sanity(words: list, start_idx: int, end_idx: int, duration_sec: fl
     return is_sane, sdr
 
 def get_vowel_weight(word: str, is_line_end: bool = False) -> float:
-    """
-    Рассчитывает "фонетический вес" слова.
-    """
+    """Рассчитывает 'фонетический вес' слова."""
     vowels = "аеёиоуыэюяaeiouy"
     base_weight = 0.5
     for char in word.lower():
@@ -102,9 +97,7 @@ def get_vowel_weight(word: str, is_line_end: bool = False) -> float:
     return base_weight
 
 def get_phonetic_bounds(word: str, is_line_end: bool = False) -> tuple:
-    """
-    Возвращает физиологический предел длительности слова (min_dur, max_dur).
-    """
+    """Возвращает физиологический предел длительности слова (min_dur, max_dur)."""
     weight = get_vowel_weight(word, is_line_end)
     min_dur = max(0.05, weight * 0.15)
     max_dur = weight * 0.8 + 0.5
@@ -123,10 +116,22 @@ def calculate_overlap(s1: float, e1: float, intervals: list) -> float:
             overlap += (o_e - o_s)
     return overlap
 
+def calculate_line_breaks_pause(words: list, start_idx: int, end_idx: int) -> float:
+    """
+    V8.5: Вычисляет, сколько времени нужно заложить на паузы между строками.
+    (Для решения проблемы трека 'Непроизошло' на 2:22).
+    Возвращает суммарную длительность пауз в секундах.
+    """
+    line_breaks_count = 0
+    for k in range(start_idx, end_idx):
+        if words[k]["line_break"]:
+            line_breaks_count += 1
+            
+    # За каждую смену строки закладываем 0.4 секунды паузы на вдох
+    return line_breaks_count * 0.4
+
 def evaluate_alignment_quality(words: list, vad_intervals: list) -> float:
-    """
-    Оценивает качество таймингов. Выдает только сухую статистику.
-    """
+    """Оценивает качество таймингов. Выдает сухую статистику."""
     log.info("📊 [QA Evaluator] Анализ итогового качества таймингов...")
     if not words: 
         return 0.0

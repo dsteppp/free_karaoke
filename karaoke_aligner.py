@@ -14,8 +14,8 @@ log = get_logger("aligner")
 
 class KaraokeAligner:
     """
-    Neural Sequence Paradigm (V8.4 - Elastic Clusters)
-    Абсолютная защита от орфанных якорей. Резиновое распределение слепых зон.
+    Neural Sequence Paradigm (V8.5 - Anchor-Centric)
+    Строгая синхронизация от якорей. Асимметричный VAD. Умные паузы.
     """
     
     def __init__(self, model_name="medium"):
@@ -32,7 +32,7 @@ class KaraokeAligner:
         self._track_stem = os.path.basename(output_json_path).replace("_(Karaoke Lyrics).json", "")
         
         log.info("=" * 60)
-        log.info(f"🚀 Aligner СТАРТ (V8.4 Elastic Clusters): {self._track_stem}")
+        log.info(f"🚀 Aligner СТАРТ (V8.5 Anchor-Centric): {self._track_stem}")
         
         # 1. Подготовка текста
         canon_words = prepare_text(raw_lyrics)
@@ -82,10 +82,10 @@ class KaraokeAligner:
             # 4. ФИЛЬТР №1: Очистка галлюцинаций
             heard_words = filter_whisper_hallucinations(raw_heard_words, vad_intervals)
 
-            # 5. Оркестратор (Cluster Filter + Elastic VAD)
+            # 5. Оркестратор (Anchor-Centric Assembly)
             canon_words = execute_sequence_matching(canon_words, heard_words, vad_intervals, audio_duration)
             
-            # 6. Физический Контроль (Мягкий Магнит VAD)
+            # 6. Физический Контроль (Асимметричный Магнит VAD)
             log.info("🛡️ [Physics Check] Финальная шлифовка таймингов...")
             shifted_count = 0
             for w in canon_words:
@@ -98,7 +98,7 @@ class KaraokeAligner:
                     w["end"] = w["start"] + 0.1
                     
             if shifted_count > 0:
-                log.info(f"   🧲 [VAD-Magnet] Сдвинуто к голосу слов: {shifted_count}")
+                log.info(f"   🧲 [VAD-Magnet] Сдвинуто/Обрезано слов: {shifted_count}")
                     
             # 7. Устранение нахлестов с микро-паузами
             self._resolve_overlaps(canon_words)
@@ -132,7 +132,7 @@ class KaraokeAligner:
         with open(output_json_path, "w", encoding="utf-8") as f:
             json.dump(final_json, f, ensure_ascii=False, indent=2)
 
-        dump_debug("Neural_Matched_V8.4", final_json, self._track_stem)
+        dump_debug("Neural_Matched_V8.5", final_json, self._track_stem)
         log.info(f"✅ Aligner УСПЕШНО ЗАВЕРШЕН → {output_json_path}")
         log.info("=" * 60)
         

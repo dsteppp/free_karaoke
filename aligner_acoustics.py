@@ -7,7 +7,7 @@ log = get_logger("aligner_acoustics")
 def get_vocal_intervals(audio_data: np.ndarray, sr: int, top_db: float = 35.0) -> list:
     """
     Сканирует изолированный вокальный стем и возвращает точные интервалы звука.
-    Использует RMS энергию. Минимальный лог.
+    Использует RMS энергию. Сводный лог.
     """
     log.info("🎙️ [Acoustics] Сканирование вокального стема (VAD Radar)...")
     
@@ -33,7 +33,7 @@ def get_vocal_intervals(audio_data: np.ndarray, sr: int, top_db: float = 35.0) -
 
 def filter_whisper_hallucinations(heard_words: list, vad_intervals: list) -> list:
     """
-    ФИЛЬТР №1: Удаляет мусор и галлюцинации Whisper. Сводный лог.
+    ФИЛЬТР №1: Удаляет мусор и галлюцинации Whisper.
     """
     log.info("🧹 [VAD Filter] Старт очистки галлюцинаций Whisper...")
     cleaned_words = []
@@ -71,9 +71,9 @@ def filter_whisper_hallucinations(heard_words: list, vad_intervals: list) -> lis
 
 def constrain_to_vad(start: float, end: float, vad_intervals: list, max_shift_sec: float = 1.5) -> tuple:
     """
-    V8.4 Физический ограничитель без спама в логи.
-    Обрезает хвосты слов или мягко притягивает их к голосу.
-    Возвращает (new_start, new_end, was_shifted_flag).
+    V8.5 Асимметричный Физический Ограничитель.
+    НИКОГДА не тянет слова влево (в прошлое), чтобы не красить текст на вдохах.
+    Обрезает хвосты или толкает слова вправо (в будущее) к началу вокала.
     """
     if not vad_intervals:
         return start, end, False
@@ -81,14 +81,25 @@ def constrain_to_vad(start: float, end: float, vad_intervals: list, max_shift_se
     valid_starts = []
     valid_ends = []
     
+    # 1. Слово пересекается с VAD (Режим Ножниц)
     for vs, ve in vad_intervals:
         if start <= ve and end >= vs:
+            # max(start, vs) гарантирует, что start никогда не уменьшится (не уйдет влево)
             valid_starts.append(max(start, vs))
+            # min(end, ve) обрезает хвост, висящий в тишине
             valid_ends.append(min(end, ve))
             
     if valid_starts and valid_ends:
-        return min(valid_starts), max(valid_ends), True
+        new_s = min(valid_starts)
+        new_e = max(valid_ends)
+        # Защита от схлопывания слова в 0
+        if new_e - new_s < 0.05:
+            new_e = new_s + 0.1
+            
+        was_shifted = (abs(new_s - start) > 0.01 or abs(new_e - end) > 0.01)
+        return new_s, new_e, was_shifted
         
+    # 2. Слово полностью вне VAD (Лежит в тишине)
     closest_dist = float('inf')
     best_s = start
     best_e = end
@@ -96,19 +107,20 @@ def constrain_to_vad(start: float, end: float, vad_intervals: list, max_shift_se
     
     for vs, ve in vad_intervals:
         if end < vs:
+            # Слово стоит ДО голоса. Толкаем его ВПРАВО (в будущее) к началу острова.
             dist = vs - end
             if dist < closest_dist:
                 closest_dist = dist
                 best_s = vs
                 best_e = min(vs + dur, ve)
         elif start > ve:
-            dist = start - ve
-            if dist < closest_dist:
-                closest_dist = dist
-                best_e = ve
-                best_s = max(ve - dur, vs)
+            # Слово стоит ПОСЛЕ голоса. 
+            # V8.5: Мы запрещаем тянуть его ВЛЕВО (в прошлое). 
+            # Если потянем - текст закрасится раньше звука. Оставляем на месте.
+            pass
 
-    if abs(best_s - start) <= max_shift_sec:
+    # Применяем сдвиг вправо, только если он в пределах лимита
+    if best_s != start and abs(best_s - start) <= max_shift_sec:
         return best_s, best_e, True
         
     return start, end, False
