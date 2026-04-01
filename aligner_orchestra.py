@@ -6,22 +6,22 @@ from app_logger import get_logger
 
 log = get_logger("aligner_orchestra")
 
-def execute_sequence_matching(canon_words: list, heard_words: list, vad_intervals: list, audio_duration: float) -> list:
+def execute_sequence_matching(canon_words: list, heard_words: list, vad_intervals: list, audio_duration: float, voids: list) -> list:
     """
-    V8.7: Stanza-Aware Paradigm. 
-    Жесткая иерархия: Слово -> Строка -> Абзац.
+    V8.8: Elastic Cluster Alignment + The Void Mapping.
+    Умный поиск пути с вычетом Пустот и резиновая сборка (Bungee).
     """
     log.info("=" * 50)
-    log.info("🧠 [Orchestra] Старт Молекулярной Сборки V8.7...")
+    log.info("🧠 [Orchestra] Старт Сборки V8.8 (The Void & Bungee)...")
     
     n_canon = len(canon_words)
     n_heard = len(heard_words)
     
     if n_heard == 0:
-        log.warning("   ⚠️ Транскрипт пуст. Сборка отменена.")
+        log.warning("   ⚠️ Транскрипт пуст (или полностью сожжен). Сборка отменена.")
         return canon_words
         
-    # 1. Первичное натяжение пути (Fuzzy DP)
+    # 1. Формируем пул кандидатов (совпадения > 60%)
     candidates = []
     for c_idx in range(n_canon):
         for h_idx in range(n_heard):
@@ -35,6 +35,8 @@ def execute_sequence_matching(canon_words: list, heard_words: list, vad_interval
                 })
                 
     candidates.sort(key=lambda x: x["start"])
+    
+    # 2. SDR-Guard v3: Динамическое программирование с вычетом Пустот (Effective Time)
     num_cand = len(candidates)
     dp = [c["sim"] for c in candidates]
     parent = [-1] * num_cand
@@ -46,234 +48,204 @@ def execute_sequence_matching(canon_words: list, heard_words: list, vad_interval
         
         for j in range(i - 1, -1, -1):
             prev = candidates[j]
-            if curr["c_idx"] <= prev["c_idx"]: continue
+            
+            if curr["c_idx"] <= prev["c_idx"]:
+                continue
                 
             dur = curr["start"] - prev["end"]
-            if dur < -0.1: continue
+            if dur < -0.1: 
+                continue
                 
-            is_sane = False
-            # Базовые жесткие лимиты, чтобы Whisper не сцепил начало и конец трека
-            is_same_line = (canon_words[prev["c_idx"]]["line_idx"] == canon_words[curr["c_idx"]]["line_idx"])
-            is_same_stanza = (canon_words[prev["c_idx"]]["stanza_idx"] == canon_words[curr["c_idx"]]["stanza_idx"])
+            # V8.8: Вычисляем эффективное время для певца (вычитаем стены пустот)
+            eff_dur = dur
+            for vs, ve in voids:
+                o_s = max(prev["end"], vs)
+                o_e = min(curr["start"], ve)
+                if o_e > o_s:
+                    eff_dur -= (o_e - o_s)
+            eff_dur = max(0.01, eff_dur)
             
-            if is_same_line and dur > 3.0:
-                is_sane = False
-            elif is_same_stanza and not is_same_line and dur > 6.0:
-                is_sane = False
+            is_sane = False
+            if curr["c_idx"] == prev["c_idx"] + 1:
+                is_same_line = not canon_words[prev["c_idx"]]["line_break"]
+                # Зазор не должен превышать 2.5с (эффективного времени!)
+                if is_same_line and eff_dur > 2.5:
+                    is_sane = False
+                else:
+                    is_sane = True
             else:
-                is_sane, _ = check_sdr_sanity(canon_words, prev["c_idx"] + 1, curr["c_idx"] - 1, dur, False)
+                is_sane, _ = check_sdr_sanity(canon_words, prev["c_idx"] + 1, curr["c_idx"] - 1, eff_dur, False)
                 
             if is_sane:
                 score = dp[j] + curr["sim"]
                 if score > best_score:
-                    best_score = score; best_p = j
+                    best_score = score
+                    best_p = j
                     
         dp[i] = best_score
         parent[i] = best_p
         
     if not candidates:
+        log.warning("   ⚠️ Нет ни одного валидного совпадения текста.")
         return canon_words
         
-    curr_idx = dp.index(max(dp))
+    max_idx = dp.index(max(dp))
+    curr_idx = max_idx
     raw_sequence = []
+    
     while curr_idx != -1:
         raw_sequence.append(candidates[curr_idx])
         curr_idx = parent[curr_idx]
+        
     raw_sequence.reverse()
     
-    for match in raw_sequence:
+    # 3. V8.4/8.8: Cluster Filter (Убийца галлюцинаций)
+    # Группируем якоря с учетом ЭФФЕКТИВНОГО времени (игнорируя пустоты)
+    clusters = []
+    current_cluster = []
+    
+    for i, match in enumerate(raw_sequence):
+        if not current_cluster:
+            current_cluster.append(match)
+        else:
+            prev_match = current_cluster[-1]
+            eff_diff = match["start"] - prev_match["end"]
+            
+            for vs, ve in voids:
+                o_s = max(prev_match["end"], vs)
+                o_e = min(match["start"], ve)
+                if o_e > o_s: 
+                    eff_diff -= (o_e - o_s)
+            
+            # Если в рамках эффективного пения они близки
+            if eff_diff <= 5.0:
+                current_cluster.append(match)
+            else:
+                clusters.append(current_cluster)
+                current_cluster = [match]
+                
+    if current_cluster:
+        clusters.append(current_cluster)
+        
+    # Удаляем "сиротские" кластеры (1-2 слова)
+    valid_sequence = []
+    orphans_removed = 0
+    for cluster in clusters:
+        if len(cluster) >= 3:
+            valid_sequence.extend(cluster)
+        else:
+            orphans_removed += len(cluster)
+            
+    if orphans_removed > 0:
+        log.info(f"   🗑️ [Cluster Filter] Убито сиротских якорей (галлюцинаций): {orphans_removed}")
+        
+    log.info(f"   🔗 Утверждено жестких якорей: {len(valid_sequence)}")
+    
+    for match in valid_sequence:
         cw = canon_words[match["c_idx"]]
         cw["start"] = match["start"]
         cw["end"] = match["end"]
-
-    # 2. Извлечение Законов Физики (ДНК Трека)
+        
+    # 4. Извлекаем ДНК трека
     dna = extract_rhythm_dna(canon_words)
-    
-    # 3. V8.7: Закон №1 - Целостность Строк (Эффект Домино)
-    canon_words = _enforce_line_integrity(canon_words, dna)
 
-    # 4. V8.7: Закон №2 - Целостность Абзацев (Молекулярная сборка)
-    _molecular_stanza_assembly(canon_words, vad_intervals, audio_duration, dna)
+    # 5. V8.8: Bungee Assembly (Резиновая Сборка слепых зон в обход Пустот)
+    _bungee_interpolation(canon_words, dna, voids, audio_duration)
     
-    log.info("🧠 [Orchestra] Молекулярная сборка завершена.")
+    log.info("🧠 [Orchestra] Сборка V8.8 завершена.")
     log.info("=" * 50)
     return canon_words
 
-def _enforce_line_integrity(words: list, dna: dict) -> list:
-    """
-    V8.7 Эффект Домино.
-    Если строка разорвана галлюцинацией (как у Космоса/Доры), находит ядро строки, 
-    убивает мусор и перестраивает строку монолитно.
-    """
-    lines = {}
-    for w in words:
-        lines.setdefault(w["line_idx"], []).append(w)
-        
-    healed_lines = 0
-    
-    for l_idx, line in lines.items():
-        anchors = [w for w in line if w["start"] != -1.0]
-        
-        # 1. Поиск аномалий внутри строки
-        if len(anchors) > 1:
-            clusters = []
-            curr_cluster = [anchors[0]]
-            for i in range(1, len(anchors)):
-                gap = anchors[i]["start"] - curr_cluster[-1]["end"]
-                # Если разрыв больше допустимого по ДНК -> строка разорвана!
-                if gap <= dna["max_intra_line_gap"]:
-                    curr_cluster.append(anchors[i])
-                else:
-                    clusters.append(curr_cluster)
-                    curr_cluster = [anchors[i]]
-            clusters.append(curr_cluster)
-            
-            # Убиваем галлюцинации (оставляем самый длинный/надежный кластер)
-            if len(clusters) > 1:
-                clusters.sort(key=len, reverse=True)
-                best_cluster = clusters[0]
-                for c in clusters[1:]:
-                    for w in c:
-                        w["start"] = -1.0
-                        w["end"] = -1.0
-                anchors = best_cluster
-                healed_lines += 1
+def _jump_voids(t: float, dur: float, voids: list) -> float:
+    """Перепрыгивает Стену Пустоты вперед"""
+    for v_start, v_end in voids:
+        if t < v_end and (t + dur) > v_start:
+            t = v_end + 0.05
+    return t
 
-        # 2. Эффект Домино: Восстанавливаем строку вокруг выживших якорей
-        if anchors:
-            first_a_idx = line.index(anchors[0])
-            last_a_idx = line.index(anchors[-1])
-            
-            # Строим хвосты влево от первого якоря
-            curr_end = anchors[0]["start"] - dna["micro_gap"]
-            for i in range(first_a_idx - 1, -1, -1):
-                w = line[i]
-                dur = calculate_word_duration(w["clean_text"], dna, w["line_break"])
-                w["end"] = curr_end
-                w["start"] = curr_end - dur
-                curr_end = w["start"] - dna["micro_gap"]
-                
-            # Строим хвосты вправо от последнего якоря
-            curr_start = anchors[-1]["end"] + dna["micro_gap"]
-            for i in range(last_a_idx + 1, len(line)):
-                w = line[i]
-                dur = calculate_word_duration(w["clean_text"], dna, w["line_break"])
-                w["start"] = curr_start
-                w["end"] = curr_start + dur
-                curr_start = w["end"] + dna["micro_gap"]
-                
-            # Заполняем микро-дыры между якорями внутри кластера
-            for i in range(len(anchors) - 1):
-                w1 = anchors[i]
-                w2 = anchors[i+1]
-                idx1 = line.index(w1)
-                idx2 = line.index(w2)
-                if idx2 - idx1 > 1:
-                    missing_count = idx2 - idx1 - 1
-                    available = max(0.01, w2["start"] - w1["end"])
-                    step = available / (missing_count + 1)
-                    curr_s = w1["end"]
-                    for k in range(idx1 + 1, idx2):
-                        line[k]["start"] = curr_s + step * 0.1
-                        dur = min(calculate_word_duration(line[k]["clean_text"], dna, line[k]["line_break"]), step * 0.9)
-                        line[k]["end"] = line[k]["start"] + dur
-                        curr_s += step
+def _jump_voids_backwards(t: float, dur: float, voids: list) -> float:
+    """Перепрыгивает Стену Пустоты назад"""
+    for v_start, v_end in reversed(voids):
+        if (t - dur) < v_end and t > v_start:
+            t = v_start - 0.05
+    return t
 
-    if healed_lines > 0:
-        log.info(f"   ⚕️ [Line Integrity] Эффект Домино: вылечено разорванных строк: {healed_lines}")
-        
-    return words
-
-def _molecular_stanza_assembly(words: list, vad_intervals: list, audio_duration: float, dna: dict):
+def _bungee_interpolation(words: list, dna: dict, voids: list, audio_duration: float):
     """
-    V8.7 Целостность Абзацев.
-    Не дает проигрышу разорвать абзац пополам. Слепые зоны собираются блоками.
+    V8.8 Резиновая Сборка.
+    Заливает слепые зоны. Прижимает слова к нужным абзацам, пружиня от Стен Пустот (VOIDs).
     """
-    stanzas = {}
-    for w in words:
-        stanzas.setdefault(w["stanza_idx"], []).append(w)
-        
+    i = 0
+    n = len(words)
     blocks_built = 0
-    stanzas_healed = 0
     
-    for s_idx, stanza in stanzas.items():
-        anchored_words = [w for w in stanza if w["start"] != -1.0]
-        
-        # СЦЕНАРИЙ А: Абзац полностью слепой ("Непроизошло" 2:22)
-        if not anchored_words:
-            block_dur = 0
-            for w in stanza:
-                block_dur += calculate_word_duration(w["clean_text"], dna, w["line_break"])
-                block_dur += dna["macro_gap"] if w["line_break"] and w != stanza[-1] else dna["micro_gap"]
-                    
-            prev_end = 0.0
-            first_idx = words.index(stanza[0])
-            if first_idx > 0:
-                prev_end = words[first_idx - 1]["end"]
+    while i < n:
+        if words[i]["start"] == -1.0:
+            j = i
+            while j < n and words[j]["start"] == -1.0:
+                j += 1
                 
-            next_start = audio_duration
-            last_idx = words.index(stanza[-1])
-            if last_idx < len(words) - 1:
-                for n_w in words[last_idx + 1:]:
-                    if n_w["start"] != -1.0:
-                        next_start = n_w["start"]
-                        break
-                        
-            # Ищем плотный вокал внутри этой большой дыры
-            start_time = prev_end + dna["macro_gap"]
-            for vs, ve in vad_intervals:
-                if vs >= prev_end + 0.1 and ve <= next_start - 0.1 and (ve - vs) >= block_dur * 0.4:
-                    start_time = vs
-                    break
+            prev_w = words[i-1] if i > 0 else None
+            next_w = words[j] if j < n else None
             
-            # Ставим кирпич абзаца
-            curr_time = start_time
-            for w in stanza:
-                w["start"] = curr_time
-                dur = calculate_word_duration(w["clean_text"], dna, w["line_break"])
-                if curr_time + dur > next_start:
-                    curr_time = max(prev_end, next_start - dur - 0.1)
-                w["end"] = curr_time + dur
-                curr_time = w["end"] + dna["micro_gap"]
-                if w["line_break"]:
-                    curr_time += dna["macro_gap"]
+            t_prev = prev_w["end"] if prev_w else 0.0
+            t_next = next_w["start"] if next_w else audio_duration
+            
+            left_affinity = False
+            right_affinity = False
+            
+            # Определяем, к какому абзацу магнитить потерянный текст
+            if prev_w and all(w["stanza_idx"] == prev_w["stanza_idx"] for w in words[i:j]):
+                left_affinity = True
+            elif next_w and all(w["stanza_idx"] == next_w["stanza_idx"] for w in words[i:j]):
+                right_affinity = True
+                
+            # Интро всегда магнитим вправо (к началу пения)
+            if i == 0:
+                right_affinity = True
+                left_affinity = False
+                
+            if right_affinity and not left_affinity:
+                # Строим ЗАДОМ НАПЕРЕД от правого якоря (Стягиваем к Аутро)
+                gap = dna["macro_gap"] if j > 0 and words[j-1]["line_break"] else dna["micro_gap"]
+                curr_t = t_next - gap
+                
+                for k in range(j-1, i-1, -1):
+                    w = words[k]
+                    dur = calculate_word_duration(w["clean_text"], dna, w["line_break"])
+                    
+                    curr_t = _jump_voids_backwards(curr_t, dur, voids)
+                    if curr_t - dur < t_prev:
+                        curr_t = t_prev + dur + 0.05
+                        
+                    w["end"] = curr_t
+                    w["start"] = curr_t - dur
+                    
+                    next_gap = dna["macro_gap"] if k > 0 and words[k-1]["line_break"] else dna["micro_gap"]
+                    curr_t = w["start"] - next_gap
+            else:
+                # Строим ВПЕРЕД от левого якоря
+                gap = dna["macro_gap"] if prev_w and prev_w["line_break"] else dna["micro_gap"]
+                curr_t = t_prev + gap
+                
+                for k in range(i, j):
+                    w = words[k]
+                    dur = calculate_word_duration(w["clean_text"], dna, w["line_break"])
+                    
+                    curr_t = _jump_voids(curr_t, dur, voids)
+                    if curr_t + dur > t_next:
+                        curr_t = max(t_prev, t_next - dur - 0.05)
+                        
+                    w["start"] = curr_t
+                    w["end"] = curr_t + dur
+                    
+                    next_gap = dna["macro_gap"] if w["line_break"] else dna["micro_gap"]
+                    curr_t = w["end"] + next_gap
                     
             blocks_built += 1
-            
-        # СЦЕНАРИЙ Б: Часть абзаца есть, часть пропала ("Вот и всё" проигрыш)
+            i = j
         else:
-            lines = {}
-            for w in stanza:
-                lines.setdefault(w["line_idx"], []).append(w)
-            line_indices = sorted(list(lines.keys()))
+            i += 1
             
-            # Проход ВПЕРЕД: приклеиваем пропавшие строки к предыдущим подтвержденным
-            for i in range(len(line_indices) - 1):
-                curr_l = lines[line_indices[i]]
-                next_l = lines[line_indices[i+1]]
-                
-                if curr_l[-1]["start"] != -1.0 and next_l[0]["start"] == -1.0:
-                    curr_time = curr_l[-1]["end"] + dna["macro_gap"]
-                    for w in next_l:
-                        w["start"] = curr_time
-                        dur = calculate_word_duration(w["clean_text"], dna, w["line_break"])
-                        w["end"] = curr_time + dur
-                        curr_time = w["end"] + dna["micro_gap"]
-                    stanzas_healed += 1
-                        
-            # Проход НАЗАД: приклеиваем пропавшие строки к следующим подтвержденным
-            for i in range(len(line_indices) - 1, 0, -1):
-                curr_l = lines[line_indices[i]]
-                prev_l = lines[line_indices[i-1]]
-                
-                if curr_l[0]["start"] != -1.0 and prev_l[-1]["start"] == -1.0:
-                    curr_time = curr_l[0]["start"] - dna["macro_gap"]
-                    for w in reversed(prev_l):
-                        dur = calculate_word_duration(w["clean_text"], dna, w["line_break"])
-                        w["end"] = curr_time
-                        w["start"] = curr_time - dur
-                        curr_time = w["start"] - dna["micro_gap"]
-                    stanzas_healed += 1
-
-    if blocks_built > 0 or stanzas_healed > 0:
-        log.info(f"   🧱 [Stanza Assembly] Собрано слепых абзацев: {blocks_built}. Приклеено потерянных строк: {stanzas_healed}")
+    if blocks_built > 0:
+        log.info(f"   🧱 [Bungee Assembly] Резинка стянула {blocks_built} слепых зон в обход Стен Пустот.")
