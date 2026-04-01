@@ -259,14 +259,14 @@ def get_vad_capacity(t_start: float, t_end: float, combined_vad: list) -> float:
     """Сколько физического голоса есть в "Дыре"."""
     return calculate_overlap(t_start, t_end, combined_vad)
 
-# ─── ДЕТЕКТОР ЛЖИ И АБСОЛЮТНЫЙ СУДЬЯ (V6.1) ──────────────────────────────────
+# ─── ДЕТЕКТОР ЛЖИ И АБСОЛЮТНЫЙ СУДЬЯ (V6.2) ──────────────────────────────────
 
 def crosscheck_oracle(draft_text: str, t_start: float, t_end: float, blind_words: list) -> bool:
     """
-    V6.1: Детектор Лжи (The Crosscheck).
+    V6.2: Детектор Лжи (The Crosscheck).
     Сравнивает черновик (align) со Слепым Оракулом (transcribe).
+    Жестко бракует фальстарты.
     """
-    # Собираем то, что услышал Оракул в этом окне (+- 0.5с на погрешность)
     oracle_chunk = [bw["clean"] for bw in blind_words if bw["end"] >= t_start - 0.5 and bw["start"] <= t_end + 0.5]
     oracle_text = "".join(oracle_chunk)
     
@@ -274,22 +274,23 @@ def crosscheck_oracle(draft_text: str, t_start: float, t_end: float, blind_words
     if not clean_draft: return True
     
     if not oracle_text:
-        # Оракул слышит тишину (Инструментал/шум).
+        # V6.2 ЗАЩИТА ИНТРО: Если черновик упал в самое начало (< 1.5s), и Оракул там глух - бракуем мгновенно!
+        if t_start < 1.5:
+            return False 
+        
+        # В середине трека прощаем только очень короткие обрывки (< 1.5s)
         if t_end - t_start > 1.5: 
-            return False # Явная галлюцинация на длинном отрезке
-        return True # Короткий огрызок, Оракул мог не услышать, прощаем
+            return False 
+        return True 
         
     score = rapidfuzz.fuzz.partial_ratio(clean_draft, oracle_text)
-    
-    # Порог 40: достаточно низкий, чтобы простить огрехи Whisper (дисторшн/эхо), 
-    # но достаточный, чтобы отсечь чужой текст (разговор с залом Монеточки).
     return score >= 40
 
 def evaluate_alignment_quality(words: list, strong_vad: list, weak_vad: list, curtains: list) -> float:
     """
-    V6.1: АБСОЛЮТНЫЙ СУДЬЯ.
-    Оценивает выравнивание по строгим правилам, но с VAD-индульгенцией.
-    Выводит детальную телеметрию в главную консоль.
+    V6.2: АБСОЛЮТНЫЙ СУДЬЯ.
+    Оценивает выравнивание по строгим правилам.
+    Добавлен Смертный Приговор за Фальстарт.
     """
     score = 100.0
     total = len(words)
@@ -300,6 +301,7 @@ def evaluate_alignment_quality(words: list, strong_vad: list, weak_vad: list, cu
     singularities = 0
     overstretched = 0
     stanza_tears = 0
+    false_starts = 0 # V6.2 Телеметрия
 
     combined_vad = sorted(strong_vad + weak_vad, key=lambda x: x[0])
 
@@ -314,16 +316,21 @@ def evaluate_alignment_quality(words: list, strong_vad: list, weak_vad: list, cu
         if dur < 0.06:
             singularities += 1
             
-        # 2. Галлюцинация в тишине (меньше 10% слова опирается на голос)
+        # 2. Галлюцинация в тишине
         overlap = calculate_overlap(w["start"], w["end"], combined_vad)
         if dur > 0 and (overlap / dur) < 0.1:
             hallucinations += 1
             
+        # V6.2: СМЕРТНЫЙ ПРИГОВОР ЗА ФАЛЬСТАРТ (Защита интро от Лома)
+        if w["start"] < 2.0:
+            # Если слово поставлено в самое начало, но там нет Strong VAD (или слово не попадает в VAD хотя бы на половину)
+            s_overlap = calculate_overlap(w["start"], w["end"], strong_vad)
+            if s_overlap / dur < 0.5:
+                false_starts += 1
+            
         # 3. Перерастяжение (Резиновый эффект)
         _, max_dur = get_phonetic_bounds(w["clean_text"], w["line_break"])
         if dur > max_dur * 1.5:
-            # V6.1 ИНДУЛЬГЕНЦИЯ: Если слово растянуто, но 80% слова лежит на Strong VAD (Красная зона),
-            # значит певец реально тянет гласную ноту (как в "Непроизошло"). Мы это прощаем!
             strong_overlap = calculate_overlap(w["start"], w["end"], strong_vad)
             if dur > 0 and (strong_overlap / dur) < 0.8:
                 overstretched += 1
@@ -334,9 +341,7 @@ def evaluate_alignment_quality(words: list, strong_vad: list, weak_vad: list, cu
             if next_w["start"] != -1.0 and w["stanza_num"] == next_w["stanza_num"]:
                 gap = next_w["start"] - w["end"]
                 
-                # Если пауза > 5 секунд внутри одной строфы - это разрыв!
                 if gap > 5.0:
-                    # ИНДУЛЬГЕНЦИЯ: Если между словами Железный Занавес - прощаем!
                     has_curtain = any(c_s >= w["end"] and c_e <= next_w["start"] for c_s, c_e in curtains)
                     if not has_curtain:
                         stanza_tears += 1
@@ -345,10 +350,11 @@ def evaluate_alignment_quality(words: list, strong_vad: list, weak_vad: list, cu
     penalty_unresolved = unresolved * 2.0
     penalty_hallucinations = hallucinations * 5.0
     penalty_singularities = singularities * 3.0
-    penalty_overstretch = overstretched * 1.0 # Легкий штраф за резину вне голоса
+    penalty_overstretch = overstretched * 1.0 
     penalty_tears = stanza_tears * 10.0
+    penalty_false_starts = false_starts * 50.0 # Огромный штраф за натягивание на барабаны
 
-    score -= (penalty_unresolved + penalty_hallucinations + penalty_singularities + penalty_overstretch + penalty_tears)
+    score -= (penalty_unresolved + penalty_hallucinations + penalty_singularities + penalty_overstretch + penalty_tears + penalty_false_starts)
 
     log.info(f"⚖️ [Absolute Judge] Телеметрия Штрафов:")
     log.info(f"   -> Нераспределенные слова ({unresolved}): -{penalty_unresolved:.1f}")
@@ -356,6 +362,8 @@ def evaluate_alignment_quality(words: list, strong_vad: list, weak_vad: list, cu
     log.info(f"   -> Сингулярности ({singularities}): -{penalty_singularities:.1f}")
     log.info(f"   -> Резина вне голоса ({overstretched}): -{penalty_overstretch:.1f}")
     log.info(f"   -> Разрывы Строф ({stanza_tears}): -{penalty_tears:.1f}")
+    if false_starts > 0:
+        log.info(f"   -> ФАЛЬСТАРТЫ ВО ВСТУПЛЕНИИ ({false_starts}): -{penalty_false_starts:.1f}")
     log.info(f"⚖️ [Absolute Judge] ИТОГОВЫЙ БАЛЛ ТРЕКА: {max(0.0, score):.1f} / 100.0")
 
     return max(0.0, score)

@@ -11,7 +11,7 @@ import numpy as np
 
 from app_logger import get_logger, dump_debug
 
-# ─── ИМПОРТЫ ИЗ НАШЕЙ НОВОЙ МОДУЛЬНОЙ СИСТЕМЫ (SYMPHONY V6.1) ───────────────
+# ─── ИМПОРТЫ ИЗ НАШЕЙ НОВОЙ МОДУЛЬНОЙ СИСТЕМЫ (SYMPHONY V6.2) ───────────────
 from aligner_utils import (
     detect_language, prepare_text, get_vowel_weight, 
     get_phonetic_bounds, get_vad_capacity,
@@ -30,8 +30,8 @@ log = get_logger("aligner")
 
 class KaraokeAligner:
     """
-    Главный Дирижер "Symphony V6.1: Dual-Engine Crosscheck".
-    Черновик (Align) + Детектор Лжи (Transcribe) = Истина.
+    Главный Дирижер "Symphony V6.2: The Void Returns".
+    Черновик (Align) + Детектор Лжи (Transcribe) + Броня от Слепоты.
     """
 
     def __init__(self, model_name="medium"):
@@ -45,13 +45,14 @@ class KaraokeAligner:
         self._track_stem = ""
         self.all_curtains = [] 
         self.blind_words = [] # Слепок реальности (Оракул)
+        self.oracle_blind = False # V6.2: Страховка от полной слепоты Оракула
 
-    # ─── ЭТАП 2 и 3: ДВОЙНОЙ ДВИЖОК (V6.1: DUAL-ENGINE MATRIX) ──────────────────
+    # ─── ЭТАП 2 и 3: ДВОЙНОЙ ДВИЖОК (V6.2: DUAL-ENGINE MATRIX) ──────────────────
 
     def _dual_engine_matrix(self, model, audio_data: np.ndarray, canon_words: list, lang: str):
         """
-        V6.1: Строит черновик таймингов через align, а затем пропускает
-        каждую строку через детектор лжи (transcribe).
+        V6.2: Строит черновик, проверяет Детектором Лжи.
+        Если Оракул бракует > 85% трека - включается Страховка от слепоты.
         """
         log.info("🤖 [Dual-Engine] Шаг 1: Генерация Черновика (model.align)...")
         text_for_whisper = " ".join([w["word"] for w in canon_words])
@@ -60,20 +61,22 @@ class KaraokeAligner:
             res = model.align(audio_data, text_for_whisper, language=lang)
             sw_words = res.all_words()
             
-            # Накладываем черновик на наш каноничный текст
             c_idx = 0
             for sw in sw_words:
                 cl = re.sub(r'[^\w]', '', sw.word.lower())
                 if not cl: continue
                 for j in range(c_idx, min(c_idx + 4, len(canon_words))):
                     if canon_words[j]["clean_text"] == cl:
-                        if sw.end - sw.start >= 0.05: # Защита от мусорных микро-таймингов
+                        if sw.end - sw.start >= 0.05: 
                             canon_words[j]["start"] = sw.start
                             canon_words[j]["end"] = sw.end
                         c_idx = j + 1
                         break
         except Exception as e:
             log.warning(f"   -> Ошибка построения черновика: {e}")
+
+        # V6.2: Делаем бэкап черновика до того, как Оракул начнет его сносить
+        draft_backup = copy.deepcopy(canon_words)
 
         log.info("🔮 [Oracle] Шаг 2: Слепой Оракул (model.transcribe)...")
         result = model.transcribe(audio_data, language=lang)
@@ -99,7 +102,6 @@ class KaraokeAligner:
             t_e = canon_words[valid_w[-1]]["end"]
             draft_text = " ".join([canon_words[i]["clean_text"] for i in w_indices])
             
-            # Пропускаем строку Черновика через Детектор Лжи
             is_truth = crosscheck_oracle(draft_text, t_s, t_e, self.blind_words)
             
             if is_truth:
@@ -115,7 +117,20 @@ class KaraokeAligner:
                     
         log.info(f"   -> Dual-Engine зацементировал {anchored_count}/{len(canon_words)} слов.")
 
-    # ─── ЭТАП 5: ДВУНАПРАВЛЕННЫЙ РАДАР (V6.1) ───────────────────────────────────
+        # 🚨 V6.2 СТРАХОВКА ОТ СЛЕПОТЫ (BLINDNESS FAILSAFE)
+        if len(canon_words) > 0 and (anchored_count / len(canon_words)) < 0.15:
+            log.warning("   ⚠️ СТРАХОВКА ОТ СЛЕПОТЫ (BLINDNESS FAILSAFE) АКТИВИРОВАНА!")
+            log.warning(f"   -> Оракул подтвердил слишком мало слов. Аудио нечитаемо для Whisper.transcribe.")
+            log.warning("   -> Восстанавливаем сырой черновик (model.align) для предотвращения коллапса Арены.")
+            self.oracle_blind = True
+            
+            for i in range(len(canon_words)):
+                canon_words[i]["start"] = draft_backup[i]["start"]
+                canon_words[i]["end"] = draft_backup[i]["end"]
+                # Оставляем их разблокированными, чтобы Радар мог снести интро-галлюцинации
+                canon_words[i]["locked"] = False 
+
+    # ─── ЭТАП 5: ДВУНАПРАВЛЕННЫЙ РАДАР (V6.2) ───────────────────────────────────
 
     def _bi_directional_radar(self, words: list, empirical_data: dict):
         log.info("🔄 [Radar] Двунаправленный аудит аномалий...")
@@ -150,32 +165,35 @@ class KaraokeAligner:
                                 words[k]["locked"] = False
                         break 
 
-    # ─── ЭТАП 8: ВЕЛИКАЯ СВЕРКА (THE GRAND VERIFICATION V6.1) ───────────────────
+    # ─── ЭТАП 8: ВЕЛИКАЯ СВЕРКА (THE GRAND VERIFICATION V6.2) ───────────────────
 
     def _grand_verification(self, words: list, audio_duration: float) -> int:
         log.info("👁️ [Verification] ВЕЛИКАЯ СВЕРКА со Слепым Оракулом...")
         braks = 0
         
-        # 1. Forward Check (Используем ту же логику Детектора Лжи!)
-        lines = {}
-        for i, w in enumerate(words):
-            if w["start"] != -1: lines.setdefault(w["line_num"], []).append(i)
-            
-        for l_num, idxs in lines.items():
-            l_s = words[idxs[0]]["start"]
-            l_e = words[idxs[-1]]["end"]
-            my_text = " ".join([words[i]["clean_text"] for i in idxs])
-            
-            is_truth = crosscheck_oracle(my_text, l_s, l_e, self.blind_words)
-            
-            if not is_truth:
-                log.debug(f"   -> [L->R] Строка {l_num} ({l_s:.1f}s) забракована Оракулом!")
-                for i in idxs: 
-                    words[i]["start"] = words[i]["end"] = -1.0
-                    words[i]["locked"] = False
-                braks += 1
+        # 1. Forward Check (Проверяем только если Оракул не ослеп!)
+        if not self.oracle_blind:
+            lines = {}
+            for i, w in enumerate(words):
+                if w["start"] != -1: lines.setdefault(w["line_num"], []).append(i)
+                
+            for l_num, idxs in lines.items():
+                l_s = words[idxs[0]]["start"]
+                l_e = words[idxs[-1]]["end"]
+                my_text = " ".join([words[i]["clean_text"] for i in idxs])
+                
+                is_truth = crosscheck_oracle(my_text, l_s, l_e, self.blind_words)
+                
+                if not is_truth:
+                    log.debug(f"   -> [L->R] Строка {l_num} ({l_s:.1f}s) забракована Оракулом!")
+                    for i in idxs: 
+                        words[i]["start"] = words[i]["end"] = -1.0
+                        words[i]["locked"] = False
+                    braks += 1
+        else:
+            log.debug("   -> [L->R] Оракул ослеп на этом треке. Прямая сверка отключена.")
 
-        # 2. Reverse Check (Эффект ZOLOTO: защита аутро)
+        # 2. Reverse Check (Эффект ZOLOTO: защита аутро - работает всегда)
         last_word_time = 0.0
         for w in reversed(words):
             if w["start"] != -1:
@@ -234,7 +252,6 @@ class KaraokeAligner:
         
         if winner:
             for k, t in enumerate(winner.timings):
-                # Прогоняем через Железный Занавес (Бульдозер)
                 mapped_s, mapped_e = enforce_curtains(t["start"], t["end"], self.all_curtains)
                 words[s_idx + k]["start"] = mapped_s
                 words[s_idx + k]["end"] = mapped_e
@@ -242,7 +259,6 @@ class KaraokeAligner:
             log.warning(f"   ⚠️ Арена не выявила победителя для [{s_idx}-{e_idx}].")
 
     def _local_snapping(self, words: list, empirical_data: dict):
-        """V6.0: Магнитная доводка остатков. Больше не раскидывает мусор по треку."""
         log.info("🧲 [Magnet] Локальная Магнитная Доводка остатков...")
         n = len(words)
         bg = min(empirical_data.get("avg_breath_gap", 0.5), 1.0) if empirical_data else 0.4
@@ -286,7 +302,7 @@ class KaraokeAligner:
         self._track_stem = os.path.basename(output_json_path).replace("_(Karaoke Lyrics).json", "")
 
         log.info("=" * 50)
-        log.info(f"Aligner СТАРТ (Symphony V6.1: Dual-Engine Crosscheck): {self._track_stem}")
+        log.info(f"Aligner СТАРТ (Symphony V6.2: The Void Returns): {self._track_stem}")
         
         canon_words = prepare_text(raw_lyrics)
         if not canon_words:
@@ -300,14 +316,14 @@ class KaraokeAligner:
             audio_data_raw, sr = librosa.load(vocals_path, sr=16000, mono=True)
             audio_duration = len(audio_data_raw) / sr
             
-            # ЭТАП 1: Истинная Вокальная Карта
+            # ЭТАП 1: Истинная Вокальная Карта и ЖЕЛЕЗНЫЕ ЗАНАВЕСЫ
             strong_vad, weak_vad, iron_curtains, onsets, is_harmonic_fn = get_acoustic_maps(audio_data_raw, sr)
             self.all_curtains = sorted(iron_curtains, key=lambda x: x[0])
             combined_vad = sorted(strong_vad + weak_vad, key=lambda x: x[0])
 
             model = stable_whisper.load_model(self.model_name, download_root=self.whisper_model_dir, device=self.device)
 
-            # ЭТАП 2 и 3: Двойной Движок (Черновик + Детектор Лжи)
+            # ЭТАП 2 и 3: Двойной Движок + Страховка
             self._dual_engine_matrix(model, audio_data_raw, canon_words, lang)
 
             # ЭТАП 4: Паспорт Песни
@@ -315,7 +331,7 @@ class KaraokeAligner:
 
             # ЭТАП 9: ЦИКЛ КОВКИ (The Cyclic Forge)
             history_hashes = set()
-            for iteration in range(4): # Максимум 4 круга ковки
+            for iteration in range(4): 
                 
                 # ЭТАП 5: Двунаправленный Радар
                 self._bi_directional_radar(canon_words, empirical_data)
@@ -332,7 +348,6 @@ class KaraokeAligner:
                 # ЭТАП 8: Великая Сверка
                 braks = self._grand_verification(canon_words, audio_duration)
                 
-                # Защита от бесконечного цикла (Stalemate)
                 current_hash = hash(tuple(w["start"] for w in canon_words))
                 if current_hash in history_hashes:
                     log.warning("   -> [Forge] Stalemate detected! Арена повторяет ошибки. Заморозка состояния (Fallback).")
