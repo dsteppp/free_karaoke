@@ -107,28 +107,45 @@ class KaraokeAligner:
                 canon_words[i]["start"], canon_words[i]["end"] = s, e
                 canon_words[i]["locked"] = False 
         
-        # 🛡️ СЕМАНТИЧЕСКИЙ ЩИТ (SEMANTIC CURTAINS)
-        if not self.oracle_blind and self.blind_words:
+        # 🛡️ ИСТИННЫЙ СЕМАНТИЧЕСКИЙ ЩИТ (V6.5 Truth-Based Curtains)
+        if not self.oracle_blind:
             sem_curtains = []
-            # Интро Занавес
-            if self.blind_words[0]["start"] > 4.0:
-                sem_curtains.append((0.0, self.blind_words[0]["start"] - 0.5))
-            # Ямы
-            for k in range(len(self.blind_words) - 1):
-                gap = self.blind_words[k+1]["start"] - self.blind_words[k]["end"]
-                if gap > 6.0: 
-                    sem_curtains.append((self.blind_words[k]["end"] + 1.0, self.blind_words[k+1]["start"] - 1.0))
-            # Аутро Занавес
-            if audio_duration - self.blind_words[-1]["end"] > 4.0:
-                sem_curtains.append((self.blind_words[-1]["end"] + 1.0, audio_duration))
+            
+            # 1. ЗАЩИТА ИНТРО: Блокируем всё до первого подтвержденного слова!
+            first_locked_t = -1.0
+            unlocked_before = 0
+            for w in canon_words:
+                if w["locked"] and w["start"] != -1.0:
+                    first_locked_t = w["start"]
+                    break
+                unlocked_before += 1
+                
+            if first_locked_t != -1.0:
+                # Оставляем "карман" безопасности для потерянных слов интро (0.6с на слово)
+                needed_space = unlocked_before * 0.6 
+                curtain_end = first_locked_t - needed_space - 0.5
+                if curtain_end > 3.0:
+                    sem_curtains.append((0.0, curtain_end))
+                    log.info(f"   -> [Shield] Интро-щит: 0.0s - {curtain_end:.1f}s (Оставлен карман {needed_space:.1f}s)")
+
+            # 2. ЗАЩИТА АУТРО: Блокируем всё после последнего подтвержденного слова!
+            last_locked_t = -1.0
+            unlocked_after = 0
+            for w in reversed(canon_words):
+                if w["locked"] and w["end"] != -1.0:
+                    last_locked_t = w["end"]
+                    break
+                unlocked_after += 1
+                
+            if last_locked_t != -1.0:
+                needed_space_out = unlocked_after * 0.6
+                curtain_start = last_locked_t + needed_space_out + 0.5
+                if audio_duration - curtain_start > 3.0:
+                    sem_curtains.append((curtain_start, audio_duration))
+                    log.info(f"   -> [Shield] Аутро-щит: {curtain_start:.1f}s - {audio_duration:.1f}s")
 
             if sem_curtains:
-                log.info(f"🛡️ [Oracle] Возведено Семантических Занавесов: {len(sem_curtains)}")
-                for idx, (cs, ce) in enumerate(sem_curtains):
-                    log.debug(f"   -> Семантика {idx+1}: {cs:.1f}s - {ce:.1f}s")
                 self.all_curtains.extend(sem_curtains)
-                
-                # Слияние
                 self.all_curtains.sort(key=lambda x: x[0])
                 merged = []
                 for s, e in self.all_curtains:
@@ -253,7 +270,7 @@ class KaraokeAligner:
             log.warning(f"   ⚠️ Арена забраковала ВСЕХ кандидатов для [{s_idx}-{e_idx}]. Слова оставлены Магниту.")
 
     def _local_snapping(self, words: list, empirical_data: dict):
-        log.info("🧲 [Magnet] Локальная Магнитная Доводка остатков...")
+        log.info("🧲 [Magnet] Локальная Магнитная Доводка остатков (V6.5 Smart Anchor)...")
         n = len(words)
         bg = min(empirical_data.get("avg_breath_gap", 0.5), 1.0) if empirical_data else 0.4
         
@@ -263,14 +280,27 @@ class KaraokeAligner:
                 j = i
                 while j < n and words[j]["start"] == -1.0: j += 1
                 
-                left_anchor = words[i-1]["end"] if i > 0 and words[i-1]["end"] != -1 else 0.0
-                right_anchor = words[j]["start"] if j < n and words[j]["start"] != -1 else left_anchor + 10.0
+                left_anchor = words[i-1]["end"] if i > 0 and words[i-1]["end"] != -1.0 else 0.0
+                right_anchor = words[j]["start"] if j < n and words[j]["start"] != -1.0 else left_anchor + 10.0
                 
-                curr_t = left_anchor + (bg if i > 0 and words[i]["line_num"] != words[i-1]["line_num"] else 0.05)
+                # Рассчитываем идеальную длину пропущенных слов
+                ideal_durs = []
                 for k in range(i, j):
                     w_min, w_max = get_phonetic_bounds(words[k]["clean_text"], words[k]["line_break"])
-                    w_dur = (w_min + w_max) / 2.0
-                    if curr_t + w_dur > right_anchor: 
+                    ideal_durs.append((w_min + w_max) / 2.0)
+                
+                total_ideal = sum(ideal_durs) + (bg * (j - i - 1))
+                
+                # 🚀 THE SILVER BULLET: МАГНИТ ПРАВОГО ЯКОРЯ ДЛЯ ИНТРО
+                if i == 0 and right_anchor > total_ideal + 1.0:
+                    curr_t = right_anchor - total_ideal - bg
+                    log.debug(f"   -> [Magnet] Интро-якорь. Отсчет назад от {right_anchor:.1f}s. Старт с {curr_t:.1f}s.")
+                else:
+                    curr_t = left_anchor + (bg if i > 0 and words[i]["line_num"] != words[i-1]["line_num"] else 0.05)
+                
+                for k in range(i, j):
+                    w_dur = ideal_durs[k-i]
+                    if curr_t + w_dur > right_anchor and j < n: 
                         w_dur = max(0.1, (right_anchor - curr_t) / (j - k))
                     words[k]["start"] = curr_t
                     words[k]["end"] = curr_t + w_dur
@@ -289,7 +319,7 @@ class KaraokeAligner:
     def process_audio(self, vocals_path: str, raw_lyrics: str, output_json_path: str):
         self._track_stem = os.path.basename(output_json_path).replace("_(Karaoke Lyrics).json", "")
         log.info("=" * 50)
-        log.info(f"Aligner СТАРТ (Symphony V6.4 Ultimate): {self._track_stem}")
+        log.info(f"Aligner СТАРТ (Symphony V6.5: The Grand Synthesis): {self._track_stem}")
         
         canon_words = prepare_text(raw_lyrics)
         if not canon_words:
@@ -309,7 +339,6 @@ class KaraokeAligner:
 
             model = stable_whisper.load_model(self.model_name, download_root=self.whisper_model_dir, device=self.device)
 
-            # ЭТАП 2: Двойной Движок + Страховка + СЕМАНТИЧЕСКИЙ ЩИТ
             self._dual_engine_matrix(model, audio_data_raw, canon_words, lang, audio_duration)
 
             empirical_data = get_empirical_data(canon_words)
