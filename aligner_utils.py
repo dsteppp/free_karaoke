@@ -4,7 +4,7 @@ import rapidfuzz
 import numpy as np
 from app_logger import get_logger
 
-# 🛠️ V6.1 ИСПРАВЛЕНИЕ ТЕЛЕМЕТРИИ: Единый канал связи, чтобы Судью было видно в консоли!
+# 🛠️ Единый логгер для всей симфонии
 log = get_logger("aligner")
 
 # ─── ЛИНГВИСТИКА И ПОДГОТОВКА ТЕКСТА (V6.1: MACRO-MAPPING) ───────────────────
@@ -112,7 +112,7 @@ def is_repetition_island(words: list, s_idx: int, e_idx: int) -> bool:
     
     return ratio <= 0.40 or (max_repeats >= 3 and ratio < 0.60)
 
-# ─── ФОНЕТИЧЕСКАЯ МАТЕМАТИКА И ЭМПИРИКА (V6.1) ──────────────────────────────
+# ─── ФОНЕТИЧЕСКАЯ МАТЕМАТИКА И ЭМПИРИКА ──────────────────────────────
 
 def get_vowel_weight(word: str, is_line_end: bool) -> float:
     """Вычисляет фонетический вес слова (абстрактный)."""
@@ -259,13 +259,12 @@ def get_vad_capacity(t_start: float, t_end: float, combined_vad: list) -> float:
     """Сколько физического голоса есть в "Дыре"."""
     return calculate_overlap(t_start, t_end, combined_vad)
 
-# ─── ДЕТЕКТОР ЛЖИ И АБСОЛЮТНЫЙ СУДЬЯ (V6.2) ──────────────────────────────────
+# ─── ДЕТЕКТОР ЛЖИ И АБСОЛЮТНЫЙ СУДЬЯ (V6.3) ──────────────────────────────────
 
 def crosscheck_oracle(draft_text: str, t_start: float, t_end: float, blind_words: list) -> bool:
     """
-    V6.2: Детектор Лжи (The Crosscheck).
+    V6.3: Детектор Лжи (The Crosscheck).
     Сравнивает черновик (align) со Слепым Оракулом (transcribe).
-    Жестко бракует фальстарты.
     """
     oracle_chunk = [bw["clean"] for bw in blind_words if bw["end"] >= t_start - 0.5 and bw["start"] <= t_end + 0.5]
     oracle_text = "".join(oracle_chunk)
@@ -274,8 +273,8 @@ def crosscheck_oracle(draft_text: str, t_start: float, t_end: float, blind_words
     if not clean_draft: return True
     
     if not oracle_text:
-        # V6.2 ЗАЩИТА ИНТРО: Если черновик упал в самое начало (< 1.5s), и Оракул там глух - бракуем мгновенно!
-        if t_start < 1.5:
+        # V6.3 ЗАЩИТА ИНТРО: Оракул не прощает глухоту в самом начале.
+        if t_start < 2.0:
             return False 
         
         # В середине трека прощаем только очень короткие обрывки (< 1.5s)
@@ -288,9 +287,9 @@ def crosscheck_oracle(draft_text: str, t_start: float, t_end: float, blind_words
 
 def evaluate_alignment_quality(words: list, strong_vad: list, weak_vad: list, curtains: list) -> float:
     """
-    V6.2: АБСОЛЮТНЫЙ СУДЬЯ.
+    V6.3: АБСОЛЮТНЫЙ СУДЬЯ.
     Оценивает выравнивание по строгим правилам.
-    Добавлен Смертный Приговор за Фальстарт.
+    Использует ДИНАМИЧЕСКИЙ поиск фальстартов для длинных интро!
     """
     score = 100.0
     total = len(words)
@@ -301,9 +300,12 @@ def evaluate_alignment_quality(words: list, strong_vad: list, weak_vad: list, cu
     singularities = 0
     overstretched = 0
     stanza_tears = 0
-    false_starts = 0 # V6.2 Телеметрия
+    false_starts = 0 
 
     combined_vad = sorted(strong_vad + weak_vad, key=lambda x: x[0])
+    
+    # V6.3: Ищем абсолютное начало голоса в треке (первый чистый VAD)
+    first_vocal_t = combined_vad[0][0] if combined_vad else 0.0
 
     for i, w in enumerate(words):
         if w["start"] == -1.0:
@@ -321,9 +323,9 @@ def evaluate_alignment_quality(words: list, strong_vad: list, weak_vad: list, cu
         if dur > 0 and (overlap / dur) < 0.1:
             hallucinations += 1
             
-        # V6.2: СМЕРТНЫЙ ПРИГОВОР ЗА ФАЛЬСТАРТ (Защита интро от Лома)
-        if w["start"] < 2.0:
-            # Если слово поставлено в самое начало, но там нет Strong VAD (или слово не попадает в VAD хотя бы на половину)
+        # V6.3: ДИНАМИЧЕСКИЙ СМЕРТНЫЙ ПРИГОВОР ЗА ФАЛЬСТАРТ (Защита длинных интро)
+        # Если слово начинается раньше первого реального вокала ИЛИ в самом начале трека
+        if w["start"] < first_vocal_t - 0.5 or w["start"] < 2.0:
             s_overlap = calculate_overlap(w["start"], w["end"], strong_vad)
             if s_overlap / dur < 0.5:
                 false_starts += 1
@@ -352,7 +354,7 @@ def evaluate_alignment_quality(words: list, strong_vad: list, weak_vad: list, cu
     penalty_singularities = singularities * 3.0
     penalty_overstretch = overstretched * 1.0 
     penalty_tears = stanza_tears * 10.0
-    penalty_false_starts = false_starts * 50.0 # Огромный штраф за натягивание на барабаны
+    penalty_false_starts = false_starts * 50.0 # Огромный штраф за фальстарт (в интро или до голоса)
 
     score -= (penalty_unresolved + penalty_hallucinations + penalty_singularities + penalty_overstretch + penalty_tears + penalty_false_starts)
 

@@ -5,11 +5,11 @@ from app_logger import get_logger
 # 🛠️ Единый логгер для всей симфонии
 log = get_logger("aligner")
 
-# ─── V6.2: TRUE VOCAL CANVAS & VOID INTEGRITY ───────────────────────────────────
+# ─── V6.3: THE PERFECT HYBRID (VOID INTEGRITY + VAD PURGE) ────────────────────
 
 def enforce_curtains(start: float, end: float, curtains: list) -> tuple:
     """
-    V6.2: Строгая изоляция Мертвых Зон.
+    V6.3: Строгая изоляция Мертвых Зон.
     Выталкивает тайминги из Железного Занавеса (Instrumental Void).
     """
     for c_s, c_e in curtains:
@@ -29,11 +29,11 @@ def enforce_curtains(start: float, end: float, curtains: list) -> tuple:
 
 def get_acoustic_maps(audio_data: np.ndarray, sr: int) -> tuple:
     """
-    V6.2: Генерация Истинной Вокальной Карты и Железных Занавесов.
-    Использует спектральный фильтр (Flatness) для отсечения барабанов,
-    а также гибридный метод поиска Мертвых Зон (Тишина + Отсутствие гармоник).
+    V6.3: Генерация Истинной Вокальной Карты (The Perfect Hybrid).
+    Объединяет Абсолютную Тишину (v4.2) и Отсутствие Тональности (v6.2).
+    ПРИНУДИТЕЛЬНО вырезает ложные срабатывания VAD внутри Занавесов!
     """
-    log.info("🗺️ [Acoustics] Генерация Истинной Вокальной Карты (VAD & Curtains)...")
+    log.info("🗺️ [Acoustics] Генерация Истинной Вокальной Карты (V6.3 Hybrid)...")
     hop_length = 512
     times = librosa.frames_to_time(np.arange(len(audio_data)//hop_length + 1), sr=sr, hop_length=hop_length)
     audio_duration = len(audio_data) / sr
@@ -41,8 +41,31 @@ def get_acoustic_maps(audio_data: np.ndarray, sr: int) -> tuple:
     rms = librosa.feature.rms(y=audio_data, frame_length=2048, hop_length=hop_length)[0]
     rms_norm = rms / (np.max(rms) + 1e-8)
     flatness = librosa.feature.spectral_flatness(y=audio_data, hop_length=hop_length)[0]
+
+    iron_curtains = []
+
+    # === 1. ВЕЛИКАЯ ПУСТОТА (Метод V4.2: Динамический порог тишины) ===
+    noise_floor = np.percentile(rms, 5)
+    # Порог чуть выше, чтобы захватить фоновый шум чистого минуса
+    thresh = max(10 ** (-60 / 20), noise_floor * 1.5) 
+    silence_mask = rms < thresh
     
-    # 1. Разделяем энергию
+    in_silence = False
+    start_t = 0.0
+    for i, is_silent in enumerate(silence_mask):
+        if is_silent and not in_silence:
+            in_silence = True
+            start_t = times[i]
+        elif not is_silent and in_silence:
+            in_silence = False
+            end_t = times[i]
+            if end_t - start_t > 3.0:
+                iron_curtains.append((start_t, end_t))
+                
+    if in_silence and (times[-1] - start_t > 3.0):
+        iron_curtains.append((start_t, times[-1]))
+
+    # === 2. ГЕНЕРАЦИЯ СЫРОГО VAD (Метод V6.2: Энергия + Тональность) ===
     strong_vad_frames = rms_norm > 0.02
     weak_vad_frames = (rms_norm > 0.005) & (rms_norm <= 0.02)
     
@@ -67,7 +90,6 @@ def get_acoustic_maps(audio_data: np.ndarray, sr: int) -> tuple:
             s_frame = librosa.time_to_frames(s, sr=sr, hop_length=hop_length)
             e_frame = librosa.time_to_frames(e, sr=sr, hop_length=hop_length)
             if s_frame < e_frame and s_frame < len(flatness):
-                # V6.2: ФИЛЬТР БАРАБАНОВ. Звук должен иметь тональность (голос/мелодия)
                 if np.min(flatness[s_frame:e_frame]) < 0.1:
                     if not harmonic_intervals:
                         harmonic_intervals.append((s, e))
@@ -79,53 +101,30 @@ def get_acoustic_maps(audio_data: np.ndarray, sr: int) -> tuple:
                             harmonic_intervals.append((s, e))
         return harmonic_intervals
 
-    # 2. Извлекаем только ГАРМОНИЧЕСКИЙ VAD (игнорируя чистые ударные)
-    strong_vad_mask = extract_harmonic_intervals(strong_vad_frames, pad=0.2)
-    weak_vad_mask = extract_harmonic_intervals(weak_vad_frames, pad=0.1)
+    raw_strong = extract_harmonic_intervals(strong_vad_frames, pad=0.2)
+    raw_weak = extract_harmonic_intervals(weak_vad_frames, pad=0.1)
 
-    # 3. ПОСТРОЕНИЕ ЖЕЛЕЗНЫХ ЗАНАВЕСОВ (МЕТОД 1: ОТСУТСТВИЕ ГОЛОСА)
-    combined_vad = sorted(strong_vad_mask + weak_vad_mask, key=lambda x: x[0])
+    # === 3. МУЗЫКАЛЬНЫЕ ЯМЫ (Метод V6: Отсутствие гармоник) ===
+    combined_raw_vad = sorted(raw_strong + raw_weak, key=lambda x: x[0])
     merged_vad = []
-    for s, e in combined_vad:
+    for s, e in combined_raw_vad:
         if not merged_vad: merged_vad.append((s, e))
         else:
             last_s, last_e = merged_vad[-1]
-            if s - last_e < 1.5: # Прощаем паузы до 1.5с внутри вокала
+            if s - last_e < 1.5: 
                 merged_vad[-1] = (last_s, max(last_e, e))
             else:
                 merged_vad.append((s, e))
                 
-    iron_curtains = []
     last_e = 0.0
     for s, e in merged_vad:
-        if s - last_e > 3.5: # Дыра без тонального звука > 3.5s = Занавес
+        if s - last_e > 3.5: 
             iron_curtains.append((last_e, s))
         last_e = e
-        
     if audio_duration - last_e > 3.5:
         iron_curtains.append((last_e, audio_duration))
 
-    # 4. ПОСТРОЕНИЕ ЖЕЛЕЗНЫХ ЗАНАВЕСОВ (МЕТОД 2: АБСОЛЮТНАЯ ТИШИНА ИЗ V5.3)
-    noise_floor = np.percentile(rms, 5)
-    thresh = max(10 ** (-60 / 20), noise_floor * 1.1)
-    silence_mask = rms < thresh
-    
-    in_silence = False
-    start_t = 0.0
-    for i, is_silent in enumerate(silence_mask):
-        if is_silent and not in_silence:
-            in_silence = True
-            start_t = times[i]
-        elif not is_silent and in_silence:
-            in_silence = False
-            end_t = times[i]
-            if end_t - start_t > 3.0:
-                iron_curtains.append((start_t, end_t))
-                
-    if in_silence and (times[-1] - start_t > 3.0):
-        iron_curtains.append((start_t, times[-1]))
-
-    # 5. СЛИЯНИЕ ВСЕХ ЗАНАВЕСОВ В МОНОЛИТ
+    # === 4. СЛИЯНИЕ ВСЕХ ЗАНАВЕСОВ В БЕТОННЫЙ МОНОЛИТ ===
     iron_curtains.sort(key=lambda x: x[0])
     merged_curtains = []
     for s, e in iron_curtains:
@@ -134,11 +133,48 @@ def get_acoustic_maps(audio_data: np.ndarray, sr: int) -> tuple:
             last_s, last_e = merged_curtains[-1]
             if s <= last_e: merged_curtains[-1] = (last_s, max(last_e, e))
             else: merged_curtains.append((s, e))
-            
     iron_curtains = merged_curtains
 
-    # 📡 ТЕЛЕМЕТРИЯ V6.2
-    total_vocal = sum(e - s for s, e in merged_vad)
+    # === 5. THE PURGE (ЗАЧИСТКА VAD ОТ БАРАБАНОВ В ПУСТОТЕ) ===
+    def purge_vad(vad_list, curtains):
+        purged = []
+        for v_s, v_e in vad_list:
+            current_segments = [(v_s, v_e)]
+            for c_s, c_e in curtains:
+                new_segments = []
+                for seg_s, seg_e in current_segments:
+                    if seg_s >= c_s and seg_e <= c_e: 
+                        continue # Полностью уничтожаем (барабан в тишине)
+                    elif c_s <= seg_s < c_e and seg_e > c_e: 
+                        new_segments.append((c_e, seg_e))
+                    elif seg_s < c_s and c_s < seg_e <= c_e: 
+                        new_segments.append((seg_s, c_s))
+                    elif seg_s < c_s and seg_e > c_e: 
+                        new_segments.append((seg_s, c_s))
+                        new_segments.append((c_e, seg_e))
+                    else: 
+                        new_segments.append((seg_s, seg_e))
+                current_segments = new_segments
+            
+            for s, e in current_segments:
+                if e - s >= 0.05:
+                    purged.append((s, e))
+        return sorted(purged, key=lambda x: x[0])
+
+    strong_vad_mask = purge_vad(raw_strong, iron_curtains)
+    weak_vad_mask = purge_vad(raw_weak, iron_curtains)
+
+    # === 6. ТЕЛЕМЕТРИЯ V6.3 ===
+    final_combined_vad = sorted(strong_vad_mask + weak_vad_mask, key=lambda x: x[0])
+    final_merged = []
+    for s, e in final_combined_vad:
+        if not final_merged: final_merged.append((s, e))
+        else:
+            last_s, last_e = final_merged[-1]
+            if s <= last_e: final_merged[-1] = (last_s, max(last_e, e))
+            else: final_merged.append((s, e))
+
+    total_vocal = sum(e - s for s, e in final_merged)
     total_instrumental = audio_duration - total_vocal
     
     log.info(f"🎤 [Acoustics] Вокал: {total_vocal:.1f}s. Инструментал/Пустоты: {total_instrumental:.1f}s.")
@@ -146,7 +182,7 @@ def get_acoustic_maps(audio_data: np.ndarray, sr: int) -> tuple:
     for i, (cs, ce) in enumerate(iron_curtains):
         log.debug(f"   -> Занавес {i+1}: {cs:.1f}s - {ce:.1f}s")
 
-    # 6. Onsets и Гармоники
+    # 7. Onsets и Гармоники
     o_env = librosa.onset.onset_strength(y=audio_data, sr=sr)
     raw_onsets = librosa.onset.onset_detect(onset_envelope=o_env, sr=sr, units='time')
     

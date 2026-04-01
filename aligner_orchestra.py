@@ -140,26 +140,32 @@ def propose_harpoon(words: list, s_idx: int, e_idx: int, audio_data: np.ndarray,
         pass
     return None
 
-# ─── АРЕНА: КАНДИДАТ 4 (SMART ELASTIC LOOM V6.2) ────────────────────────────
+# ─── АРЕНА: КАНДИДАТ 4 (SMART ELASTIC LOOM V6.3) ────────────────────────────
 
 def propose_loom(words: list, s_idx: int, e_idx: int, t_start: float, t_end: float, strong_vad: list, weak_vad: list, empirical_data: dict = None) -> Proposal:
     """
-    V6.2: Умный Гибкий Короб (Smart Elastic Box).
-    + VAD-Seeker: не прижимает коробку к левому краю, если там нет голоса.
+    V6.3: Умный Гибкий Короб (Smart Elastic Box).
+    + ГЛОБАЛЬНЫЙ VAD-Seeker: для первой строки трека ищет реальный голос, а не начало дыры.
     """
     combined_vad = sorted(strong_vad + weak_vad, key=lambda x: x[0])
     
-    # V6.2 VAD-SEEKER: Ищем ПЕРВЫЙ настоящий голос в этой дыре. Безопасные границы!
     actual_start = t_start
-    # Включаем сканер, если это начало песни ИЛИ дыра огромная (>4 секунд)
-    if s_idx == 0 or (t_end - t_start) > 4.0:
+    
+    # V6.3 VAD-SEEKER
+    if s_idx == 0:
+        # Для самого начала песни находим глобально первый чистый VAD
+        if strong_vad:
+            first_vocal = strong_vad[0][0]
+            if first_vocal > t_start:
+                actual_start = max(t_start, first_vocal - 0.2) # Прыгаем к голосу
+                log.debug(f"   [Loom] VAD-Seeker (Intro) сдвинул старт с {t_start:.1f}s на {actual_start:.1f}s")
+    elif (t_end - t_start) > 4.0:
+        # Для гигантских дыр в середине песни
         for vs, ve in strong_vad:
-            # Ищем вокал строго ВНУТРИ нашей дыры
             if vs >= t_start and vs < t_end - 0.5:
                 actual_start = vs
-                log.debug(f"   [Loom] VAD-Seeker сдвинул старт с {t_start:.1f}s на {actual_start:.1f}s")
+                log.debug(f"   [Loom] VAD-Seeker (Mid) сдвинул старт с {t_start:.1f}s на {actual_start:.1f}s")
                 break
-            # Если голос уже идет с прошлой дыры - всё ок, стартуем сразу
             elif vs < t_start and ve > t_start + 0.2:
                 actual_start = t_start
                 break
@@ -211,7 +217,6 @@ def propose_loom(words: list, s_idx: int, e_idx: int, t_start: float, t_end: flo
     total_req = sum(req_durs)
     breath_gap = min(empirical_data.get("avg_breath_gap", 0.5), 1.0) if empirical_data else 0.4
 
-    # V6.2 ELASTICITY
     if total_req < total_vad_time and len(lines) > 0:
         for i, L in enumerate(req_durs):
             pseudo_s = sum(req_durs[:i]) + (i * breath_gap)
@@ -276,13 +281,13 @@ def propose_loom(words: list, s_idx: int, e_idx: int, t_start: float, t_end: flo
     return Proposal("Smart Elastic Loom", timings)
 
 
-# ─── THE SUPREME JUDGE (АБСОЛЮТНЫЙ СУДЬЯ АРЕНЫ V6.2) ─────────────────────────
+# ─── THE SUPREME JUDGE (АБСОЛЮТНЫЙ СУДЬЯ АРЕНЫ V6.3) ─────────────────────────
 
 def the_supreme_judge(proposals: list, words: list, s_idx: int, e_idx: int, strong_vad: list, weak_vad: list, curtains: list, empirical_data: dict = None) -> Proposal:
     """
-    V6.2: Штрафует за попадание в Мертвые Зоны (Curtains),
+    V6.3: Штрафует за попадание в Мертвые Зоны (Curtains),
     Использует VAD-Индульгенцию для растянутых слов.
-    УНИЧТОЖАЕТ ФАЛЬСТАРТЫ (Смертный приговор для интро).
+    ДИНАМИЧЕСКИ УНИЧТОЖАЕТ ФАЛЬСТАРТЫ (Смертный приговор до первого вокала).
     """
     best_prop = None
     best_score = -99999.0
@@ -292,6 +297,10 @@ def the_supreme_judge(proposals: list, words: list, s_idx: int, e_idx: int, stro
 
     clean_texts = [words[i]["clean_text"] for i in range(s_idx, e_idx + 1)]
     line_breaks = [words[i]["line_break"] for i in range(s_idx, e_idx + 1)]
+    
+    # Вычисляем глобальный старт реального голоса в треке
+    combined_vad = sorted(strong_vad + weak_vad, key=lambda x: x[0])
+    first_vocal_t = combined_vad[0][0] if combined_vad else 0.0
     
     for prop in proposals:
         if prop is None or len(prop.timings) != (e_idx - s_idx + 1):
@@ -320,17 +329,17 @@ def the_supreme_judge(proposals: list, words: list, s_idx: int, e_idx: int, stro
             
             if overlap_strong > 0.1: score += 5.0
             
-            # V6.2 VAD-ИНДУЛЬГЕНЦИЯ НА ПЕРЕРАСТЯЖЕНИЕ
+            # V6.3 VAD-ИНДУЛЬГЕНЦИЯ НА ПЕРЕРАСТЯЖЕНИЕ
             if dur > max_dur * 1.5: 
                 if (overlap_strong / dur) < 0.8: # Если резина легла не на вокал
                     score -= 100.0 * (dur - max_dur)
             
-            # V6.2 СМЕРТНЫЙ ПРИГОВОР ЗА ФАЛЬСТАРТ (Защита интро от Лома)
+            # V6.3 ДИНАМИЧЕСКИЙ СМЕРТНЫЙ ПРИГОВОР ЗА ФАЛЬСТАРТ (Защита длинных интро)
             w_abs_idx = s_idx + i
-            if w_abs_idx < 3 and t["start"] < 2.0:
+            if t["start"] < first_vocal_t - 0.5 or (w_abs_idx < 3 and t["start"] < 2.0):
                 if dur > 0 and (overlap_strong / dur) < 0.5:
                     score -= 5000.0
-                    log.debug(f"   🚫 Судья убил предложение {prop.source_name} за Фальстарт в интро.")
+                    log.debug(f"   🚫 Судья убил предложение {prop.source_name} за Фальстарт (до первого вокала).")
             
             if silence_dur > 0.15: 
                 score -= (silence_dur * 200.0) 
