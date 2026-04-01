@@ -5,82 +5,36 @@ from app_logger import get_logger
 log = get_logger("aligner_utils")
 
 def detect_language(text: str) -> str:
-    """Определяет доминирующий язык текста для Whisper."""
+    """Определяет доминирующий язык текста."""
     ru_chars = sum(1 for c in text if c.lower() in "абвгдеёжзийклмнопрстуфхцчшщъыьэюя")
     en_chars = sum(1 for c in text if c.lower() in string.ascii_lowercase)
     lang = "ru" if ru_chars > en_chars else "en"
-    log.info(f"🔤 [Utils] Доминирующий язык: {lang.upper()}")
+    log.info(f"🔤 [Utils] Язык текста: {lang.upper()}")
     return lang
 
 def clean_word(word: str) -> str:
-    """Очистка для идеального совпадения в матрице (только алфавит)."""
+    """Оставляет только буквы и цифры для идеального совпадения в Левенштейне."""
     return re.sub(r'[^\w]', '', word.lower())
 
-# ==============================================================================
-# V10.0 Syllable Estimator (Жесткая физика)
-# ==============================================================================
-class SyllableEstimator:
-    """Модуль мгновенной оценки физической длительности слова на основе слогов."""
-    
-    @staticmethod
-    def count_en(word: str) -> int:
-        word = word.lower()
-        if len(word) <= 3: return 1
-        word = re.sub(r'(?:[^laeiouy]es|ed|[^laeiouy]e)$', '', word)
-        word = re.sub(r'^y', '', word)
-        syllables = len(re.findall(r'[aeiouy]{1,2}', word))
-        return max(1, syllables)
-
-    @staticmethod
-    def count_ru(word: str) -> int:
-        vowels = "аеёиоуыэюя"
-        return sum(1 for char in word.lower() if char in vowels)
-
-    @classmethod
-    def estimate(cls, word: str) -> int:
-        ru_chars = sum(1 for c in word.lower() if c in "абвгдеёжзийклмнопрстуфхцчшщъыьэюя")
-        return cls.count_ru(word) if ru_chars > 0 else cls.count_en(word)
-
-def get_phonetic_bounds(syllables: int, is_line_end: bool = False) -> tuple:
-    """
-    Возвращает железные рамки длительности (мин, макс).
-    Слово не может звучать быстрее или медленнее этих лимитов.
-    """
-    # Человек не может произнести слог быстрее 80мс
-    min_dur = max(0.08, syllables * 0.12)
-    # Медленнее 800мс на слог - это уже вой, а не пение (кроме концов строк)
-    max_dur = (syllables * 0.8) + (0.8 if is_line_end else 0.3)
-    return min_dur, max_dur
-
-def check_sdr_sanity(total_syllables: int, duration_sec: float, is_same_line: bool = False) -> bool:
-    """
-    V10: O(1) SDR-Guard. Защита от пулеметных очередей в DP-матрице.
-    """
-    if duration_sec <= 0: return False
-    if is_same_line and duration_sec > 2.5: return False
-    sdr = total_syllables / duration_sec
-    return (0.2 <= sdr <= 10.0)
-
-# ==============================================================================
-# V10.0 Text Preparation (Атомарность строк)
-# ==============================================================================
 def prepare_text(raw_lyrics: str) -> list:
     """
-    Парсит текст и внедряет line_idx. 
-    В V10 строка (line) — это неделимый монолит. Алгоритм не имеет права её рвать.
+    Разбирает сырой текст с Genius. Сохраняет флаг конца строки.
     """
-    log.info("📝 [Utils] Подготовка эталонного текста (V10 Atomic Lines)...")
+    log.info("📝 [Utils] Подготовка эталонного текста...")
     if not raw_lyrics: 
         return []
     
     words = []
     lines = raw_lyrics.split('\n')
-    line_idx = 0
+    stanza_idx = 0
     
     for line in lines:
         line = line.strip()
+        
         if not line:
+            stanza_idx += 1
             continue
+            
         if line.startswith('[') and line.endswith(']'):
             continue
             
@@ -91,87 +45,128 @@ def prepare_text(raw_lyrics: str) -> list:
                 continue
             
             is_last_in_line = (j == len(line_words) - 1)
-            sylls = SyllableEstimator.estimate(clean_w)
-            min_dur, max_dur = get_phonetic_bounds(sylls, is_last_in_line)
             
             words.append({
                 "word": w,
                 "clean_text": clean_w,
                 "start": -1.0,
                 "end": -1.0,
-                "line_idx": line_idx,          # V10: Идентификатор строки
                 "line_break": is_last_in_line,
-                "syllables": sylls,
-                "min_dur": min_dur,
-                "max_dur": max_dur,
-                "is_anchor": False             # V10: Флаг подтвержденного якоря
+                "stanza_idx": stanza_idx
             })
             
-        line_idx += 1
-            
-    log.info(f"   ✅ Загружено слов: {len(words)}, Неделимых строк: {line_idx}")
+    log.info(f"   ✅ Обработано слов: {len(words)}, Строф: {stanza_idx + 1}")
     return words
 
-# ==============================================================================
-# V10.0 QA Logic
-# ==============================================================================
+def count_vowels(word: str) -> int:
+    """Считает количество слогов (гласных) в слове."""
+    vowels = "аеёиоуыэюяaeiouy"
+    return sum(1 for char in word.lower() if char in vowels)
+
+def check_sdr_sanity(words: list, start_idx: int, end_idx: int, duration_sec: float, is_same_line: bool = False) -> tuple:
+    """
+    SDR-Guard (Syllable Delivery Rate) v8.4.
+    Проверяет, реально ли человеку спеть указанные слова за указанное время.
+    Работает тихо, без спама в логи.
+    """
+    if duration_sec <= 0:
+        return False, 999.0
+        
+    # Защита от разрыва одной строки огромной паузой (Убивает галлюцинации в интро)
+    if is_same_line and duration_sec > 2.5:
+        return False, 0.0
+
+    total_syllables = sum(max(1, count_vowels(words[k]["clean_text"])) for k in range(start_idx, end_idx + 1))
+    sdr = total_syllables / duration_sec
+    
+    # 0.3 слога/сек - слишком медленно, 9.0 слогов/сек - физический предел человека
+    is_sane = (0.3 <= sdr <= 9.0)
+    
+    return is_sane, sdr
+
+def get_vowel_weight(word: str, is_line_end: bool = False) -> float:
+    """
+    Рассчитывает "фонетический вес" слова.
+    """
+    vowels = "аеёиоуыэюяaeiouy"
+    base_weight = 0.5
+    for char in word.lower():
+        if char in vowels:
+            base_weight += 0.8
+        else:
+            base_weight += 0.2
+            
+    if is_line_end:
+        base_weight *= 1.5
+        
+    return base_weight
+
+def get_phonetic_bounds(word: str, is_line_end: bool = False) -> tuple:
+    """
+    Возвращает физиологический предел длительности слова (min_dur, max_dur).
+    """
+    weight = get_vowel_weight(word, is_line_end)
+    min_dur = max(0.05, weight * 0.15)
+    max_dur = weight * 0.8 + 0.5
+    return min_dur, max_dur
+
 def calculate_overlap(s1: float, e1: float, intervals: list) -> float:
-    """Быстрый расчет перекрытия отрезка с VAD-островами."""
+    """Считает суммарное время пересечения отрезка [s1, e1] с физическими VAD-интервалами."""
     if e1 <= s1 or not intervals: 
         return 0.0
+        
     overlap = 0.0
     for i_s, i_e in intervals:
         o_s = max(s1, i_s)
         o_e = min(e1, i_e)
-        if o_e > o_s: 
+        if o_e > o_s:
             overlap += (o_e - o_s)
     return overlap
 
 def evaluate_alignment_quality(words: list, vad_intervals: list) -> float:
-    """Строгая и тихая оценка итогового результата без лишнего спама."""
-    if not words: return 0.0
-    
+    """
+    Оценивает качество таймингов. Выдает только сухую статистику.
+    """
+    log.info("📊 [QA Evaluator] Анализ итогового качества таймингов...")
+    if not words: 
+        return 0.0
+        
     score = 100.0
-    total = len(words)
-    placed = sum(1 for w in words if w["start"] != -1.0)
+    total_words = len(words)
+    placed_words = sum(1 for w in words if w["start"] != -1.0)
     
-    if placed < total:
-        score -= ((total - placed) / total) * 50.0
-        log.warning(f"   📉 QA: {total - placed} слов не получили таймингов.")
+    if placed_words < total_words:
+        penalty = ((total_words - placed_words) / total_words) * 50.0
+        score -= penalty
+        log.warning(f"   📉 Штраф: Нераспределено слов: {total_words - placed_words}")
         
-    physics_err = 0
-    vad_err = 0
-    time_travel = 0
-    
-    prev_end = -1.0
+    physics_violators = 0
+    vad_violators = 0
+        
     for w in words:
-        s, e = w["start"], w["end"]
-        if s == -1.0: continue
+        if w["start"] == -1.0: 
+            continue
             
-        dur = e - s
+        dur = w["end"] - w["start"]
+        min_dur, max_dur = get_phonetic_bounds(w["clean_text"], w["line_break"])
         
-        # 1. Монотонность (Машина времени)
-        if s < prev_end - 0.05: # Допуск 50мс на микро-нахлесты
-            time_travel += 1
-            score -= 2.0
-            
-        # 2. Физика слова
-        if dur < w["min_dur"] * 0.8 or dur > w["max_dur"] * 1.5:
-            physics_err += 1
-            score -= 0.5
-            
-        # 3. Висение в тишине
-        overlap = calculate_overlap(s, e, vad_intervals)
-        if dur > 0 and (overlap / dur) < 0.15:
-            vad_err += 1
+        # 1. Проверка физики (слишком быстро/медленно)
+        if dur < 0.05 or dur > max_dur * 2.0:
             score -= 1.0
+            physics_violators += 1
             
-        prev_end = e
+        # 2. Проверка тишины
+        overlap = calculate_overlap(w["start"], w["end"], vad_intervals)
+        vad_ratio = overlap / dur if dur > 0 else 0
+        if vad_ratio < 0.2:
+            score -= 2.0
+            vad_violators += 1
             
-    if physics_err > 0: log.debug(f"   ⚠️ QA: Нарушена физика слова (сжато/растянуто) - {physics_err} шт.")
-    if vad_err > 0: log.debug(f"   ⚠️ QA: Слово вне VAD (в тишине) - {vad_err} шт.")
-    if time_travel > 0: log.warning(f"   🚨 QA: НАРУШЕНА ЛИНЕЙНОСТЬ ВРЕМЕНИ (Time Travel) - {time_travel} шт.")
-        
+    if physics_violators > 0:
+        log.warning(f"   📉 Нарушение физики (Резина/Пулемет): {physics_violators} слов.")
+    if vad_violators > 0:
+        log.warning(f"   📉 Слова висят вне VAD (В тишине): {vad_violators} слов.")
+            
     final_score = max(0.0, min(100.0, score))
-    log.info(f"   🏆 V10 QA Score: {final_score:.1f}/100")
+    log.info(f"   🏆 Итоговая Оценка: {final_score:.1f}/100")
     return final_score
