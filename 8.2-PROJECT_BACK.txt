@@ -273,48 +273,57 @@ echo ""
 ФАЙЛ: ./aligner_utils.py
 ================================================================================
 import re
-import math
 import string
-import rapidfuzz
-from collections import defaultdict
 from app_logger import get_logger
 
 log = get_logger("aligner_utils")
 
 def detect_language(text: str) -> str:
+    """Определяет доминирующий язык текста для передачи в Whisper."""
     ru_chars = sum(1 for c in text if c.lower() in "абвгдеёжзийклмнопрстуфхцчшщъыьэюя")
     en_chars = sum(1 for c in text if c.lower() in string.ascii_lowercase)
-    return "ru" if ru_chars > en_chars else "en"
+    lang = "ru" if ru_chars > en_chars else "en"
+    log.debug(f"🔤 [Utils] Язык текста определен как: {lang.upper()}")
+    return lang
 
 def clean_word(word: str) -> str:
-    """Удаляет всю пунктуацию и приводит к нижнему регистру для идеального сравнения."""
+    """
+    Агрессивная очистка слова от пунктуации. 
+    Оставляет только буквы и цифры для идеального совпадения в Левенштейне.
+    """
     return re.sub(r'[^\w]', '', word.lower())
 
 def prepare_text(raw_lyrics: str) -> list:
     """
-    Разбивает текст на слова, сохраняя структуру строк (line_break) и строф (stanza_idx).
-    Возвращает список словарей-пустышек для заполнения таймингами.
+    Разбирает сырой текст с Genius.
+    Важнейший момент: мы сохраняем флаг line_break (конец строки).
+    Позже Фильтр Целостности Строк не позволит разорвать фразу, если line_break = False.
     """
-    if not raw_lyrics: return []
+    log.info("📝 [Utils] Подготовка эталонного текста...")
+    if not raw_lyrics: 
+        return []
     
     words = []
     lines = raw_lyrics.split('\n')
     stanza_idx = 0
     
-    for i, line in enumerate(lines):
+    for line in lines:
         line = line.strip()
+        
+        # Разделитель строф (пустая строка)
         if not line:
             stanza_idx += 1
             continue
             
-        # Удаляем теги типа [Припев]
+        # Пропускаем мета-теги Genius (например: [Припев], [Куплет 1: Баста])
         if line.startswith('[') and line.endswith(']'):
             continue
             
         line_words = line.split()
         for j, w in enumerate(line_words):
             clean_w = clean_word(w)
-            if not clean_w: continue
+            if not clean_w: 
+                continue
             
             is_last_in_line = (j == len(line_words) - 1)
             
@@ -327,12 +336,42 @@ def prepare_text(raw_lyrics: str) -> list:
                 "stanza_idx": stanza_idx
             })
             
+    log.info(f"   ✅ Обработано слов: {len(words)}, Строф: {stanza_idx + 1}")
     return words
+
+def count_vowels(word: str) -> int:
+    """Считает количество слогов (гласных) в слове для оценки SDR."""
+    vowels = "аеёиоуыэюяaeiouy"
+    return sum(1 for char in word.lower() if char in vowels)
+
+def check_sdr_sanity(words: list, start_idx: int, end_idx: int, duration_sec: float) -> tuple:
+    """
+    SDR-Guard (Syllable Delivery Rate).
+    Проверяет, реально ли человеку спеть указанные слова за указанное время.
+    Возвращает (is_sane: bool, sdr_value: float).
+    """
+    if duration_sec <= 0:
+        return False, 999.0
+        
+    total_syllables = 0
+    for k in range(start_idx, end_idx + 1):
+        # Если слово состоит только из согласных (например, "б", "в"), считаем как 1 слог
+        syllables = max(1, count_vowels(words[k]["clean_text"]))
+        total_syllables += syllables
+        
+    sdr = total_syllables / duration_sec
+    
+    # Физические пределы человека:
+    # Меньше 0.3 слога в секунду - это неестественное растягивание (1 слово на 10 секунд).
+    # Больше 8.0 слогов в секунду - это пулеметный рэп Эминема. Больше 9 - физически невозможно.
+    is_sane = (0.3 <= sdr <= 9.0)
+    
+    return is_sane, sdr
 
 def get_vowel_weight(word: str, is_line_end: bool = False) -> float:
     """
-    Вычисляет 'вокальный вес' слова.
-    Гласные весят больше согласных. Слова в конце строки тянутся дольше.
+    Рассчитывает "фонетический вес" слова для Фонетической Заливки.
+    Гласные буквы тянутся дольше, чем согласные. Слово в конце строки тянется дольше.
     """
     vowels = "аеёиоуыэюяaeiouy"
     base_weight = 0.5
@@ -349,149 +388,79 @@ def get_vowel_weight(word: str, is_line_end: bool = False) -> float:
 
 def get_phonetic_bounds(word: str, is_line_end: bool = False) -> tuple:
     """
-    Возвращает (min_duration, max_duration) для слова на основе фонетики.
+    Возвращает физиологический предел длительности слова (min_dur, max_dur).
+    Защищает от растягивания коротких слов на 5 секунд.
     """
     weight = get_vowel_weight(word, is_line_end)
-    min_dur = max(0.08, weight * 0.15)
+    min_dur = max(0.05, weight * 0.15)
     max_dur = weight * 0.8 + 0.5
     return min_dur, max_dur
 
 def calculate_overlap(s1: float, e1: float, intervals: list) -> float:
-    """Считает сумму пересечений отрезка [s1, e1] со списком интервалов."""
-    if e1 <= s1: return 0.0
+    """Считает суммарное время пересечения отрезка [s1, e1] с физическими VAD-интервалами."""
+    if e1 <= s1 or not intervals: 
+        return 0.0
+        
     overlap = 0.0
     for i_s, i_e in intervals:
         o_s = max(s1, i_s)
         o_e = min(e1, i_e)
         if o_e > o_s:
             overlap += (o_e - o_s)
+            
     return overlap
 
-def match_sequences(canon_words: list, heard_words: list) -> list:
-    """
-    Фундамент Идеального Гибрида: Sequence Alignment.
-    Берет идеальный текст (Genius) и грязный транскрипт (Whisper),
-    и сопоставляет их с помощью расстояния Левенштейна.
-    Возвращает список соответствий: [(idx_canon, idx_heard), ...]
-    """
-    log.info("🧬 [Sequence Matcher] Сопоставление распознанного текста с эталонным...")
-    
-    canon_text = [w["clean_text"] for w in canon_words]
-    heard_text = [w["clean_text"] for w in heard_words]
-    
-    # Создаем матрицу расстояний (Needleman-Wunsch / Levenshtein)
-    # Штрафы: Совпадение = +3, Замена = -1, Вставка/Удаление = -1
-    n, m = len(canon_text), len(heard_text)
-    
-    dp = [[0] * (m + 1) for _ in range(n + 1)]
-    
-    for i in range(1, n + 1):
-        dp[i][0] = -i
-    for j in range(1, m + 1):
-        dp[0][j] = -j
-        
-    for i in range(1, n + 1):
-        for j in range(1, m + 1):
-            match_score = rapidfuzz.fuzz.ratio(canon_text[i-1], heard_text[j-1])
-            
-            # Если слова похожи больше чем на 75% - считаем совпадением
-            if match_score >= 75:
-                cost = 3
-            # Если похожи частично (например "пьяная" и "пья")
-            elif match_score >= 50:
-                cost = 1
-            else:
-                cost = -1
-                
-            dp[i][j] = max(
-                dp[i-1][j-1] + cost,      # Замена / Совпадение
-                dp[i-1][j] - 1,           # Удаление (слово есть в Genius, но не услышано)
-                dp[i][j-1] - 1            # Вставка (Whisper услышал лишнее эхо/бэк)
-            )
-            
-    # Обратный проход (Backtracking) для поиска оптимального пути
-    i, j = n, m
-    matches = []
-    
-    while i > 0 and j > 0:
-        current_score = dp[i][j]
-        
-        match_score = rapidfuzz.fuzz.ratio(canon_text[i-1], heard_text[j-1])
-        if match_score >= 75:
-            cost = 3
-        elif match_score >= 50:
-            cost = 1
-        else:
-            cost = -1
-            
-        if current_score == dp[i-1][j-1] + cost:
-            # Нашли пару (даже если частичную)
-            if cost >= 1:
-                matches.append((i-1, j-1))
-            i -= 1
-            j -= 1
-        elif current_score == dp[i-1][j] - 1:
-            i -= 1
-        else:
-            j -= 1
-            
-    matches.reverse()
-    log.info(f"   🔗 Найдено прямых совпадений: {len(matches)} из {n} эталонных слов.")
-    return matches
-
-def get_empirical_data(words: list) -> dict:
-    """Анализирует темп песни (Syllable Delivery Rate)."""
-    total_dur = 0.0
-    total_syllables = 0
-    breaths = []
-    
-    for i, w in enumerate(words):
-        if w["start"] != -1.0:
-            total_dur += (w["end"] - w["start"])
-            total_syllables += len(re.sub(r'[^аеёиоуыэюяaeiouy]', '', w["clean_text"]))
-            
-        if i > 0 and w["start"] != -1.0 and words[i-1]["end"] != -1.0:
-            gap = w["start"] - words[i-1]["end"]
-            if w["stanza_idx"] == words[i-1]["stanza_idx"] and 0.1 < gap < 2.0:
-                breaths.append(gap)
-                
-    sdr = total_syllables / total_dur if total_dur > 0 else 0.0
-    avg_breath = sum(breaths) / len(breaths) if breaths else 0.5
-    
-    return {
-        "sdr": sdr,
-        "avg_breath": avg_breath
-    }
-
 def evaluate_alignment_quality(words: list, vad_intervals: list) -> float:
-    """Оценивает итоговое качество (0-100) на основе физики (попадание в VAD)."""
-    if not words: return 0.0
-    
+    """
+    Жесткая проверка итогового качества таймингов.
+    Выявляет слова, которые повисли в пустоте или имеют невозможную длину.
+    В лог выводится поимённый список нарушителей.
+    """
+    log.info("📊 [QA Evaluator] Анализ итогового качества таймингов...")
+    if not words: 
+        return 0.0
+        
     score = 100.0
     total_words = len(words)
     placed_words = sum(1 for w in words if w["start"] != -1.0)
     
-    # Штраф за нераспределенные слова
     if placed_words < total_words:
-        score -= ((total_words - placed_words) / total_words) * 50.0
+        penalty = ((total_words - placed_words) / total_words) * 50.0
+        score -= penalty
+        log.warning(f"   📉 Штраф за нераспределенные слова: -{penalty:.1f} (Не найдено: {total_words - placed_words})")
+        
+    physics_violators = []
+    vad_violators = []
         
     for w in words:
-        if w["start"] == -1.0: continue
-        
+        if w["start"] == -1.0: 
+            continue
+            
         dur = w["end"] - w["start"]
         min_dur, max_dur = get_phonetic_bounds(w["clean_text"], w["line_break"])
         
-        # Штраф за физически невозможную длительность
+        # 1. Проверка физики слова (очень короткое или тянется как резина)
         if dur < 0.05 or dur > max_dur * 2.0:
             score -= 1.0
+            physics_violators.append(f"'{w['word']}' ({dur:.2f}s, max: {max_dur*2:.2f}s)")
             
-        # Награда/Штраф за попадание в VAD
+        # 2. Проверка попадания в VAD (Не поет ли певец в абсолютной тишине?)
         overlap = calculate_overlap(w["start"], w["end"], vad_intervals)
         vad_ratio = overlap / dur if dur > 0 else 0
+        
+        # Если слово больше чем на 80% висит в тишине - штрафуем
         if vad_ratio < 0.2:
             score -= 2.0
+            vad_violators.append(f"'{w['word']}' (VAD: {vad_ratio*100:.0f}%, {w['start']:.2f}s-{w['end']:.2f}s)")
             
-    return max(0.0, min(100.0, score))
+    if physics_violators:
+        log.warning(f"   📉 Нарушение физики длительностей ({len(physics_violators)} слов): {', '.join(physics_violators[:5])}...")
+    if vad_violators:
+        log.warning(f"   📉 Слова висят вне VAD ({len(vad_violators)} слов): {', '.join(vad_violators[:5])}...")
+            
+    final_score = max(0.0, min(100.0, score))
+    log.info(f"   🏆 Оценка: {final_score:.1f}/100")
+    return final_score
 
 ================================================================================
 ФАЙЛ: ./.env.cache
@@ -769,120 +738,127 @@ __pycache__/
 ФАЙЛ: ./aligner_orchestra.py
 ================================================================================
 import rapidfuzz
-import copy
-from aligner_utils import get_phonetic_bounds, calculate_overlap, get_vowel_weight
+from aligner_utils import (
+    get_phonetic_bounds, get_vowel_weight, check_sdr_sanity
+)
 from app_logger import get_logger
 
 log = get_logger("aligner_orchestra")
 
-def execute_sequence_matching(canon_words: list, heard_words: list, vad_intervals: list) -> list:
+def execute_sequence_matching(canon_words: list, heard_words: list, vad_intervals: list, audio_duration: float) -> list:
     """
-    Главный движок выравнивания. Сопоставляет идеальный текст (canon_words) 
-    с тем, что реально услышала нейросеть (heard_words).
-    
-    Возвращает обновленный список canon_words с таймингами.
+    Neural Sequence Alignment с внедренным SDR-Guard.
     """
     log.info("=" * 50)
-    log.info("🧠 [Orchestra] Старт Neural Sequence Matching...")
+    log.info("🧠 [Orchestra] Старт Neural Sequence Matching + SDR-Guard...")
     
     n_canon = len(canon_words)
     n_heard = len(heard_words)
     
     if n_heard == 0:
-        log.warning("   ⚠️ Нейросеть ничего не услышала! Sequence Matching невозможен.")
+        log.warning("   ⚠️ Транскрипт пуст. Sequence Matching отменен.")
         return canon_words
         
-    # 1. Построение матрицы Левенштейна (Needleman-Wunsch)
-    dp = [[0] * (n_heard + 1) for _ in range(n_canon + 1)]
-    backtrack = [[(0, 0)] * (n_heard + 1) for _ in range(n_canon + 1)]
-    
-    # Штрафы
-    MATCH_SCORE = 3
-    PARTIAL_MATCH_SCORE = 1
-    GAP_PENALTY = -1
-    MISMATCH_PENALTY = -1
-    
-    for i in range(1, n_canon + 1):
-        dp[i][0] = i * GAP_PENALTY
-        backtrack[i][0] = (i - 1, 0)
-        
-    for j in range(1, n_heard + 1):
-        dp[0][j] = j * GAP_PENALTY
-        backtrack[0][j] = (0, j - 1)
-        
-    for i in range(1, n_canon + 1):
-        for j in range(1, n_heard + 1):
-            c_text = canon_words[i-1]["clean_text"]
-            h_text = heard_words[j-1]["clean"]
-            
-            similarity = rapidfuzz.fuzz.ratio(c_text, h_text)
-            
-            if similarity >= 80:
-                cost = MATCH_SCORE
-            elif similarity >= 50:
-                cost = PARTIAL_MATCH_SCORE
-            else:
-                cost = MISMATCH_PENALTY
+    # 1. Формируем пул кандидатов (все совпадения > 60%)
+    candidates = []
+    for c_idx in range(n_canon):
+        for h_idx in range(n_heard):
+            c_text = canon_words[c_idx]["clean_text"]
+            h_text = heard_words[h_idx]["clean"]
+            sim = rapidfuzz.fuzz.ratio(c_text, h_text)
+            if sim >= 60:
+                candidates.append({
+                    "c_idx": c_idx,
+                    "h_idx": h_idx,
+                    "sim": sim,
+                    "start": heard_words[h_idx]["start"],
+                    "end": heard_words[h_idx]["end"]
+                })
                 
-            # Варианты: Совпадение/Замена, Пропуск в Canon (Удаление), Пропуск в Heard (Вставка)
-            match_val = dp[i-1][j-1] + cost
-            delete_val = dp[i-1][j] + GAP_PENALTY
-            insert_val = dp[i][j-1] + GAP_PENALTY
+    # Сортируем кандидатов строго по времени (чтобы не было путешествий в прошлое)
+    candidates.sort(key=lambda x: x["start"])
+    
+    # 2. SDR-Guard: Поиск оптимального физического пути (Dynamic Programming)
+    # Наша цель - набрать максимальный score, не нарушая физику чтения.
+    num_cand = len(candidates)
+    dp = [c["sim"] for c in candidates]
+    parent = [-1] * num_cand
+    
+    for i in range(1, num_cand):
+        best_score = dp[i]
+        best_p = -1
+        
+        curr = candidates[i]
+        
+        for j in range(i - 1, -1, -1):
+            prev = candidates[j]
             
-            best_val = max(match_val, delete_val, insert_val)
-            dp[i][j] = best_val
+            # Слова не могут идти в обратном порядке в тексте
+            if curr["c_idx"] <= prev["c_idx"]:
+                continue
+                
+            dur = curr["start"] - prev["end"]
+            if dur < -0.1: # Жесткий нахлест таймингов
+                continue
+                
+            is_sane = False
+            sdr = 0.0
             
-            if best_val == match_val:
-                backtrack[i][j] = (i-1, j-1)
-            elif best_val == delete_val:
-                backtrack[i][j] = (i-1, j)
+            # Если это соседние слова в тексте (между ними нет пропусков)
+            if curr["c_idx"] == prev["c_idx"] + 1:
+                # Пауза между соседними словами не может быть больше 3 секунд
+                # Иначе это ложный якорь (галлюцинация)
+                is_sane = (dur <= 3.0)
             else:
-                backtrack[i][j] = (i, j-1)
-
-    # 2. Обратный проход (Backtracking)
-    i, j = n_canon, n_heard
-    matches = []
+                # Если между якорями есть пропущенные слова, проверяем,
+                # реально ли их спеть за время dur
+                is_sane, sdr = check_sdr_sanity(canon_words, prev["c_idx"] + 1, curr["c_idx"] - 1, dur)
+                
+            if is_sane:
+                score = dp[j] + curr["sim"]
+                if score > best_score:
+                    best_score = score
+                    best_p = j
+                    
+        dp[i] = best_score
+        parent[i] = best_p
+        
+    # 3. Восстановление идеального пути
+    if not candidates:
+        log.warning("   ⚠️ Нет ни одного валидного совпадения текста.")
+        return canon_words
+        
+    max_idx = dp.index(max(dp))
+    curr_idx = max_idx
+    valid_sequence = []
     
-    while i > 0 and j > 0:
-        prev_i, prev_j = backtrack[i][j]
+    while curr_idx != -1:
+        valid_sequence.append(candidates[curr_idx])
+        curr_idx = parent[curr_idx]
         
-        if prev_i == i - 1 and prev_j == j - 1:
-            c_text = canon_words[i-1]["clean_text"]
-            h_text = heard_words[j-1]["clean"]
-            similarity = rapidfuzz.fuzz.ratio(c_text, h_text)
-            
-            if similarity >= 50:
-                matches.append((i-1, j-1, similarity))
-        
-        i, j = prev_i, prev_j
-
-    matches.reverse()
+    valid_sequence.reverse()
+    log.info(f"   🔗 Одобрено SDR-Гвардией: {len(valid_sequence)} жестких якорей.")
     
-    # 3. Перенос таймингов для совпавших слов
-    log.info(f"   🔗 Найдено {len(matches)} прямых совпадений из {n_canon} эталонных слов.")
-    
-    for c_idx, h_idx, sim in matches:
-        hw = heard_words[h_idx]
-        cw = canon_words[c_idx]
+    for match in valid_sequence:
+        cw = canon_words[match["c_idx"]]
+        cw["start"] = match["start"]
+        cw["end"] = match["end"]
+        log.debug(f"      [Anchor] '{cw['word']}' | {cw['start']:.2f}s - {cw['end']:.2f}s | Sim: {match['sim']}%")
         
-        cw["start"] = hw["start"]
-        cw["end"] = hw["end"]
-        log.debug(f"      [Match] '{cw['word']}' (Genius) <-> '{hw['word']}' (Whisper) | Sim: {sim}% | {cw['start']:.2f}s - {cw['end']:.2f}s")
-        
-    # 4. Smart VAD-Snapping (Спасение нераспределенных слов)
-    canon_updated = _smart_vad_snapping(canon_words, vad_intervals)
+    # 4. Phonetic Fluid Interpolation (Заливка пустых зон)
+    _phonetic_fluid_snapping(canon_words, vad_intervals, audio_duration)
     
     log.info("🧠 [Orchestra] Sequence Matching завершен.")
     log.info("=" * 50)
-    return canon_updated
+    return canon_words
 
-def _smart_vad_snapping(words: list, vad_intervals: list) -> list:
+def _phonetic_fluid_snapping(words: list, vad_intervals: list, audio_duration: float):
     """
-    Интеллектуальное заполнение дыр.
-    Если слово не было услышано Whisper'ом, алгоритм ищет для него
-    ближайший свободный VAD-интервал между соседними подтвержденными словами.
+    ФИЛЬТР №3: Phonetic Fluid.
+    Берет нераспознанные слова и буквально "вливает" их в доступные VAD-интервалы
+    строго пропорционально их фонетическому весу.
     """
-    log.info("   🧩 [VAD-Snapping] Запуск спасения нераспределенных слов...")
+    log.info("   🌊 [Phonetic Fluid] Запуск фонетической заливки пустот...")
     
     n = len(words)
     i = 0
@@ -890,54 +866,94 @@ def _smart_vad_snapping(words: list, vad_intervals: list) -> list:
     
     while i < n:
         if words[i]["start"] == -1.0:
-            # Находим границы "дыры" (gap)
             j = i
             while j < n and words[j]["start"] == -1.0:
                 j += 1
                 
             gap_size = j - i
             
-            # Определяем временные рамки, куда можно вставить эти слова
-            t_start = words[i-1]["end"] + 0.05 if i > 0 and words[i-1]["start"] != -1.0 else 0.0
-            # Если дыра в самом конце, ограничиваемся последним VAD
-            t_end = words[j]["start"] - 0.05 if j < n and words[j]["start"] != -1.0 else (vad_intervals[-1][1] if vad_intervals else 1000.0)
+            # Определяем временные границы дыры
+            t_start = words[i-1]["end"] + 0.05 if i > 0 else 0.0
+            t_end = words[j]["start"] - 0.05 if j < n else (vad_intervals[-1][1] if vad_intervals else audio_duration)
             
-            log.debug(f"      -> Дыра [{i}:{j-1}] ({gap_size} слов). Окно: {t_start:.2f}s - {t_end:.2f}s")
+            # Вычисляем, сколько В РЕАЛЬНОСТИ времени нужно на произнесение этих слов
+            avg_needed_dur = sum((get_phonetic_bounds(words[k]["clean_text"], words[k]["line_break"])[0] + 
+                                  get_phonetic_bounds(words[k]["clean_text"], words[k]["line_break"])[1]) / 2 
+                                 for k in range(i, j))
             
-            # Собираем доступные VAD-интервалы в этом окне
+            # Собираем доступный VAD
             available_vads = []
             for vs, ve in vad_intervals:
                 if ve > t_start and vs < t_end:
-                    overlap_s = max(t_start, vs)
-                    overlap_e = min(t_end, ve)
-                    if overlap_e - overlap_s > 0.1: # Игнорируем микро-шумы
-                        available_vads.append((overlap_s, overlap_e))
-            
+                    o_s = max(t_start, vs)
+                    o_e = min(t_end, ve)
+                    if o_e - o_s > 0.05:
+                        available_vads.append((o_s, o_e))
+                        
             if not available_vads:
-                log.warning(f"         ⚠️ Нет доступного VAD для слов [{i}:{j-1}]. Окно пустое!")
+                log.debug(f"         ⚠️ Окно [{i}:{j-1}] полностью в тишине. Оставляем Финальному Интерполятору.")
                 i = j
                 continue
                 
-            total_vad_dur = sum(e - s for s, e in available_vads)
-            
-            # Считаем суммарный фонетический вес слов в дыре
+            # SMART INTRO PACKING (Решение для Монеточки)
+            if i == 0 and available_vads:
+                log.debug(f"         ⬅️ [Smart Intro Packing] Прижимаем {gap_size} слов к первому якорю на {t_end:.2f}s")
+                packed_vads = []
+                accumulated = 0.0
+                for vs, ve in reversed(available_vads):
+                    dur = ve - vs
+                    if accumulated + dur >= avg_needed_dur:
+                        needed_s = ve - (avg_needed_dur - accumulated)
+                        packed_vads.append((needed_s, ve))
+                        break
+                    else:
+                        packed_vads.append((vs, ve))
+                        accumulated += dur
+                available_vads = list(reversed(packed_vads))
+                
+            # SMART OUTRO PACKING
+            elif j == n and available_vads:
+                log.debug(f"         ➡️ [Smart Outro Packing] Прижимаем {gap_size} слов к последнему якорю на {t_start:.2f}s")
+                packed_vads = []
+                accumulated = 0.0
+                for vs, ve in available_vads:
+                    dur = ve - vs
+                    if accumulated + dur >= avg_needed_dur:
+                        needed_e = vs + (avg_needed_dur - accumulated)
+                        packed_vads.append((vs, needed_e))
+                        break
+                    else:
+                        packed_vads.append((vs, ve))
+                        accumulated += dur
+                available_vads = packed_vads
+
+            total_available_vad = sum(e - s for s, e in available_vads)
+            if total_available_vad <= 0:
+                i = j
+                continue
+                
+            # ФИЛЬТР №4: Line Integrity (Неразрывность)
+            has_line_break = any(words[k]["line_break"] for k in range(i, j - 1))
+            if not has_line_break and len(available_vads) > 1:
+                largest_vad = max(available_vads, key=lambda x: x[1] - x[0])
+                if largest_vad[1] - largest_vad[0] >= total_available_vad * 0.4:
+                    available_vads = [largest_vad]
+                    total_available_vad = largest_vad[1] - largest_vad[0]
+                    log.debug(f"         🔒 [Line Integrity] Фраза неразрывна. Наливаем в единый VAD.")
+
+            # Считаем суммарный фонетический вес
             weights = [get_vowel_weight(words[k]["clean_text"], words[k]["line_break"]) for k in range(i, j)]
             total_weight = sum(weights)
             
-            # Распределяем слова пропорционально их фонетическому весу по доступным VAD
             current_time_in_vad = 0.0
             
             for k in range(i, j):
                 w = words[k]
+                word_vad_share = (weights[k-i] / total_weight) * total_available_vad
                 
-                # Доля времени, которая полагается этому слову
-                word_vad_share = (weights[k-i] / total_weight) * total_vad_dur
-                
-                # Защита от бесконечного растягивания (как в "Осень пьяная")
                 min_p_dur, max_p_dur = get_phonetic_bounds(w["clean_text"], w["line_break"])
-                actual_dur = min(word_vad_share, max_p_dur)
+                actual_dur = min(max(word_vad_share, min_p_dur), max_p_dur)
                 
-                # Ищем, в какой VAD-интервал ложится это время
                 accumulated = 0.0
                 placed_start, placed_end = -1.0, -1.0
                 
@@ -954,7 +970,6 @@ def _smart_vad_snapping(words: list, vad_intervals: list) -> list:
                     w["start"] = placed_start
                     w["end"] = placed_end
                     healed_count += 1
-                    log.debug(f"         [Healed] '{w['word']}' -> {placed_start:.2f}s - {placed_end:.2f}s")
                 
                 current_time_in_vad += word_vad_share
                 
@@ -962,8 +977,8 @@ def _smart_vad_snapping(words: list, vad_intervals: list) -> list:
         else:
             i += 1
             
-    log.info(f"   ✨ VAD-Snapping спас {healed_count} слов!")
-    return words
+    if healed_count > 0:
+        log.info(f"   🌊 [Phonetic Fluid] Успешно залито в VAD {healed_count} слов!")
 
 ================================================================================
 ФАЙЛ: ./main.py
@@ -1829,31 +1844,28 @@ log = get_logger("aligner_acoustics")
 def get_vocal_intervals(audio_data: np.ndarray, sr: int, top_db: float = 35.0) -> list:
     """
     Сканирует изолированный вокальный стем и возвращает точные интервалы звука.
-    Использует librosa.effects.split, который базируется на RMS энергии.
-    
-    top_db - порог в децибелах ниже пика. Всё, что тише - считается тишиной.
-    Возвращает список кортежей: [(start_sec, end_sec), ...]
+    Использует RMS энергию.
     """
-    log.info("🎙️ [Acoustics] Сканирование вокального стема на наличие энергии...")
+    log.info("🎙️ [Acoustics] Сканирование вокального стема на наличие энергии (VAD)...")
     
     # Очищаем сигнал от низкочастотного гула (DC offset и rumble)
     audio_clean = librosa.effects.preemphasis(audio_data)
     
-    # Находим интервалы, где звук превышает порог тишины
+    # Находим интервалы, где звук превышает порог
     intervals_samples = librosa.effects.split(audio_clean, top_db=top_db, frame_length=2048, hop_length=512)
     
     intervals_sec = []
     for start_s, end_s in intervals_samples:
         intervals_sec.append((start_s / sr, end_s / sr))
         
-    # Склеиваем микро-паузы (меньше 0.3 секунд), так как это обычно дыхание или смыкание губ
+    # Склеиваем микро-паузы (меньше 0.4 секунд), так как это дыхание/смыкание губ
     merged_intervals = []
     for start, end in intervals_sec:
         if not merged_intervals:
             merged_intervals.append((start, end))
         else:
             last_start, last_end = merged_intervals[-1]
-            if start - last_end <= 0.3:
+            if start - last_end <= 0.4:
                 merged_intervals[-1] = (last_start, end)
             else:
                 merged_intervals.append((start, end))
@@ -1861,12 +1873,60 @@ def get_vocal_intervals(audio_data: np.ndarray, sr: int, top_db: float = 35.0) -
     total_vocal_time = sum(e - s for s, e in merged_intervals)
     log.info(f"   ✅ Найдено вокальных блоков: {len(merged_intervals)} (общая длительность: {total_vocal_time:.2f}s)")
     
+    if merged_intervals:
+        log.debug(f"      [VAD Map] Первый блок: {merged_intervals[0][0]:.2f}s - {merged_intervals[0][1]:.2f}s")
+        log.debug(f"      [VAD Map] Последний блок: {merged_intervals[-1][0]:.2f}s - {merged_intervals[-1][1]:.2f}s")
+    
     return merged_intervals
 
-def constrain_to_vad(start: float, end: float, vad_intervals: list) -> tuple:
+def filter_whisper_hallucinations(heard_words: list, vad_intervals: list) -> list:
+    """
+    ФИЛЬТР №1: Анти-Галлюциноген + Защита от вздохов.
+    Удаляет слова из транскрипта Whisper, если они физически попадают в тишину
+    или если нейросеть в них сильно не уверена (prob < 0.40).
+    """
+    log.info("🧹 [VAD Filter] Старт очистки галлюцинаций Whisper...")
+    cleaned_words = []
+    removed_count = 0
+    
+    for w in heard_words:
+        start = w["start"]
+        end = w["end"]
+        dur = end - start
+        
+        if dur <= 0:
+            continue
+            
+        # 1. Проверка уверенности нейросети
+        prob = w.get("probability", 1.0)
+        if prob < 0.40:
+            log.debug(f"      🗑️ [Low Prob] Удален мусор/вздох: '{w['word']}' | Prob: {prob:.2f} < 0.40 | {start:.2f}s-{end:.2f}s")
+            removed_count += 1
+            continue
+            
+        # 2. Проверка физического пересечения с VAD
+        overlap = 0.0
+        for vs, ve in vad_intervals:
+            o_s = max(start, vs)
+            o_e = min(end, ve)
+            if o_e > o_s:
+                overlap += (o_e - o_s)
+                
+        # Если слово хотя бы на 15% попадает в вокальный блок - оставляем
+        vad_ratio = overlap / dur if dur > 0 else 0
+        if vad_ratio > 0.15:
+            cleaned_words.append(w)
+        else:
+            log.debug(f"      🗑️ [Ghost VAD] Удалена галлюцинация в тишине: '{w['word']}' | VAD-Перекрытие: {vad_ratio*100:.1f}% | {start:.2f}s-{end:.2f}s")
+            removed_count += 1
+            
+    log.info(f"   ✨ Фильтр удалил {removed_count} фантомных слов. Осталось доверенных: {len(cleaned_words)}")
+    return cleaned_words
+
+def constrain_to_vad(start: float, end: float, vad_intervals: list, word_text: str = "word") -> tuple:
     """
     Жестко ограничивает тайминг слова рамками вокальной активности.
-    Слово физически не может существовать вне этих интервалов.
+    Если слово висит в тишине, оно выталкивается в ближайший VAD.
     """
     if not vad_intervals:
         return start, end
@@ -1876,59 +1936,38 @@ def constrain_to_vad(start: float, end: float, vad_intervals: list) -> tuple:
     valid_ends = []
     
     for vs, ve in vad_intervals:
-        # Если слово пересекается с интервалом
         if start <= ve and end >= vs:
             valid_starts.append(max(start, vs))
             valid_ends.append(min(end, ve))
             
     if valid_starts and valid_ends:
-        # Возвращаем самую широкую рамку из доступных
+        # Слово уже частично или полностью в VAD, просто обрезаем края, торчащие в тишину
         return min(valid_starts), max(valid_ends)
         
-    # Если слово вообще не попало в VAD (аномалия), примагничиваем его к ближайшему звуку
+    # СЛОВО ВНЕ VAD: Примагничиваем его к ближайшему звуку
     closest_dist = float('inf')
     best_s = start
     best_e = end
+    dur = end - start
     
     for vs, ve in vad_intervals:
-        # Слово до VAD-блока
+        # Слово до VAD-блока -> толкаем вправо
         if end < vs:
             dist = vs - end
             if dist < closest_dist:
                 closest_dist = dist
                 best_s = vs
-                best_e = min(vs + (end - start), ve)
-        # Слово после VAD-блока
+                best_e = min(vs + dur, ve)
+        # Слово после VAD-блока -> толкаем влево
         elif start > ve:
             dist = start - ve
             if dist < closest_dist:
                 closest_dist = dist
                 best_e = ve
-                best_s = max(ve - (end - start), vs)
+                best_s = max(ve - dur, vs)
 
+    log.debug(f"      🧲 [VAD-Magnet] Слово '{word_text}' вытолкнуто из тишины: [{start:.2f}s->{end:.2f}s] превратилось в [{best_s:.2f}s->{best_e:.2f}s]")
     return best_s, best_e
-
-def is_in_silence(start: float, end: float, vad_intervals: list, threshold: float = 0.8) -> bool:
-    """
-    Проверяет, находится ли слово по большей части в абсолютной тишине.
-    threshold = 0.8 означает, что если 80% слова в тишине - это галлюцинация.
-    """
-    if not vad_intervals:
-        return False
-        
-    dur = end - start
-    if dur <= 0:
-        return True
-        
-    overlap = 0.0
-    for vs, ve in vad_intervals:
-        o_s = max(start, vs)
-        o_e = min(end, ve)
-        if o_e > o_s:
-            overlap += (o_e - o_s)
-            
-    silence_ratio = 1.0 - (overlap / dur)
-    return silence_ratio >= threshold
 
 ================================================================================
 ФАЙЛ: ./karaoke_aligner.py
@@ -1939,25 +1978,22 @@ import json
 import torch
 import librosa
 import stable_whisper
-import numpy as np
 
 from app_logger import get_logger, dump_debug
-from aligner_utils import detect_language, prepare_text, clean_word, evaluate_alignment_quality
-from aligner_acoustics import get_vocal_intervals, constrain_to_vad, is_in_silence
+from aligner_utils import detect_language, prepare_text, clean_word, evaluate_alignment_quality, get_phonetic_bounds
+from aligner_acoustics import get_vocal_intervals, constrain_to_vad, filter_whisper_hallucinations
 from aligner_orchestra import execute_sequence_matching
 
 log = get_logger("aligner")
 
 class KaraokeAligner:
     """
-    Neural Sequence Paradigm.
-    Индустриальный стандарт привязки текста к вокалу: 
-    Слушаем -> Сравниваем (Sequence Matching) -> Ограничиваем физикой (VAD).
+    Neural Sequence Paradigm (V8.2 - Phonetic Fluid & SDR-Guard)
+    Абсолютная защита от галлюцинаций и пустых интро/аутро.
     """
     
     def __init__(self, model_name="medium"):
         self.model_name = model_name
-        # В ROCm PyTorch видит видеокарту AMD как 'cuda'
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         
         base_dir = os.path.dirname(os.path.abspath(__file__))
@@ -1970,10 +2006,10 @@ class KaraokeAligner:
         self._track_stem = os.path.basename(output_json_path).replace("_(Karaoke Lyrics).json", "")
         
         log.info("=" * 60)
-        log.info(f"🚀 Aligner СТАРТ (Neural Sequence Paradigm): {self._track_stem}")
+        log.info(f"🚀 Aligner СТАРТ (V8.2 Phonetic Fluid): {self._track_stem}")
         log.info(f"🖥️ Устройство: {self.device.upper()}, Модель: {self.model_name}")
         
-        # 1. Подготовка текста
+        # 1. Подготовка идеального текста (Genius)
         canon_words = prepare_text(raw_lyrics)
         if not canon_words:
             log.warning("⚠️ Текст пуст! Сохраняем пустой JSON.")
@@ -1982,82 +2018,81 @@ class KaraokeAligner:
             return output_json_path
             
         lang = detect_language(raw_lyrics)
-        log.info(f"📖 Загружен эталонный текст: {len(canon_words)} слов. Определен язык: {lang.upper()}")
+        log.info(f"📖 Эталонный текст: {len(canon_words)} слов. Язык: {lang.upper()}")
 
         model = None
         try:
-            # 2. Акустический анализ
+            # 2. Физический анализ звука (VAD)
             log.info("🎵 Загрузка вокального стема (librosa)...")
             audio_data, sr = librosa.load(vocals_path, sr=16000, mono=True)
             audio_duration = len(audio_data) / sr
             log.info(f"⏱️ Длительность трека: {audio_duration:.2f}s")
             
-            # Получаем ЖЕСТКИЕ физические интервалы вокала
             vad_intervals = get_vocal_intervals(audio_data, sr, top_db=35.0)
             if not vad_intervals:
-                log.warning("⚠️ VAD не нашел голоса в треке! Сценарий тишины.")
+                log.warning("⚠️ VAD не нашел голоса в треке! Сценарий глухой тишины.")
                 vad_intervals = [(0.0, audio_duration)]
 
-            # 3. Слух Нейросети (Слепая транскрибация)
+            # 3. Слепой слух Нейросети (Stable-Whisper)
             log.info("🧠 Загрузка модели Stable-Whisper...")
             model = stable_whisper.load_model(self.model_name, download_root=self.whisper_model_dir, device=self.device)
             
-            log.info("🎧 Нейросеть слушает трек в слепом режиме (transcribe)...")
-            # Используем transcribe, чтобы получить то, что РЕАЛЬНО поется (с идеальными таймингами stable-ts)
+            log.info("🎧 Нейросеть слушает трек...")
             result = model.transcribe(
                 audio_data, 
                 language=lang, 
                 word_timestamps=True,
-                vad=True # Включаем встроенный VAD стабильного виспера как подстраховку
+                vad=True # Встроенный первичный фильтр
             )
             
-            heard_words = []
+            raw_heard_words = []
             for segment in result.segments:
                 for w in segment.words:
                     cw = clean_word(w.word)
                     if cw:
-                        heard_words.append({
+                        raw_heard_words.append({
                             "word": w.word,
                             "clean": cw,
                             "start": w.start,
-                            "end": w.end
+                            "end": w.end,
+                            "probability": w.probability
                         })
                         
-            log.info(f"🗣️ Нейросеть услышала {len(heard_words)} слов.")
+            log.info(f"🗣️ Нейросеть услышала {len(raw_heard_words)} сырых слов.")
 
-            # 4. Neural Sequence Matching (Сопоставление)
-            # Приклеиваем услышанное к эталонному тексту Гениуса
-            canon_words = execute_sequence_matching(canon_words, heard_words, vad_intervals)
+            # 4. ФИЛЬТР №1: Очистка галлюцинаций
+            heard_words = filter_whisper_hallucinations(raw_heard_words, vad_intervals)
+
+            # 5. Оркестратор (Левенштейн + SDR-Guard + Phonetic Fluid)
+            canon_words = execute_sequence_matching(canon_words, heard_words, vad_intervals, audio_duration)
             
-            # 5. Финальная полировка и линейная интерполяция дыр
-            log.info("🔧 [Cleanup] Финальная зачистка и интерполяция пропущенных слов...")
+            # 6. Экстренный Fallback (Сжатие оставшихся дыр без резины)
+            log.info("🔧 [Fallback] Экстренная проверка слепых зон...")
             self._force_fill_gaps(canon_words, audio_duration, vad_intervals)
             
-            # 6. Валидация физики (Никаких слов в пустоте!)
-            log.info("🛡️ [Physics Check] Ограничение слов физическим VAD-контуром...")
+            # 7. Физический Контроль (Магнит VAD)
+            log.info("🛡️ [Physics Check] Финальная шлифовка таймингов по VAD-контуру...")
             for w in canon_words:
                 old_s, old_e = w["start"], w["end"]
-                # Жестко примагничиваем к ближайшему вокальному блоку
-                w["start"], w["end"] = constrain_to_vad(w["start"], w["end"], vad_intervals)
                 
-                if abs(old_s - w["start"]) > 1.0:
-                    log.debug(f"      [VAD-Shift] '{w['word']}' сдвинуто из тишины ({old_s:.2f}s -> {w['start']:.2f}s)")
+                # Слово не имеет права висеть в абсолютной тишине
+                w["start"], w["end"] = constrain_to_vad(w["start"], w["end"], vad_intervals, w["clean_text"])
                 
-                # Минимальная длительность (защита от сломанных таймингов)
+                # Защита от нулевой длины после обрезки
                 if w["end"] - w["start"] < 0.05:
                     w["end"] = w["start"] + 0.1
                     
-            # 7. Разрешение нахлестов (Один тайминг не может наезжать на другой)
+            # 8. Устранение нахлестов
             self._resolve_overlaps(canon_words)
 
+            # 9. Оценка качества
             score = evaluate_alignment_quality(canon_words, vad_intervals)
-            log.info(f"📊 Итоговая оценка физического совпадения: {score:.1f}/100")
 
         except Exception as e:
             log.error(f"❌ Фатальная ошибка Aligner: {e}")
             raise e
         finally:
-            # Жесткая очистка памяти (крайне важно для AMD ROCm)
+            # Освобождение памяти (Критично для AMD ROCm)
             if model: del model
             if 'audio_data' in locals(): del audio_data
             gc.collect()
@@ -2065,7 +2100,7 @@ class KaraokeAligner:
                 torch.cuda.empty_cache()
                 torch.cuda.ipc_collect()
 
-        # Формирование итогового JSON
+        # Формирование JSON
         final_json = []
         for w in canon_words:
             final_json.append({
@@ -2079,7 +2114,7 @@ class KaraokeAligner:
         with open(output_json_path, "w", encoding="utf-8") as f:
             json.dump(final_json, f, ensure_ascii=False, indent=2)
 
-        dump_debug("Neural_Matched", final_json, self._track_stem)
+        dump_debug("Neural_Matched_V8.2", final_json, self._track_stem)
         log.info(f"✅ Aligner УСПЕШНО ЗАВЕРШЕН → {output_json_path}")
         log.info("=" * 60)
         
@@ -2087,12 +2122,14 @@ class KaraokeAligner:
 
     def _force_fill_gaps(self, words: list, audio_duration: float, vad_intervals: list):
         """
-        Если Sequence Matcher не смог сопоставить какие-то слова (остались -1.0), 
-        мы линейно интерполируем их в доступное окно. Вкупе с _smart_vad_snapping из Оркестратора
-        это гарантирует 100% покрытие текста.
+        Если Оркестратор оставил дыры (-1.0), мы принудительно распределяем слова.
+        V8.2: Защита от резинового растяжения! Слова сбиваются в плотный ком возле якоря.
         """
         n = len(words)
         i = 0
+        first_vocal_start = vad_intervals[0][0] if vad_intervals else 0.0
+        healed = 0
+        
         while i < n:
             if words[i]["start"] == -1.0:
                 j = i
@@ -2100,26 +2137,53 @@ class KaraokeAligner:
                     j += 1
                 
                 gap_size = j - i
-                log.debug(f"   ⚠️ Обработка глухой зоны: пропущены слова [{i}-{j-1}]. Принудительная интерполяция.")
                 
-                # Ищем безопасные границы для вставки
-                t_start = words[i-1]["end"] + 0.05 if i > 0 and words[i-1]["start"] != -1.0 else (vad_intervals[0][0] if vad_intervals else 0.0)
-                t_end = words[j]["start"] - 0.05 if j < n and words[j]["start"] != -1.0 else (vad_intervals[-1][1] if vad_intervals else audio_duration)
+                # Считаем, сколько времени ФИЗИЧЕСКИ нужно на эти слова
+                needed_dur = sum((get_phonetic_bounds(words[k]["clean_text"])[0] + get_phonetic_bounds(words[k]["clean_text"])[1]) / 2 for k in range(i, j))
+                
+                # Ищем рамки
+                t_start = words[i-1]["end"] + 0.05 if i > 0 and words[i-1]["start"] != -1.0 else first_vocal_start
+                t_end = words[j]["start"] - 0.05 if j < n and words[j]["start"] != -1.0 else audio_duration
                 
                 if t_start >= t_end:
-                    t_start = t_end - (0.2 * gap_size) # Сдвигаем влево, если окно схлопнулось
+                    t_start = max(first_vocal_start, t_end - needed_dur) 
                     
-                # Равномерно делим доступное время
+                actual_gap_dur = t_end - t_start
+                
+                # ЕСЛИ ЭТО ИНТРО (Монеточка) - прижимаем вправо к первому слову
+                if i == 0 and actual_gap_dur > needed_dur:
+                    t_start = t_end - needed_dur
+                    log.debug(f"   ⚠️ [Fallback] Интро: прижимаем {gap_size} слов к отметке {t_end:.2f}s (Окно: {needed_dur:.2f}s)")
+                
+                # ЕСЛИ ЭТО АУТРО - прижимаем влево к последнему слову
+                elif j == n and actual_gap_dur > needed_dur:
+                    t_end = t_start + needed_dur
+                    log.debug(f"   ⚠️ [Fallback] Аутро: прижимаем {gap_size} слов к отметке {t_start:.2f}s (Окно: {needed_dur:.2f}s)")
+                
+                # Если дыра в середине слишком большая - сжимаем по центру
+                elif actual_gap_dur > needed_dur * 2:
+                    center = (t_start + t_end) / 2
+                    t_start = center - (needed_dur / 2)
+                    t_end = center + (needed_dur / 2)
+                    log.debug(f"   ⚠️ [Fallback] Центр: сжатие {gap_size} слов в окно {t_start:.2f}s - {t_end:.2f}s")
+                else:
+                    log.debug(f"   ⚠️ [Fallback] Стандартное распределение {gap_size} слов в окно {t_start:.2f}s - {t_end:.2f}s")
+
+                # Линейное распределение в подготовленном окне
                 step = (t_end - t_start) / gap_size
                 for k in range(i, j):
                     words[k]["start"] = t_start + (k - i) * step
                     words[k]["end"] = words[k]["start"] + (step * 0.9)
+                    healed += 1
                 i = j
             else:
                 i += 1
+                
+        if healed > 0:
+            log.info(f"   ✅ [Fallback] Принудительно сжато и распределено: {healed} слов.")
 
     def _resolve_overlaps(self, words: list):
-        """Убеждаемся, что конец предыдущего слова строго не позже начала следующего."""
+        """Убеждаемся, что тайминги не наезжают друг на друга."""
         log.info("📏 [Smoothing] Устранение нахлестов слов...")
         resolves = 0
         for i in range(len(words) - 1):

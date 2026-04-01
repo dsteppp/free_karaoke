@@ -6,7 +6,7 @@ import librosa
 import stable_whisper
 
 from app_logger import get_logger, dump_debug
-from aligner_utils import detect_language, prepare_text, clean_word, evaluate_alignment_quality
+from aligner_utils import detect_language, prepare_text, clean_word, evaluate_alignment_quality, get_phonetic_bounds
 from aligner_acoustics import get_vocal_intervals, constrain_to_vad, filter_whisper_hallucinations
 from aligner_orchestra import execute_sequence_matching
 
@@ -14,8 +14,8 @@ log = get_logger("aligner")
 
 class KaraokeAligner:
     """
-    Neural Sequence Paradigm (V8.1)
-    Полный отказ от кастомной математики в пользу машинного слуха + VAD-фильтрации.
+    Neural Sequence Paradigm (V8.2 - Phonetic Fluid & SDR-Guard)
+    Абсолютная защита от галлюцинаций и пустых интро/аутро.
     """
     
     def __init__(self, model_name="medium"):
@@ -32,7 +32,7 @@ class KaraokeAligner:
         self._track_stem = os.path.basename(output_json_path).replace("_(Karaoke Lyrics).json", "")
         
         log.info("=" * 60)
-        log.info(f"🚀 Aligner СТАРТ (Neural Sequence V8.1): {self._track_stem}")
+        log.info(f"🚀 Aligner СТАРТ (V8.2 Phonetic Fluid): {self._track_stem}")
         log.info(f"🖥️ Устройство: {self.device.upper()}, Модель: {self.model_name}")
         
         # 1. Подготовка идеального текста (Genius)
@@ -54,7 +54,6 @@ class KaraokeAligner:
             audio_duration = len(audio_data) / sr
             log.info(f"⏱️ Длительность трека: {audio_duration:.2f}s")
             
-            # Получаем жесткие рамки, где физически есть голос
             vad_intervals = get_vocal_intervals(audio_data, sr, top_db=35.0)
             if not vad_intervals:
                 log.warning("⚠️ VAD не нашел голоса в треке! Сценарий глухой тишины.")
@@ -69,7 +68,7 @@ class KaraokeAligner:
                 audio_data, 
                 language=lang, 
                 word_timestamps=True,
-                vad=True # Встроенный VAD виспера как первичный фильтр
+                vad=True # Встроенный первичный фильтр
             )
             
             raw_heard_words = []
@@ -82,42 +81,38 @@ class KaraokeAligner:
                             "clean": cw,
                             "start": w.start,
                             "end": w.end,
-                            "probability": w.probability # Важный параметр для фильтрации вздохов!
+                            "probability": w.probability
                         })
                         
             log.info(f"🗣️ Нейросеть услышала {len(raw_heard_words)} сырых слов.")
 
-            # 4. ФИЛЬТР №1 + №2: Очистка галлюцинаций (вздохи, гитарные соло)
+            # 4. ФИЛЬТР №1: Очистка галлюцинаций
             heard_words = filter_whisper_hallucinations(raw_heard_words, vad_intervals)
 
-            # 5. Neural Sequence Matching (Оркестратор + Левенштейн)
-            canon_words = execute_sequence_matching(canon_words, heard_words, vad_intervals)
+            # 5. Оркестратор (Левенштейн + SDR-Guard + Phonetic Fluid)
+            canon_words = execute_sequence_matching(canon_words, heard_words, vad_intervals, audio_duration)
             
-            # 6. Заполнение мертвых зон (если Левенштейн и Мотивы не справились)
-            log.info("🔧 [Cleanup] Линейная интерполяция оставшихся слепых зон...")
+            # 6. Экстренный Fallback (Сжатие оставшихся дыр без резины)
+            log.info("🔧 [Fallback] Экстренная проверка слепых зон...")
             self._force_fill_gaps(canon_words, audio_duration, vad_intervals)
             
-            # 7. Физический Контроль (Жесткая привязка к VAD)
+            # 7. Физический Контроль (Магнит VAD)
             log.info("🛡️ [Physics Check] Финальная шлифовка таймингов по VAD-контуру...")
             for w in canon_words:
                 old_s, old_e = w["start"], w["end"]
                 
-                # Слово не имеет права висеть в тишине
-                w["start"], w["end"] = constrain_to_vad(w["start"], w["end"], vad_intervals)
+                # Слово не имеет права висеть в абсолютной тишине
+                w["start"], w["end"] = constrain_to_vad(w["start"], w["end"], vad_intervals, w["clean_text"])
                 
-                if abs(old_s - w["start"]) > 0.5:
-                    log.debug(f"      [VAD-Shift] '{w['word']}' сдвинуто из тишины ({old_s:.2f}s -> {w['start']:.2f}s)")
-                
-                # Защита от нулевой длины
+                # Защита от нулевой длины после обрезки
                 if w["end"] - w["start"] < 0.05:
                     w["end"] = w["start"] + 0.1
                     
-            # 8. Устранение нахлестов (одно слово не может звучать поверх другого)
+            # 8. Устранение нахлестов
             self._resolve_overlaps(canon_words)
 
             # 9. Оценка качества
             score = evaluate_alignment_quality(canon_words, vad_intervals)
-            log.info(f"📊 Итоговая оценка физического совпадения: {score:.1f}/100")
 
         except Exception as e:
             log.error(f"❌ Фатальная ошибка Aligner: {e}")
@@ -145,7 +140,7 @@ class KaraokeAligner:
         with open(output_json_path, "w", encoding="utf-8") as f:
             json.dump(final_json, f, ensure_ascii=False, indent=2)
 
-        dump_debug("Neural_Matched_V8.1", final_json, self._track_stem)
+        dump_debug("Neural_Matched_V8.2", final_json, self._track_stem)
         log.info(f"✅ Aligner УСПЕШНО ЗАВЕРШЕН → {output_json_path}")
         log.info("=" * 60)
         
@@ -154,11 +149,12 @@ class KaraokeAligner:
     def _force_fill_gaps(self, words: list, audio_duration: float, vad_intervals: list):
         """
         Если Оркестратор оставил дыры (-1.0), мы принудительно распределяем слова.
-        ВАЖНО: Защита от 0.0s! Текст не может начаться раньше первого звука голоса.
+        V8.2: Защита от резинового растяжения! Слова сбиваются в плотный ком возле якоря.
         """
         n = len(words)
         i = 0
         first_vocal_start = vad_intervals[0][0] if vad_intervals else 0.0
+        healed = 0
         
         while i < n:
             if words[i]["start"] == -1.0:
@@ -167,28 +163,50 @@ class KaraokeAligner:
                     j += 1
                 
                 gap_size = j - i
-                log.debug(f"   ⚠️ Обработка глухой зоны: пропущены слова [{i}-{j-1}]. Принудительная интерполяция.")
                 
-                # Защита от старта с 0.0s
-                if i == 0:
-                    t_start = first_vocal_start
-                else:
-                    t_start = words[i-1]["end"] + 0.05 if words[i-1]["start"] != -1.0 else first_vocal_start
-                    
-                t_end = words[j]["start"] - 0.05 if j < n and words[j]["start"] != -1.0 else (vad_intervals[-1][1] if vad_intervals else audio_duration)
+                # Считаем, сколько времени ФИЗИЧЕСКИ нужно на эти слова
+                needed_dur = sum((get_phonetic_bounds(words[k]["clean_text"])[0] + get_phonetic_bounds(words[k]["clean_text"])[1]) / 2 for k in range(i, j))
                 
-                # Если окно схлопнулось (слова спрессовались)
+                # Ищем рамки
+                t_start = words[i-1]["end"] + 0.05 if i > 0 and words[i-1]["start"] != -1.0 else first_vocal_start
+                t_end = words[j]["start"] - 0.05 if j < n and words[j]["start"] != -1.0 else audio_duration
+                
                 if t_start >= t_end:
-                    t_start = max(first_vocal_start, t_end - (0.2 * gap_size)) 
+                    t_start = max(first_vocal_start, t_end - needed_dur) 
                     
-                # Линейное распределение в доступном окне
+                actual_gap_dur = t_end - t_start
+                
+                # ЕСЛИ ЭТО ИНТРО (Монеточка) - прижимаем вправо к первому слову
+                if i == 0 and actual_gap_dur > needed_dur:
+                    t_start = t_end - needed_dur
+                    log.debug(f"   ⚠️ [Fallback] Интро: прижимаем {gap_size} слов к отметке {t_end:.2f}s (Окно: {needed_dur:.2f}s)")
+                
+                # ЕСЛИ ЭТО АУТРО - прижимаем влево к последнему слову
+                elif j == n and actual_gap_dur > needed_dur:
+                    t_end = t_start + needed_dur
+                    log.debug(f"   ⚠️ [Fallback] Аутро: прижимаем {gap_size} слов к отметке {t_start:.2f}s (Окно: {needed_dur:.2f}s)")
+                
+                # Если дыра в середине слишком большая - сжимаем по центру
+                elif actual_gap_dur > needed_dur * 2:
+                    center = (t_start + t_end) / 2
+                    t_start = center - (needed_dur / 2)
+                    t_end = center + (needed_dur / 2)
+                    log.debug(f"   ⚠️ [Fallback] Центр: сжатие {gap_size} слов в окно {t_start:.2f}s - {t_end:.2f}s")
+                else:
+                    log.debug(f"   ⚠️ [Fallback] Стандартное распределение {gap_size} слов в окно {t_start:.2f}s - {t_end:.2f}s")
+
+                # Линейное распределение в подготовленном окне
                 step = (t_end - t_start) / gap_size
                 for k in range(i, j):
                     words[k]["start"] = t_start + (k - i) * step
                     words[k]["end"] = words[k]["start"] + (step * 0.9)
+                    healed += 1
                 i = j
             else:
                 i += 1
+                
+        if healed > 0:
+            log.info(f"   ✅ [Fallback] Принудительно сжато и распределено: {healed} слов.")
 
     def _resolve_overlaps(self, words: list):
         """Убеждаемся, что тайминги не наезжают друг на друга."""

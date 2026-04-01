@@ -23,7 +23,7 @@ def prepare_text(raw_lyrics: str) -> list:
     """
     Разбирает сырой текст с Genius.
     Важнейший момент: мы сохраняем флаг line_break (конец строки).
-    Позже Фильтр №4 (Целостность строк) не позволит разорвать фразу, если line_break = False.
+    Позже Фильтр Целостности Строк не позволит разорвать фразу, если line_break = False.
     """
     log.info("📝 [Utils] Подготовка эталонного текста...")
     if not raw_lyrics: 
@@ -65,9 +65,38 @@ def prepare_text(raw_lyrics: str) -> list:
     log.info(f"   ✅ Обработано слов: {len(words)}, Строф: {stanza_idx + 1}")
     return words
 
+def count_vowels(word: str) -> int:
+    """Считает количество слогов (гласных) в слове для оценки SDR."""
+    vowels = "аеёиоуыэюяaeiouy"
+    return sum(1 for char in word.lower() if char in vowels)
+
+def check_sdr_sanity(words: list, start_idx: int, end_idx: int, duration_sec: float) -> tuple:
+    """
+    SDR-Guard (Syllable Delivery Rate).
+    Проверяет, реально ли человеку спеть указанные слова за указанное время.
+    Возвращает (is_sane: bool, sdr_value: float).
+    """
+    if duration_sec <= 0:
+        return False, 999.0
+        
+    total_syllables = 0
+    for k in range(start_idx, end_idx + 1):
+        # Если слово состоит только из согласных (например, "б", "в"), считаем как 1 слог
+        syllables = max(1, count_vowels(words[k]["clean_text"]))
+        total_syllables += syllables
+        
+    sdr = total_syllables / duration_sec
+    
+    # Физические пределы человека:
+    # Меньше 0.3 слога в секунду - это неестественное растягивание (1 слово на 10 секунд).
+    # Больше 8.0 слогов в секунду - это пулеметный рэп Эминема. Больше 9 - физически невозможно.
+    is_sane = (0.3 <= sdr <= 9.0)
+    
+    return is_sane, sdr
+
 def get_vowel_weight(word: str, is_line_end: bool = False) -> float:
     """
-    Рассчитывает "фонетический вес" слова.
+    Рассчитывает "фонетический вес" слова для Фонетической Заливки.
     Гласные буквы тянутся дольше, чем согласные. Слово в конце строки тянется дольше.
     """
     vowels = "аеёиоуыэюяaeiouy"
@@ -86,7 +115,7 @@ def get_vowel_weight(word: str, is_line_end: bool = False) -> float:
 def get_phonetic_bounds(word: str, is_line_end: bool = False) -> tuple:
     """
     Возвращает физиологический предел длительности слова (min_dur, max_dur).
-    Защищает от растягивания слова "да" на 5 секунд.
+    Защищает от растягивания коротких слов на 5 секунд.
     """
     weight = get_vowel_weight(word, is_line_end)
     min_dur = max(0.05, weight * 0.15)
@@ -107,57 +136,13 @@ def calculate_overlap(s1: float, e1: float, intervals: list) -> float:
             
     return overlap
 
-def extract_motif_rhythm(words: list, start_idx: int, end_idx: int) -> dict:
-    """
-    ФИЛЬТР №3: Извлечение ритмического слепка (для повторяющихся строк).
-    Считает относительные длительности каждого слова во фразе.
-    """
-    log.debug(f"   🧬 [Motif] Извлечение ритма из фразы [{start_idx}:{end_idx}]")
-    
-    total_dur = words[end_idx]["end"] - words[start_idx]["start"]
-    if total_dur <= 0:
-        return None
-        
-    ratios = []
-    for k in range(start_idx, end_idx + 1):
-        w_dur = words[k]["end"] - words[k]["start"]
-        ratios.append({
-            "word_ratio": w_dur / total_dur,
-            # Смещение от начала фразы
-            "start_offset_ratio": (words[k]["start"] - words[start_idx]["start"]) / total_dur 
-        })
-        
-    return {"total_dur": total_dur, "ratios": ratios}
-
-def apply_motif_rhythm(words: list, start_idx: int, end_idx: int, motif: dict, target_start: float, target_end: float):
-    """
-    ФИЛЬТР №3: Применение ритмического слепка к "слепой" зоне.
-    Наклонирует тайминги из уже спетой строчки на нераспознанную.
-    """
-    window_dur = target_end - target_start
-    # Масштабируем: если окно больше оригинального мотива, растягиваем, если меньше - сжимаем
-    scale = window_dur / motif["total_dur"] 
-    # Ограничиваем сильное растяжение/сжатие
-    scale = max(0.8, min(scale, 1.2)) 
-    
-    actual_dur = motif["total_dur"] * scale
-    
-    # Центрируем мотив в доступном окне
-    offset = target_start + (window_dur - actual_dur) / 2
-    
-    log.debug(f"   🧬 [Motif] Клонирование ритма в окно {target_start:.2f}s - {target_end:.2f}s (Масштаб: x{scale:.2f})")
-    
-    ratios = motif["ratios"]
-    for i, k in enumerate(range(start_idx, end_idx + 1)):
-        w = words[k]
-        w["start"] = offset + (ratios[i]["start_offset_ratio"] * actual_dur)
-        w["end"] = w["start"] + (ratios[i]["word_ratio"] * actual_dur)
-
 def evaluate_alignment_quality(words: list, vad_intervals: list) -> float:
     """
     Жесткая проверка итогового качества таймингов.
     Выявляет слова, которые повисли в пустоте или имеют невозможную длину.
+    В лог выводится поимённый список нарушителей.
     """
+    log.info("📊 [QA Evaluator] Анализ итогового качества таймингов...")
     if not words: 
         return 0.0
         
@@ -168,10 +153,10 @@ def evaluate_alignment_quality(words: list, vad_intervals: list) -> float:
     if placed_words < total_words:
         penalty = ((total_words - placed_words) / total_words) * 50.0
         score -= penalty
-        log.warning(f"   📉 [QA] Штраф за нераспределенные слова: -{penalty:.1f} (Не найдено: {total_words - placed_words})")
+        log.warning(f"   📉 Штраф за нераспределенные слова: -{penalty:.1f} (Не найдено: {total_words - placed_words})")
         
-    physics_penalties = 0
-    vad_penalties = 0
+    physics_violators = []
+    vad_violators = []
         
     for w in words:
         if w["start"] == -1.0: 
@@ -183,7 +168,7 @@ def evaluate_alignment_quality(words: list, vad_intervals: list) -> float:
         # 1. Проверка физики слова (очень короткое или тянется как резина)
         if dur < 0.05 or dur > max_dur * 2.0:
             score -= 1.0
-            physics_penalties += 1
+            physics_violators.append(f"'{w['word']}' ({dur:.2f}s, max: {max_dur*2:.2f}s)")
             
         # 2. Проверка попадания в VAD (Не поет ли певец в абсолютной тишине?)
         overlap = calculate_overlap(w["start"], w["end"], vad_intervals)
@@ -192,11 +177,13 @@ def evaluate_alignment_quality(words: list, vad_intervals: list) -> float:
         # Если слово больше чем на 80% висит в тишине - штрафуем
         if vad_ratio < 0.2:
             score -= 2.0
-            vad_penalties += 1
+            vad_violators.append(f"'{w['word']}' (VAD: {vad_ratio*100:.0f}%, {w['start']:.2f}s-{w['end']:.2f}s)")
             
-    if physics_penalties > 0:
-        log.warning(f"   📉 [QA] Нарушение физики длительностей: {physics_penalties} слов (-{physics_penalties:.1f} баллов).")
-    if vad_penalties > 0:
-        log.warning(f"   📉 [QA] Слова висят в тишине (Вне VAD): {vad_penalties} слов (-{vad_penalties * 2.0:.1f} баллов).")
+    if physics_violators:
+        log.warning(f"   📉 Нарушение физики длительностей ({len(physics_violators)} слов): {', '.join(physics_violators[:5])}...")
+    if vad_violators:
+        log.warning(f"   📉 Слова висят вне VAD ({len(vad_violators)} слов): {', '.join(vad_violators[:5])}...")
             
-    return max(0.0, min(100.0, score))
+    final_score = max(0.0, min(100.0, score))
+    log.info(f"   🏆 Оценка: {final_score:.1f}/100")
+    return final_score
