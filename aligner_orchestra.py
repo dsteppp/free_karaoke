@@ -1,6 +1,6 @@
 import rapidfuzz
 from aligner_utils import (
-    get_phonetic_bounds, get_vowel_weight, check_sdr_sanity
+    get_phonetic_bounds, get_vowel_weight, check_sdr_sanity, calculate_phonetic_duration
 )
 from app_logger import get_logger
 
@@ -8,10 +8,10 @@ log = get_logger("aligner_orchestra")
 
 def execute_sequence_matching(canon_words: list, heard_words: list, vad_intervals: list, audio_duration: float) -> list:
     """
-    Neural Sequence Alignment с внедренным SDR-Guard.
+    V8.3 Magnetic Island Alignment.
     """
     log.info("=" * 50)
-    log.info("🧠 [Orchestra] Старт Neural Sequence Matching + SDR-Guard...")
+    log.info("🧠 [Orchestra] Старт Magnetic Sequence Matching + SDR-Guard v2...")
     
     n_canon = len(canon_words)
     n_heard = len(heard_words)
@@ -36,11 +36,10 @@ def execute_sequence_matching(canon_words: list, heard_words: list, vad_interval
                     "end": heard_words[h_idx]["end"]
                 })
                 
-    # Сортируем кандидатов строго по времени (чтобы не было путешествий в прошлое)
+    # Сортируем кандидатов строго по времени
     candidates.sort(key=lambda x: x["start"])
     
-    # 2. SDR-Guard: Поиск оптимального физического пути (Dynamic Programming)
-    # Наша цель - набрать максимальный score, не нарушая физику чтения.
+    # 2. SDR-Guard v2: Поиск оптимального физического пути (Dynamic Programming)
     num_cand = len(candidates)
     dp = [c["sim"] for c in candidates]
     parent = [-1] * num_cand
@@ -48,7 +47,6 @@ def execute_sequence_matching(canon_words: list, heard_words: list, vad_interval
     for i in range(1, num_cand):
         best_score = dp[i]
         best_p = -1
-        
         curr = candidates[i]
         
         for j in range(i - 1, -1, -1):
@@ -67,13 +65,18 @@ def execute_sequence_matching(canon_words: list, heard_words: list, vad_interval
             
             # Если это соседние слова в тексте (между ними нет пропусков)
             if curr["c_idx"] == prev["c_idx"] + 1:
-                # Пауза между соседними словами не может быть больше 3 секунд
-                # Иначе это ложный якорь (галлюцинация)
-                is_sane = (dur <= 3.0)
+                # ВАЖНО V8.3: Проверяем, находятся ли эти два слова в одной строке
+                is_same_line = not canon_words[prev["c_idx"]]["line_break"]
+                
+                # Если они в одной строке, пауза между ними не может быть больше 2.5с (иначе это галлюцинация)
+                if is_same_line and dur > 2.5:
+                    is_sane = False
+                    log.debug(f"         🚫 [Intro-Guard] Убит ложный путь: '{canon_words[prev['c_idx']]['word']}' -> '{canon_words[curr['c_idx']]['word']}' (Пауза {dur:.1f}s внутри одной строки)")
+                else:
+                    is_sane = True
             else:
-                # Если между якорями есть пропущенные слова, проверяем,
-                # реально ли их спеть за время dur
-                is_sane, sdr = check_sdr_sanity(canon_words, prev["c_idx"] + 1, curr["c_idx"] - 1, dur)
+                # Если между якорями есть пропущенные слова, проверяем SDR
+                is_sane, sdr = check_sdr_sanity(canon_words, prev["c_idx"] + 1, curr["c_idx"] - 1, dur, False)
                 
             if is_sane:
                 score = dp[j] + curr["sim"]
@@ -106,20 +109,19 @@ def execute_sequence_matching(canon_words: list, heard_words: list, vad_interval
         cw["end"] = match["end"]
         log.debug(f"      [Anchor] '{cw['word']}' | {cw['start']:.2f}s - {cw['end']:.2f}s | Sim: {match['sim']}%")
         
-    # 4. Phonetic Fluid Interpolation (Заливка пустых зон)
-    _phonetic_fluid_snapping(canon_words, vad_intervals, audio_duration)
+    # 4. Magnetic Island Assembly (Заливка пустых зон)
+    _magnetic_island_assembly(canon_words, vad_intervals, audio_duration)
     
     log.info("🧠 [Orchestra] Sequence Matching завершен.")
     log.info("=" * 50)
     return canon_words
 
-def _phonetic_fluid_snapping(words: list, vad_intervals: list, audio_duration: float):
+def _magnetic_island_assembly(words: list, vad_intervals: list, audio_duration: float):
     """
-    ФИЛЬТР №3: Phonetic Fluid.
-    Берет нераспознанные слова и буквально "вливает" их в доступные VAD-интервалы
-    строго пропорционально их фонетическому весу.
+    ФИЛЬТР №3: Magnetic Islands (V8.3).
+    Уничтожитель раннего закрашивания. Жестко примагничивает слова к ближайшему якорю, игнорируя VAD-шумы.
     """
-    log.info("   🌊 [Phonetic Fluid] Запуск фонетической заливки пустот...")
+    log.info("   🧲 [Magnetic Assembly] Старт островной сборки слепых зон...")
     
     n = len(words)
     i = 0
@@ -132,111 +134,96 @@ def _phonetic_fluid_snapping(words: list, vad_intervals: list, audio_duration: f
                 j += 1
                 
             gap_size = j - i
+            needed_dur = calculate_phonetic_duration(words, i, j)
             
-            # Определяем временные границы дыры
-            t_start = words[i-1]["end"] + 0.05 if i > 0 else 0.0
-            t_end = words[j]["start"] - 0.05 if j < n else (vad_intervals[-1][1] if vad_intervals else audio_duration)
+            # Определяем якоря вокруг дыры
+            anchor_prev_end = words[i-1]["end"] if i > 0 and words[i-1]["start"] != -1.0 else 0.0
+            anchor_next_start = words[j]["start"] if j < n and words[j]["start"] != -1.0 else audio_duration
             
-            # Вычисляем, сколько В РЕАЛЬНОСТИ времени нужно на произнесение этих слов
-            avg_needed_dur = sum((get_phonetic_bounds(words[k]["clean_text"], words[k]["line_break"])[0] + 
-                                  get_phonetic_bounds(words[k]["clean_text"], words[k]["line_break"])[1]) / 2 
-                                 for k in range(i, j))
+            # Добавляем микро-паузы 30мс (0.03s) между восстанавливаемыми словами
+            micro_gap = 0.03 
+            total_needed_dur = needed_dur + (micro_gap * (gap_size - 1))
             
-            # Собираем доступный VAD
-            available_vads = []
-            for vs, ve in vad_intervals:
-                if ve > t_start and vs < t_end:
-                    o_s = max(t_start, vs)
-                    o_e = min(t_end, ve)
-                    if o_e - o_s > 0.05:
-                        available_vads.append((o_s, o_e))
-                        
-            if not available_vads:
-                log.debug(f"         ⚠️ Окно [{i}:{j-1}] полностью в тишине. Оставляем Финальному Интерполятору.")
-                i = j
-                continue
-                
-            # SMART INTRO PACKING (Решение для Монеточки)
-            if i == 0 and available_vads:
-                log.debug(f"         ⬅️ [Smart Intro Packing] Прижимаем {gap_size} слов к первому якорю на {t_end:.2f}s")
-                packed_vads = []
-                accumulated = 0.0
-                for vs, ve in reversed(available_vads):
-                    dur = ve - vs
-                    if accumulated + dur >= avg_needed_dur:
-                        needed_s = ve - (avg_needed_dur - accumulated)
-                        packed_vads.append((needed_s, ve))
-                        break
-                    else:
-                        packed_vads.append((vs, ve))
-                        accumulated += dur
-                available_vads = list(reversed(packed_vads))
-                
-            # SMART OUTRO PACKING
-            elif j == n and available_vads:
-                log.debug(f"         ➡️ [Smart Outro Packing] Прижимаем {gap_size} слов к последнему якорю на {t_start:.2f}s")
-                packed_vads = []
-                accumulated = 0.0
-                for vs, ve in available_vads:
-                    dur = ve - vs
-                    if accumulated + dur >= avg_needed_dur:
-                        needed_e = vs + (avg_needed_dur - accumulated)
-                        packed_vads.append((vs, needed_e))
-                        break
-                    else:
-                        packed_vads.append((vs, ve))
-                        accumulated += dur
-                available_vads = packed_vads
-
-            total_available_vad = sum(e - s for s, e in available_vads)
-            if total_available_vad <= 0:
-                i = j
-                continue
-                
-            # ФИЛЬТР №4: Line Integrity (Неразрывность)
-            has_line_break = any(words[k]["line_break"] for k in range(i, j - 1))
-            if not has_line_break and len(available_vads) > 1:
-                largest_vad = max(available_vads, key=lambda x: x[1] - x[0])
-                if largest_vad[1] - largest_vad[0] >= total_available_vad * 0.4:
-                    available_vads = [largest_vad]
-                    total_available_vad = largest_vad[1] - largest_vad[0]
-                    log.debug(f"         🔒 [Line Integrity] Фраза неразрывна. Наливаем в единый VAD.")
-
-            # Считаем суммарный фонетический вес
-            weights = [get_vowel_weight(words[k]["clean_text"], words[k]["line_break"]) for k in range(i, j)]
-            total_weight = sum(weights)
+            available_time = anchor_next_start - anchor_prev_end
             
-            current_time_in_vad = 0.0
+            log.debug(f"         🕳️ Дыра [{i}:{j-1}]: {gap_size} слов. Доступно: {available_time:.2f}s, Нужно: {total_needed_dur:.2f}s")
             
-            for k in range(i, j):
-                w = words[k]
-                word_vad_share = (weights[k-i] / total_weight) * total_available_vad
+            # СЦЕНАРИЙ 1: RIGHT-ALIGNED PACKING (Убивает раннее закрашивание)
+            # Если дыра большая (доступного времени больше чем нужно), а за ней стоит якорь - прижимаем слова ВПРАВО к якорю.
+            if j < n and available_time > total_needed_dur:
+                # Отсчитываем время назад от следующего якоря
+                t_start = anchor_next_start - total_needed_dur - 0.05 # 50мс отступ от якоря
+                # Защита от наезда на предыдущий якорь
+                t_start = max(t_start, anchor_prev_end + 0.05)
                 
-                min_p_dur, max_p_dur = get_phonetic_bounds(w["clean_text"], w["line_break"])
-                actual_dur = min(max(word_vad_share, min_p_dur), max_p_dur)
+                log.debug(f"         ⬅️ [Right-Aligned] Слова [{i}:{j-1}] прижаты влево от якоря на {t_start:.2f}s")
                 
-                accumulated = 0.0
-                placed_start, placed_end = -1.0, -1.0
-                
-                for vs, ve in available_vads:
-                    vad_len = ve - vs
-                    if current_time_in_vad < accumulated + vad_len:
-                        offset = current_time_in_vad - accumulated
-                        placed_start = vs + offset
-                        placed_end = min(ve, placed_start + actual_dur)
-                        break
-                    accumulated += vad_len
+                current_time = t_start
+                for k in range(i, j):
+                    w = words[k]
+                    min_p, max_p = get_phonetic_bounds(w["clean_text"], w["line_break"])
+                    dur = (min_p + max_p) / 2
                     
-                if placed_start != -1.0:
-                    w["start"] = placed_start
-                    w["end"] = placed_end
+                    w["start"] = current_time
+                    w["end"] = w["start"] + dur
+                    current_time = w["end"] + micro_gap
                     healed_count += 1
+            
+            # СЦЕНАРИЙ 2: VAD ISLAND HOPPING (Аутро с проигрышем)
+            elif j == n and available_time > total_needed_dur:
+                # В конце песни текст должен лечь только на реальный голос, перепрыгнув музыку.
+                # Ищем последний вокальный остров, в который влезут эти слова
+                best_vad_start = anchor_prev_end + 0.05
+                best_vad_end = audio_duration
                 
-                current_time_in_vad += word_vad_share
+                # Ищем остров с конца
+                for vs, ve in reversed(vad_intervals):
+                    if ve > anchor_prev_end and ve - vs >= (total_needed_dur * 0.5):
+                        best_vad_end = ve
+                        best_vad_start = max(anchor_prev_end + 0.05, ve - total_needed_dur)
+                        log.debug(f"         🏝️ [Island Hopping] Найден вокальный остров: {best_vad_start:.2f}s - {best_vad_end:.2f}s. Пропуск {best_vad_start - anchor_prev_end:.2f}s соло.")
+                        break
+                        
+                current_time = best_vad_start
+                for k in range(i, j):
+                    w = words[k]
+                    min_p, max_p = get_phonetic_bounds(w["clean_text"], w["line_break"])
+                    dur = (min_p + max_p) / 2
+                    
+                    w["start"] = current_time
+                    w["end"] = w["start"] + dur
+                    current_time = w["end"] + micro_gap
+                    healed_count += 1
+            
+            # СЦЕНАРИЙ 3: ТЕСНОЕ ОКНО (Слов больше, чем времени)
+            else:
+                # В окне мало времени (реп или быстрая читка). 
+                # Равномерно сжимаем слова в доступном окне с микро-паузами.
+                log.debug(f"         🗜️ [Compression] Сжатие {gap_size} слов в окно {anchor_prev_end:.2f}s - {anchor_next_start:.2f}s")
                 
+                t_start = anchor_prev_end + 0.05
+                t_end = anchor_next_start - 0.05
+                if t_start >= t_end:
+                    t_start = t_end - 0.1 # Аварийное схлопывание
+                    
+                # Вычисляем масштаб сжатия
+                scale = (t_end - t_start - (micro_gap * (gap_size - 1))) / needed_dur if needed_dur > 0 else 1.0
+                scale = max(0.1, scale) # Нельзя сжимать до 0
+                
+                current_time = t_start
+                for k in range(i, j):
+                    w = words[k]
+                    min_p, max_p = get_phonetic_bounds(w["clean_text"], w["line_break"])
+                    dur = ((min_p + max_p) / 2) * scale
+                    
+                    w["start"] = current_time
+                    w["end"] = w["start"] + dur
+                    current_time = w["end"] + micro_gap
+                    healed_count += 1
+            
             i = j
         else:
             i += 1
             
     if healed_count > 0:
-        log.info(f"   🌊 [Phonetic Fluid] Успешно залито в VAD {healed_count} слов!")
+        log.info(f"   🧲 [Magnetic Assembly] Примагничено {healed_count} слов!")
