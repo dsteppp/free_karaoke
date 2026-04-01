@@ -91,30 +91,26 @@
         }
     }
 
-    // Перезагрузка трека с сохранением позиции ползунка времени
-    function reloadTrackAndRestoreTime() {
+    // СТРОГОЕ асинхронное восстановление состояния (ждём загрузки новых данных)
+    async function reloadTrackAndRestoreTime() {
         if (typeof loadKar !== "function" || !window.currentTrack) return;
         
         const savedTime = window.instAudio.currentTime;
         const t = window.currentTrack;
         const cvr = document.getElementById("cover-img").src;
         
-        loadKar(t, cvr);
+        // Ждем пока скачается новый JSON и полностью отрендерится DOM
+        await loadKar(t, cvr);
         
-        const restoreHandler = () => {
-            window.instAudio.currentTime = savedTime;
-            window.vocAudio.currentTime = savedTime;
-            
-            const seekEl = document.getElementById("seek-bar");
-            if (seekEl) {
-                seekEl.value = savedTime;
-                seekEl.dispatchEvent(new Event("change"));
-            }
-            
-            window.instAudio.removeEventListener("loadedmetadata", restoreHandler);
-        };
+        // Только теперь восстанавливаем время и заставляем плеер перерисовать окружение
+        window.instAudio.currentTime = savedTime;
+        window.vocAudio.currentTime = savedTime;
         
-        window.instAudio.addEventListener("loadedmetadata", restoreHandler);
+        const seekEl = document.getElementById("seek-bar");
+        if (seekEl) {
+            seekEl.value = savedTime;
+            seekEl.dispatchEvent(new Event("change"));
+        }
     }
 
     // ── Логика Режима ────────────────────────────────────────────────────────
@@ -128,8 +124,6 @@
             window.vocAudio.pause();
             backupLyricsData = JSON.parse(JSON.stringify(window.lyricsData));
 
-            // Даем браузеру 50мс на применение новых отступов (45vh) из CSS,
-            // после чего находим текущую строку и ставим её по центру экрана
             setTimeout(() => {
                 const activeLine = document.querySelector(".lyric-line.active-line");
                 if (activeLine) {
@@ -171,6 +165,14 @@
         window.instAudio.pause();
         window.vocAudio.pause();
 
+        // ФИКС БАГА: Скрытно перематываем плеер на время этого слова и перевешиваем классы строк!
+        window.instAudio.currentTime = wordData.start;
+        window.vocAudio.currentTime = wordData.start;
+        if (typeof forceRepaintFills === "function") {
+            forceRepaintFills(wordData.start);
+        }
+
+        // Теперь активная строка 100% правильная, центрируем её
         const lineElement = targetSpan.closest(".lyric-line");
         if (lineElement) {
             lineElement.scrollIntoView({ block: "center", behavior: "smooth" });
@@ -317,10 +319,10 @@
     
     btnStart.addEventListener("click", () => toggleEditMode(true));
     
-    btnCancel.addEventListener("click", () => {
+    btnCancel.addEventListener("click", async () => {
         window.lyricsData = backupLyricsData;
         toggleEditMode(false);
-        reloadTrackAndRestoreTime();
+        await reloadTrackAndRestoreTime();
     });
 
     btnApply.addEventListener("click", async () => {
@@ -345,7 +347,7 @@
             }
 
             toggleEditMode(false);
-            reloadTrackAndRestoreTime();
+            await reloadTrackAndRestoreTime();
 
         } catch (e) {
             alert("Ошибка при сохранении: " + e.message);

@@ -10,19 +10,19 @@ window.instAudio = instAudio;
 window.vocAudio = vocAudio;
 
 let lyricsData  = [];
-let playerLines = []; // Кэшированная структура (теперь по СЛОВАМ, а не по буквам)
+let playerLines = []; // Кэшированная структура
 let animationFrameId = null;
 let pollingInterval  = null;
 let currentTrack     = null;
 let isSeeking        = false;
 let lastActiveLineIdx = -1;
-let lastScrollTarget  = -1; // Для надежного скролла при перемотках
+let lastScrollTarget  = -1; 
 let currentVisualProgress = 0;
 let targetProgress        = 0;
 let animationFrameIdProgress = null;
 
 const VISUAL_OFFSET       = 0;
-const LINE_PRE_ACTIVATION = 0.35; // За сколько секунд до начала строки фокусироваться на ней
+const LINE_PRE_ACTIVATION = 0.35; 
 
 const fallbackCover = `data:image/svg+xml;charset=UTF-8,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='%2394a3b8' viewBox='0 0 24 24'%3E%3Cpath d='M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z'/%3E%3C/svg%3E`;
 
@@ -74,9 +74,43 @@ els.vInst.addEventListener("input",      updateVolumes);
 els.vVoc.addEventListener("input",       updateVolumes);
 els.fsBtn.addEventListener("click",      toggleFS);
 
+// ГОРЯЧИЕ КЛАВИШИ (Плей/Пауза, Перемотка, Fullscreen)
 document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape" && document.body.classList.contains("fs-mode")) toggleFS();
+    // Игнорируем нажатия, если пользователь вводит текст (поиск или редактор слов)
+    if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA") return;
+
+    if (e.key === "Escape" && document.body.classList.contains("fs-mode")) {
+        toggleFS();
+        return;
+    }
+
+    if (e.code === "Space") {
+        e.preventDefault(); // Чтобы страница не прокручивалась вниз
+        togglePlay();
+        return;
+    }
+
+    if (e.code === "ArrowLeft") {
+        e.preventDefault();
+        skipTime(-5);
+        return;
+    }
+
+    if (e.code === "ArrowRight") {
+        e.preventDefault();
+        skipTime(5);
+        return;
+    }
 });
+
+// Функция перемотки для горячих клавиш
+function skipTime(delta) {
+    if (!currentTrack || !instAudio.src) return;
+    let newTime = instAudio.currentTime + delta;
+    newTime = Math.max(0, Math.min(newTime, instAudio.duration || 0));
+    els.seek.value = newTime;
+    els.seek.dispatchEvent(new Event("change"));
+}
 
 window.addEventListener("resize", () => {
     if (lastScrollTarget !== -1) scrollToActiveLine(lastScrollTarget, "auto");
@@ -138,7 +172,6 @@ els.seek.addEventListener("change", () => {
     vocAudio.currentTime = val;
     isSeeking = false;
     
-    // Принудительно сбрасываем состояние для чистого пересчёта
     lastActiveLineIdx = -1;
     forceRepaintFills(val);
     
@@ -160,6 +193,23 @@ document.addEventListener("mousemove", () => {
     } else {
         els.lWrap.style.cursor = "default";
         clearTimeout(fsTout);
+    }
+});
+
+// КЛИК-ПЕРЕМОТКА ПО СЛОВАМ (В ОБЫЧНОМ РЕЖИМЕ)
+els.lDisp.addEventListener("click", (e) => {
+    if (document.body.classList.contains("edit-mode")) return; 
+    
+    const target = e.target.closest(".word");
+    if (!target) return;
+
+    const idx = parseInt(target.dataset.index, 10);
+    if (!isNaN(idx) && window.lyricsData && window.lyricsData[idx]) {
+        const t = window.lyricsData[idx].start;
+        instAudio.currentTime = t;
+        vocAudio.currentTime = t;
+        els.seek.value = t;
+        els.seek.dispatchEvent(new Event("change"));
     }
 });
 
@@ -494,6 +544,9 @@ async function loadKar(t, cvr) {
         if (cur.length) rawLines.push(cur);
         
         renderLyrics(rawLines);
+        
+        forceRepaintFills(instAudio.currentTime);
+        
     } catch (_) {
         lyricsData = [];
         window.lyricsData = [];
@@ -503,12 +556,12 @@ async function loadKar(t, cvr) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ОПТИМИЗИРОВАННЫЙ РЕНДЕР (ПО СЛОВАМ, А НЕ ПО БУКВАМ)
+// РЕНДЕР
 // ─────────────────────────────────────────────────────────────────────────────
 function renderLyrics(rawLines) {
     els.lDisp.innerHTML = "";
     playerLines = []; 
-    let globalWordIndex = 0; // Для привязки DOM-элементов к JSON-массиву
+    let globalWordIndex = 0; 
 
     rawLines.forEach((lineArr, lineIndex) => {
         const div = document.createElement("div");
@@ -522,13 +575,11 @@ function renderLyrics(rawLines) {
         };
 
         lineArr.forEach((w, wIdx) => {
-            // Создаем span на всё слово для градиента
             const wordSpan = document.createElement("span");
             wordSpan.className = "word";
             wordSpan.textContent = w.word;
-            wordSpan.dataset.index = globalWordIndex++; // Привязываем индекс для редактора
+            wordSpan.dataset.index = globalWordIndex++; 
             
-            // Восстанавливаем визуальные классы якорей, если они есть
             if (w.is_manual_start) wordSpan.classList.add("manual-start");
             if (w.is_manual_end) wordSpan.classList.add("manual-end");
             if (w.is_manual_text) wordSpan.classList.add("manual-text");
@@ -537,12 +588,11 @@ function renderLyrics(rawLines) {
                 domNode: wordSpan,
                 start: parseFloat(w.start),
                 end: parseFloat(w.end),
-                lastPct: "-1" // Кэш для оптимизации
+                lastPct: "-1" 
             });
             
             div.appendChild(wordSpan);
             
-            // Пробел выносим за пределы слова, чтобы градиент не закрашивал пустоту!
             if (!w.line_break && wIdx !== lineArr.length - 1) {
                 div.appendChild(document.createTextNode(" "));
             }
@@ -556,10 +606,9 @@ function renderLyrics(rawLines) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ПРОКРУТКА К СТРОКЕ С ТОЧНЫМ ПОЗИЦИОНИРОВАНИЕМ
+// ПРОКРУТКА
 // ─────────────────────────────────────────────────────────────────────────────
 function scrollToActiveLine(idx, behavior = 'smooth') {
-    // ВАЖНО: Блокируем автоскролл в режиме редактора
     if (document.body.classList.contains("edit-mode")) return; 
 
     if (idx < 0 || idx >= playerLines.length) return;
@@ -567,16 +616,14 @@ function scrollToActiveLine(idx, behavior = 'smooth') {
     const lineNode = playerLines[idx].domNode;
     
     const isPortrait = window.innerHeight > window.innerWidth;
-    const offsetRatio = isPortrait ? 0.35 : 0.5; // В портрете строка выше, чтобы не перекрывать видео/обложку
+    const offsetRatio = isPortrait ? 0.35 : 0.5;
     
-    // Абсолютно точная формула для постановки строки на нужное место
     const offset = lineNode.offsetTop - (container.clientHeight * offsetRatio) + (lineNode.clientHeight / 2);
-    
     container.scrollTo({ top: Math.max(0, offset), behavior: behavior });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ПЛЕЕР И ГЛАВНЫЙ ЦИКЛ АНИМАЦИИ (60 FPS)
+// ПЛЕЕР И АНИМАЦИЯ
 // ─────────────────────────────────────────────────────────────────────────────
 async function togglePlay() {
     if (!instAudio.src) return;
@@ -615,7 +662,6 @@ function stopPlay() {
     lastScrollTarget  = -1;
     forceRepaintFills(0);
     
-    // В режиме редактора не сбрасываем скролл наверх при остановке
     if (playerLines.length > 0 && !document.body.classList.contains("edit-mode")) {
         els.lDisp.scrollTop = 0;
     }
@@ -645,28 +691,22 @@ function updateLineClasses(t) {
     let activeIdx = -1;
     let anchor = playerLines.length;
 
-    // 1. Ищем активную строку (НЕЗАВИСИМО от закраски)
-    // Самая последняя начавшаяся строка безусловно перехватывает фокус
     for (let i = 0; i < playerLines.length; i++) {
         const line = playerLines[i];
         if (t >= line.start - LINE_PRE_ACTIVATION) {
-            activeIdx = i; // Перезаписываем, чтобы победила "последняя из начавшихся"
+            activeIdx = i; 
         } else {
-            break; // Так как строки идут по времени, дальше искать нет смысла
+            break; 
         }
     }
 
-    // Если активная строка уже завершилась более 0.5 сек назад, 
-    // и новая еще не началась - снимаем фокус (проигрыш)
     if (activeIdx !== -1) {
         if (t > playerLines[activeIdx].end + 0.5) {
             activeIdx = -1;
         }
     }
 
-    // 2. Ищем "якорь" (строку, на которую ориентируется скролл и стили окружения)
     if (activeIdx === -1) {
-        // Мы в паузе между строками, якорем будет следующая не начавшаяся строка
         for (let i = 0; i < playerLines.length; i++) {
             if (t < playerLines[i].start) {
                 anchor = i;
@@ -677,7 +717,6 @@ function updateLineClasses(t) {
         anchor = activeIdx;
     }
 
-    // 3. Обработка прокрутки (скролл должен всегда держать в центре якорь)
     const scrollTarget = activeIdx !== -1 ? activeIdx : Math.min(anchor, playerLines.length - 1);
     
     if (scrollTarget !== lastScrollTarget) {
@@ -691,7 +730,6 @@ function updateLineClasses(t) {
 
     lastActiveLineIdx = activeIdx;
 
-    // 4. Раздаём CSS-классы окружения
     for (let i = 0; i < playerLines.length; i++) {
         const l = playerLines[i].domNode;
         let newClass = "lyric-line ";
@@ -718,7 +756,6 @@ function loop() {
 
     const t = instAudio.currentTime;
     
-    // Anti-drift: синхронизируем вокал с инструменталом, если они разъехались более чем на 50мс
     if (!instAudio.paused && Math.abs(t - vocAudio.currentTime) > 0.05) {
         vocAudio.currentTime = t;
     }
@@ -732,9 +769,6 @@ function loop() {
         const visualTime = t + VISUAL_OFFSET;
         updateLineClasses(visualTime);
 
-        // Оптимизированный Repaint ЗАЛИВКИ.
-        // Расширили окно до +/- 2 строк, чтобы предыдущая строка (уже ставшая past-0) 
-        // спокойно дорисовывалась до конца, даже потеряв фокус .active-line
         const sIdx = Math.max(0, (lastScrollTarget === -1 ? 0 : lastScrollTarget - 2));
         const eIdx = Math.min(playerLines.length - 1, (lastScrollTarget === -1 ? playerLines.length - 1 : lastScrollTarget + 2));
         
