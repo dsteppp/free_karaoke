@@ -14,8 +14,8 @@ log = get_logger("aligner")
 
 class KaraokeAligner:
     """
-    Neural Sequence Paradigm (V8.6 - Rhythm DNA & Anchor Healing)
-    Извлечение темпа. Хирургия ложных якорей. Жесткие монолитные блоки.
+    Neural Sequence Paradigm (V8.7 - Stanza-Aware & Line Integrity)
+    Молекулярная сборка. Эффект домино для строк. Жесткие абзацы.
     """
     
     def __init__(self, model_name="medium"):
@@ -32,9 +32,9 @@ class KaraokeAligner:
         self._track_stem = os.path.basename(output_json_path).replace("_(Karaoke Lyrics).json", "")
         
         log.info("=" * 60)
-        log.info(f"🚀 Aligner СТАРТ (V8.6 Rhythm DNA): {self._track_stem}")
+        log.info(f"🚀 Aligner СТАРТ (V8.7 Molecular Assembly): {self._track_stem}")
         
-        # 1. Подготовка текста
+        # 1. Подготовка структурного текста (с line_idx и stanza_idx)
         canon_words = prepare_text(raw_lyrics)
         if not canon_words:
             log.warning("⚠️ Текст пуст! Сохраняем пустой JSON.")
@@ -50,10 +50,9 @@ class KaraokeAligner:
             audio_data, sr = librosa.load(vocals_path, sr=16000, mono=True)
             audio_duration = len(audio_data) / sr
             
-            # В V8.6 порог снижен до 25.0, чтобы игнорировать вдохи и шум
             vad_intervals = get_vocal_intervals(audio_data, sr, top_db=25.0)
             if not vad_intervals:
-                log.warning("⚠️ VAD не нашел голоса в треке! Сценарий глухой тишины.")
+                log.warning("⚠️ VAD не нашел плотного голоса! Сценарий глухой тишины.")
                 vad_intervals = [(0.0, audio_duration)]
 
             # 3. Слух Нейросети
@@ -80,17 +79,16 @@ class KaraokeAligner:
                             "probability": w.probability
                         })
 
-            # 4. ФИЛЬТР №1: Очистка галлюцинаций
+            # 4. ФИЛЬТР №1: Очистка галлюцинаций (с VAD Density Check)
             heard_words = filter_whisper_hallucinations(raw_heard_words, vad_intervals)
 
-            # 5. Оркестратор (ДНК ритма, Хирургия, Монолиты)
+            # 5. Оркестратор (Молекулярная Сборка Строк и Абзацев)
             canon_words = execute_sequence_matching(canon_words, heard_words, vad_intervals, audio_duration)
             
-            # 6. Физический Контроль (Умный Магнит VAD)
+            # 6. Физический Контроль (Умный Асимметричный Магнит)
             log.info("🛡️ [Physics Check] Финальная шлифовка (Умный Магнит)...")
             shifted_count = 0
             for w in canon_words:
-                # В V8.6 магнит сдвигает максимум на 0.5с (доводка до транзиента)
                 w["start"], w["end"], was_shifted = constrain_to_vad(w["start"], w["end"], vad_intervals, max_shift_sec=0.5)
                 if was_shifted:
                     shifted_count += 1
@@ -100,9 +98,9 @@ class KaraokeAligner:
                     w["end"] = w["start"] + 0.1
                     
             if shifted_count > 0:
-                log.info(f"   🧲 [VAD-Magnet] Сдвинуто/Обрезано слов: {shifted_count}")
+                log.info(f"   🧲 [VAD-Magnet] Сдвинуто/Обрезано слов до транзиента: {shifted_count}")
                     
-            # 7. Устранение нахлестов с микро-паузами
+            # 7. Устранение нахлестов с микро-паузами (Дыхание плеера)
             self._resolve_overlaps(canon_words)
 
             # 8. Оценка качества
@@ -120,7 +118,7 @@ class KaraokeAligner:
                 torch.cuda.empty_cache()
                 torch.cuda.ipc_collect()
 
-        # Формирование JSON
+        # Формирование JSON (Добавлены структурные индексы для отладки)
         final_json = []
         for w in canon_words:
             final_json.append({
@@ -128,13 +126,15 @@ class KaraokeAligner:
                 "start": round(w["start"], 3),
                 "end": round(w["end"], 3),
                 "line_break": w["line_break"],
+                "line_idx": w["line_idx"],
+                "stanza_idx": w["stanza_idx"],
                 "letters": [] 
             })
             
         with open(output_json_path, "w", encoding="utf-8") as f:
             json.dump(final_json, f, ensure_ascii=False, indent=2)
 
-        dump_debug("Neural_Matched_V8.6", final_json, self._track_stem)
+        dump_debug("Neural_Matched_V8.7", final_json, self._track_stem)
         log.info(f"✅ Aligner УСПЕШНО ЗАВЕРШЕН → {output_json_path}")
         log.info("=" * 60)
         
@@ -143,7 +143,6 @@ class KaraokeAligner:
     def _resolve_overlaps(self, words: list):
         """
         Создает 'Breath-gaps' (микро-паузы) и устраняет нахлесты.
-        Обеспечивает плавное дыхание плеера.
         """
         resolves = 0
         micro_gap = 0.05 

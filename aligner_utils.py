@@ -15,12 +15,14 @@ def clean_word(word: str) -> str:
     return re.sub(r'[^\w]', '', word.lower())
 
 def prepare_text(raw_lyrics: str) -> list:
-    log.info("📝 [Utils] Подготовка эталонного текста...")
+    """V8.7: Жесткая молекулярная разметка текста (Строки и Абзацы)"""
+    log.info("📝 [Utils] Подготовка структурного эталонного текста...")
     if not raw_lyrics: return []
     
     words = []
     lines = raw_lyrics.split('\n')
     stanza_idx = 0
+    line_idx = 0
     
     for line in lines:
         line = line.strip()
@@ -42,10 +44,13 @@ def prepare_text(raw_lyrics: str) -> list:
                 "start": -1.0,
                 "end": -1.0,
                 "line_break": is_last_in_line,
+                "line_idx": line_idx,
                 "stanza_idx": stanza_idx
             })
             
-    log.info(f"   ✅ Обработано слов: {len(words)}, Строф: {stanza_idx + 1}")
+        line_idx += 1
+            
+    log.info(f"   ✅ Обработано слов: {len(words)}, Строк: {line_idx}, Абзацев: {stanza_idx + 1}")
     return words
 
 def count_vowels(word: str) -> int:
@@ -54,14 +59,19 @@ def count_vowels(word: str) -> int:
 
 def extract_rhythm_dna(words: list) -> dict:
     """
-    V8.6: Анализирует подтвержденные якоря и извлекает физический ритм певца.
-    Возвращает словарь с базовыми константами.
+    V8.7: Извлекает ДНК трека + Лимиты разрыва (Integrity Limits).
     """
-    dna = {"velocity": 0.25, "micro_gap": 0.1, "macro_gap": 1.2}
+    dna = {
+        "velocity": 0.25, 
+        "micro_gap": 0.1, 
+        "macro_gap": 1.2,
+        "max_intra_line_gap": 0.8,  # Максимальный разрыв внутри строки
+        "max_inter_line_gap": 3.5   # Максимальный разрыв между строками ОДНОГО абзаца
+    }
     
     valid_words = [w for w in words if w["start"] != -1.0]
     if len(valid_words) < 5:
-        log.warning("   ⚠️ Недостаточно якорей для анализа ритма. Используем стандартную ДНК.")
+        log.warning("   ⚠️ Мало якорей. Используем стандартную Молекулярную ДНК.")
         return dna
 
     # 1. Скорость гласной (Velocity)
@@ -81,22 +91,25 @@ def extract_rhythm_dna(words: list) -> dict:
         if w1["start"] != -1.0 and w2["start"] != -1.0:
             gap = w2["start"] - w1["end"]
             if gap >= 0:
-                if w1["line_break"]:
-                    if gap < 4.0:  # Игнорируем длинные проигрыши (соло)
-                        macro_gaps.append(gap)
-                else:
-                    if gap < 1.0:  # Игнорируем разорванные галлюцинациями строки
+                if w1["line_idx"] == w2["line_idx"]:
+                    if gap < 1.5:  # Внутри строки
                         micro_gaps.append(gap)
+                elif w1["stanza_idx"] == w2["stanza_idx"]:
+                    if gap < 5.0:  # Между строками одного абзаца
+                        macro_gaps.append(gap)
 
     if micro_gaps:
-        dna["micro_gap"] = min(max(0.05, sum(micro_gaps) / len(micro_gaps)), 0.3)
+        dna["micro_gap"] = min(max(0.05, sum(micro_gaps) / len(micro_gaps)), 0.4)
+        dna["max_intra_line_gap"] = max(0.6, dna["micro_gap"] * 4.0)
+        
     if macro_gaps:
         dna["macro_gap"] = min(max(0.4, sum(macro_gaps) / len(macro_gaps)), 2.5)
+        dna["max_inter_line_gap"] = max(2.5, dna["macro_gap"] * 3.0)
 
-    log.info(f"🧬 [Rhythm DNA] Извлечен ритм трека:")
+    log.info(f"🧬 [Rhythm DNA] Извлечены законы физики трека:")
     log.info(f"   ┣ Скорость слога: {dna['velocity']:.2f}s")
-    log.info(f"   ┣ Внутристрочная пауза (Micro): {dna['micro_gap']:.2f}s")
-    log.info(f"   ┗ Межстрочная пауза (Macro): {dna['macro_gap']:.2f}s")
+    log.info(f"   ┣ Внутри строки (Micro): {dna['micro_gap']:.2f}s (Max разрыв: {dna['max_intra_line_gap']:.2f}s)")
+    log.info(f"   ┗ Внутри абзаца (Macro): {dna['macro_gap']:.2f}s (Max разрыв: {dna['max_inter_line_gap']:.2f}s)")
     
     return dna
 
@@ -120,14 +133,14 @@ def get_phonetic_bounds(word: str, is_line_end: bool = False) -> tuple:
     return min_dur, max_dur
 
 def calculate_word_duration(word: str, dna: dict, is_line_end: bool = False) -> float:
-    """V8.6: Вычисляет идеальную длину слова на основе ДНК трека."""
     vowel_count = max(1, count_vowels(word))
     dur = vowel_count * dna["velocity"]
     if is_line_end:
-        dur *= 1.2  # В конце строки слова часто слегка тянутся
+        dur *= 1.2
     return dur
 
 def check_sdr_sanity(words: list, start_idx: int, end_idx: int, duration_sec: float, is_same_line: bool = False) -> tuple:
+    """Защита от растягивания (Syllable Duration Ratio)"""
     if duration_sec <= 0: return False, 999.0
     if is_same_line and duration_sec > 2.5: return False, 0.0
     total_syllables = sum(max(1, count_vowels(words[k]["clean_text"])) for k in range(start_idx, end_idx + 1))
@@ -135,17 +148,8 @@ def check_sdr_sanity(words: list, start_idx: int, end_idx: int, duration_sec: fl
     is_sane = (0.3 <= sdr <= 9.0)
     return is_sane, sdr
 
-def calculate_overlap(s1: float, e1: float, intervals: list) -> float:
-    if e1 <= s1 or not intervals: return 0.0
-    overlap = 0.0
-    for i_s, i_e in intervals:
-        o_s = max(s1, i_s)
-        o_e = min(e1, i_e)
-        if o_e > o_s: overlap += (o_e - o_s)
-    return overlap
-
 def evaluate_alignment_quality(words: list, vad_intervals: list) -> float:
-    log.info("📊 [QA Evaluator] Анализ итогового качества таймингов...")
+    log.info("📊 [QA Evaluator] Анализ итогового качества...")
     if not words: return 0.0
         
     score = 100.0
@@ -155,14 +159,12 @@ def evaluate_alignment_quality(words: list, vad_intervals: list) -> float:
     if placed_words < total_words:
         penalty = ((total_words - placed_words) / total_words) * 50.0
         score -= penalty
-        log.warning(f"   📉 Штраф: Нераспределено слов: {total_words - placed_words}")
         
     physics_violators = 0
-        
     for w in words:
         if w["start"] == -1.0: continue
         dur = w["end"] - w["start"]
-        min_dur, max_dur = get_phonetic_bounds(w["clean_text"], w["line_break"])
+        _, max_dur = get_phonetic_bounds(w["clean_text"], w["line_break"])
         if dur < 0.05 or dur > max_dur * 2.0:
             score -= 1.0
             physics_violators += 1

@@ -8,20 +8,20 @@ log = get_logger("aligner_orchestra")
 
 def execute_sequence_matching(canon_words: list, heard_words: list, vad_intervals: list, audio_duration: float) -> list:
     """
-    V8.6 Rhythm DNA & Anchor Healing.
-    Извлекаем физику трека, лечим разорванные строки, собираем монолиты.
+    V8.7: Stanza-Aware Paradigm. 
+    Жесткая иерархия: Слово -> Строка -> Абзац.
     """
     log.info("=" * 50)
-    log.info("🧠 [Orchestra] Старт Rhythm DNA Sequence Matching...")
+    log.info("🧠 [Orchestra] Старт Молекулярной Сборки V8.7...")
     
     n_canon = len(canon_words)
     n_heard = len(heard_words)
     
     if n_heard == 0:
-        log.warning("   ⚠️ Транскрипт пуст. Sequence Matching отменен.")
+        log.warning("   ⚠️ Транскрипт пуст. Сборка отменена.")
         return canon_words
         
-    # 1. Формируем пул кандидатов (совпадения > 60%)
+    # 1. Первичное натяжение пути (Fuzzy DP)
     candidates = []
     for c_idx in range(n_canon):
         for h_idx in range(n_heard):
@@ -30,16 +30,11 @@ def execute_sequence_matching(canon_words: list, heard_words: list, vad_interval
             sim = rapidfuzz.fuzz.ratio(c_text, h_text)
             if sim >= 60:
                 candidates.append({
-                    "c_idx": c_idx,
-                    "h_idx": h_idx,
-                    "sim": sim,
-                    "start": heard_words[h_idx]["start"],
-                    "end": heard_words[h_idx]["end"]
+                    "c_idx": c_idx, "h_idx": h_idx, "sim": sim,
+                    "start": heard_words[h_idx]["start"], "end": heard_words[h_idx]["end"]
                 })
                 
     candidates.sort(key=lambda x: x["start"])
-    
-    # 2. SDR-Guard v2: Динамическое программирование пути
     num_cand = len(candidates)
     dp = [c["sim"] for c in candidates]
     parent = [-1] * num_cand
@@ -51,165 +46,234 @@ def execute_sequence_matching(canon_words: list, heard_words: list, vad_interval
         
         for j in range(i - 1, -1, -1):
             prev = candidates[j]
-            
             if curr["c_idx"] <= prev["c_idx"]: continue
                 
             dur = curr["start"] - prev["end"]
             if dur < -0.1: continue
                 
             is_sane = False
-            if curr["c_idx"] == prev["c_idx"] + 1:
-                is_same_line = not canon_words[prev["c_idx"]]["line_break"]
-                if is_same_line and dur > 3.0: # Повысили порог разрыва строки
-                    is_sane = False
-                else:
-                    is_sane = True
+            # Базовые жесткие лимиты, чтобы Whisper не сцепил начало и конец трека
+            is_same_line = (canon_words[prev["c_idx"]]["line_idx"] == canon_words[curr["c_idx"]]["line_idx"])
+            is_same_stanza = (canon_words[prev["c_idx"]]["stanza_idx"] == canon_words[curr["c_idx"]]["stanza_idx"])
+            
+            if is_same_line and dur > 3.0:
+                is_sane = False
+            elif is_same_stanza and not is_same_line and dur > 6.0:
+                is_sane = False
             else:
                 is_sane, _ = check_sdr_sanity(canon_words, prev["c_idx"] + 1, curr["c_idx"] - 1, dur, False)
                 
             if is_sane:
                 score = dp[j] + curr["sim"]
                 if score > best_score:
-                    best_score = score
-                    best_p = j
+                    best_score = score; best_p = j
                     
         dp[i] = best_score
         parent[i] = best_p
         
     if not candidates:
-        log.warning("   ⚠️ Нет ни одного валидного совпадения текста.")
         return canon_words
         
-    max_idx = dp.index(max(dp))
-    curr_idx = max_idx
+    curr_idx = dp.index(max(dp))
     raw_sequence = []
-    
     while curr_idx != -1:
         raw_sequence.append(candidates[curr_idx])
         curr_idx = parent[curr_idx]
-        
     raw_sequence.reverse()
     
-    # 3. Фиксация сырых якорей
     for match in raw_sequence:
         cw = canon_words[match["c_idx"]]
         cw["start"] = match["start"]
         cw["end"] = match["end"]
 
-    # 4. Извлечение ДНК Ритма
+    # 2. Извлечение Законов Физики (ДНК Трека)
     dna = extract_rhythm_dna(canon_words)
     
-    # 5. V8.6 Anchor Healing (Лечение разорванных строк)
-    canon_words = _heal_broken_lines(canon_words, dna)
+    # 3. V8.7: Закон №1 - Целостность Строк (Эффект Домино)
+    canon_words = _enforce_line_integrity(canon_words, dna)
 
-    # 6. Monolithic Block Assembly (Жесткая сборка слепых зон)
-    _monolithic_block_assembly(canon_words, vad_intervals, audio_duration, dna)
+    # 4. V8.7: Закон №2 - Целостность Абзацев (Молекулярная сборка)
+    _molecular_stanza_assembly(canon_words, vad_intervals, audio_duration, dna)
     
-    log.info("🧠 [Orchestra] Sequence Matching завершен.")
+    log.info("🧠 [Orchestra] Молекулярная сборка завершена.")
     log.info("=" * 50)
     return canon_words
 
-def _heal_broken_lines(words: list, dna: dict) -> list:
+def _enforce_line_integrity(words: list, dna: dict) -> list:
     """
-    V8.6: Ищет внутристрочные аномалии. Если якоря в одной строке разорваны
-    физически невозможной паузой, удаляет ложный якорь.
+    V8.7 Эффект Домино.
+    Если строка разорвана галлюцинацией (как у Космоса/Доры), находит ядро строки, 
+    убивает мусор и перестраивает строку монолитно.
     """
-    healed_count = 0
-    current_line = []
-    
-    for i, w in enumerate(words):
-        current_line.append((i, w))
+    lines = {}
+    for w in words:
+        lines.setdefault(w["line_idx"], []).append(w)
         
-        if w["line_break"] or i == len(words) - 1:
-            anchors = [(idx, word) for idx, word in current_line if word["start"] != -1.0]
+    healed_lines = 0
+    
+    for l_idx, line in lines.items():
+        anchors = [w for w in line if w["start"] != -1.0]
+        
+        # 1. Поиск аномалий внутри строки
+        if len(anchors) > 1:
+            clusters = []
+            curr_cluster = [anchors[0]]
+            for i in range(1, len(anchors)):
+                gap = anchors[i]["start"] - curr_cluster[-1]["end"]
+                # Если разрыв больше допустимого по ДНК -> строка разорвана!
+                if gap <= dna["max_intra_line_gap"]:
+                    curr_cluster.append(anchors[i])
+                else:
+                    clusters.append(curr_cluster)
+                    curr_cluster = [anchors[i]]
+            clusters.append(curr_cluster)
             
-            if len(anchors) >= 2:
-                for k in range(len(anchors) - 1):
-                    idx1, w1 = anchors[k]
-                    idx2, w2 = anchors[k+1]
-                    
-                    gap = w2["start"] - w1["end"]
-                    # Если разрыв внутри строки больше 3х секунд (аномалия, как у "Вот и всё" на 7 сек)
-                    if gap > 3.0:
-                        # Ищем, какой якорь "правильный" (ближе к остальному тексту)
-                        # Простая эвристика: если w2 ближе к концу трека, а w1 где-то в начале один - w1 ложный
-                        w1["start"] = -1.0
-                        w1["end"] = -1.0
-                        healed_count += 1
-                        
-            current_line = []
+            # Убиваем галлюцинации (оставляем самый длинный/надежный кластер)
+            if len(clusters) > 1:
+                clusters.sort(key=len, reverse=True)
+                best_cluster = clusters[0]
+                for c in clusters[1:]:
+                    for w in c:
+                        w["start"] = -1.0
+                        w["end"] = -1.0
+                anchors = best_cluster
+                healed_lines += 1
+
+        # 2. Эффект Домино: Восстанавливаем строку вокруг выживших якорей
+        if anchors:
+            first_a_idx = line.index(anchors[0])
+            last_a_idx = line.index(anchors[-1])
             
-    if healed_count > 0:
-        log.info(f"   ⚕️ [Anchor Healing] Уничтожено {healed_count} ложных внутристрочных якорей.")
+            # Строим хвосты влево от первого якоря
+            curr_end = anchors[0]["start"] - dna["micro_gap"]
+            for i in range(first_a_idx - 1, -1, -1):
+                w = line[i]
+                dur = calculate_word_duration(w["clean_text"], dna, w["line_break"])
+                w["end"] = curr_end
+                w["start"] = curr_end - dur
+                curr_end = w["start"] - dna["micro_gap"]
+                
+            # Строим хвосты вправо от последнего якоря
+            curr_start = anchors[-1]["end"] + dna["micro_gap"]
+            for i in range(last_a_idx + 1, len(line)):
+                w = line[i]
+                dur = calculate_word_duration(w["clean_text"], dna, w["line_break"])
+                w["start"] = curr_start
+                w["end"] = curr_start + dur
+                curr_start = w["end"] + dna["micro_gap"]
+                
+            # Заполняем микро-дыры между якорями внутри кластера
+            for i in range(len(anchors) - 1):
+                w1 = anchors[i]
+                w2 = anchors[i+1]
+                idx1 = line.index(w1)
+                idx2 = line.index(w2)
+                if idx2 - idx1 > 1:
+                    missing_count = idx2 - idx1 - 1
+                    available = max(0.01, w2["start"] - w1["end"])
+                    step = available / (missing_count + 1)
+                    curr_s = w1["end"]
+                    for k in range(idx1 + 1, idx2):
+                        line[k]["start"] = curr_s + step * 0.1
+                        dur = min(calculate_word_duration(line[k]["clean_text"], dna, line[k]["line_break"]), step * 0.9)
+                        line[k]["end"] = line[k]["start"] + dur
+                        curr_s += step
+
+    if healed_lines > 0:
+        log.info(f"   ⚕️ [Line Integrity] Эффект Домино: вылечено разорванных строк: {healed_lines}")
         
     return words
 
-def _monolithic_block_assembly(words: list, vad_intervals: list, audio_duration: float, dna: dict):
+def _molecular_stanza_assembly(words: list, vad_intervals: list, audio_duration: float, dna: dict):
     """
-    V8.6: Жесткая монолитная сборка.
-    Прекращает размазывать текст. Строит плотные блоки по ДНК и кладет их на голос.
+    V8.7 Целостность Абзацев.
+    Не дает проигрышу разорвать абзац пополам. Слепые зоны собираются блоками.
     """
-    log.info("   🧱 [Monolithic Assembly] Сборка слепых зон по ДНК ритма...")
-    
-    n = len(words)
-    i = 0
+    stanzas = {}
+    for w in words:
+        stanzas.setdefault(w["stanza_idx"], []).append(w)
+        
     blocks_built = 0
+    stanzas_healed = 0
     
-    while i < n:
-        if words[i]["start"] == -1.0:
-            j = i
-            while j < n and words[j]["start"] == -1.0:
-                j += 1
-                
-            anchor_prev_end = words[i-1]["end"] if i > 0 and words[i-1]["start"] != -1.0 else 0.0
-            anchor_next_start = words[j]["start"] if j < n and words[j]["start"] != -1.0 else audio_duration
-            
-            # Строим "идеальный блок" в вакууме
-            block_duration = 0.0
-            for k in range(i, j):
-                w = words[k]
-                block_duration += calculate_word_duration(w["clean_text"], dna, w["line_break"])
-                if w["line_break"] and k != j - 1:
-                    block_duration += dna["macro_gap"]
-                else:
-                    block_duration += dna["micro_gap"]
+    for s_idx, stanza in stanzas.items():
+        anchored_words = [w for w in stanza if w["start"] != -1.0]
+        
+        # СЦЕНАРИЙ А: Абзац полностью слепой ("Непроизошло" 2:22)
+        if not anchored_words:
+            block_dur = 0
+            for w in stanza:
+                block_dur += calculate_word_duration(w["clean_text"], dna, w["line_break"])
+                block_dur += dna["macro_gap"] if w["line_break"] and w != stanza[-1] else dna["micro_gap"]
                     
-            # Ищем, куда положить этот блок (Ищем первый VAD)
-            start_time = anchor_prev_end + dna["macro_gap"]
-            
-            # Сценарий 1: Интро
-            if i == 0:
-                start_time = anchor_next_start - block_duration - 0.05
-                start_time = max(0.0, start_time)
-            # Сценарий 2: Между якорями или Аутро
-            else:
-                for vs, ve in vad_intervals:
-                    # Ищем первый VAD-остров, который влезает в дыру
-                    if vs >= anchor_prev_end + 0.1 and vs < anchor_next_start - 0.5:
-                        start_time = vs
+            prev_end = 0.0
+            first_idx = words.index(stanza[0])
+            if first_idx > 0:
+                prev_end = words[first_idx - 1]["end"]
+                
+            next_start = audio_duration
+            last_idx = words.index(stanza[-1])
+            if last_idx < len(words) - 1:
+                for n_w in words[last_idx + 1:]:
+                    if n_w["start"] != -1.0:
+                        next_start = n_w["start"]
                         break
+                        
+            # Ищем плотный вокал внутри этой большой дыры
+            start_time = prev_end + dna["macro_gap"]
+            for vs, ve in vad_intervals:
+                if vs >= prev_end + 0.1 and ve <= next_start - 0.1 and (ve - vs) >= block_dur * 0.4:
+                    start_time = vs
+                    break
             
-            # Укладываем слова жестко, как кирпичи
-            current_time = start_time
-            for k in range(i, j):
-                w = words[k]
+            # Ставим кирпич абзаца
+            curr_time = start_time
+            for w in stanza:
+                w["start"] = curr_time
                 dur = calculate_word_duration(w["clean_text"], dna, w["line_break"])
-                
-                # Защита от наезда на следующий якорь
-                if current_time + dur > anchor_next_start:
-                    current_time = max(anchor_prev_end, anchor_next_start - dur - 0.05)
-                
-                w["start"] = current_time
-                w["end"] = current_time + dur
-                
-                current_time = w["end"] + dna["micro_gap"]
+                if curr_time + dur > next_start:
+                    curr_time = max(prev_end, next_start - dur - 0.1)
+                w["end"] = curr_time + dur
+                curr_time = w["end"] + dna["micro_gap"]
                 if w["line_break"]:
-                    current_time += dna["macro_gap"] # Вздох
+                    curr_time += dna["macro_gap"]
                     
             blocks_built += 1
-            i = j
-        else:
-            i += 1
             
-    if blocks_built > 0:
-        log.info(f"   🧱 [Monolithic Assembly] Собрано {blocks_built} монолитных блоков.")
+        # СЦЕНАРИЙ Б: Часть абзаца есть, часть пропала ("Вот и всё" проигрыш)
+        else:
+            lines = {}
+            for w in stanza:
+                lines.setdefault(w["line_idx"], []).append(w)
+            line_indices = sorted(list(lines.keys()))
+            
+            # Проход ВПЕРЕД: приклеиваем пропавшие строки к предыдущим подтвержденным
+            for i in range(len(line_indices) - 1):
+                curr_l = lines[line_indices[i]]
+                next_l = lines[line_indices[i+1]]
+                
+                if curr_l[-1]["start"] != -1.0 and next_l[0]["start"] == -1.0:
+                    curr_time = curr_l[-1]["end"] + dna["macro_gap"]
+                    for w in next_l:
+                        w["start"] = curr_time
+                        dur = calculate_word_duration(w["clean_text"], dna, w["line_break"])
+                        w["end"] = curr_time + dur
+                        curr_time = w["end"] + dna["micro_gap"]
+                    stanzas_healed += 1
+                        
+            # Проход НАЗАД: приклеиваем пропавшие строки к следующим подтвержденным
+            for i in range(len(line_indices) - 1, 0, -1):
+                curr_l = lines[line_indices[i]]
+                prev_l = lines[line_indices[i-1]]
+                
+                if curr_l[0]["start"] != -1.0 and prev_l[-1]["start"] == -1.0:
+                    curr_time = curr_l[0]["start"] - dna["macro_gap"]
+                    for w in reversed(prev_l):
+                        dur = calculate_word_duration(w["clean_text"], dna, w["line_break"])
+                        w["end"] = curr_time
+                        w["start"] = curr_time - dur
+                        curr_time = w["start"] - dna["micro_gap"]
+                    stanzas_healed += 1
+
+    if blocks_built > 0 or stanzas_healed > 0:
+        log.info(f"   🧱 [Stanza Assembly] Собрано слепых абзацев: {blocks_built}. Приклеено потерянных строк: {stanzas_healed}")
