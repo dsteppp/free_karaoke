@@ -13,6 +13,8 @@ models/
 library/
 debug_logs/
 *.db
+*.db-shm
+*.db-wal
 
 # ── Секреты пользователя ───────────────────────────────
 .env
