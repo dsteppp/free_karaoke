@@ -4,7 +4,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi import Response
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
-from typing import List
+from typing import List, Optional
 import aiofiles
 import os
 import json
@@ -575,10 +575,10 @@ class EditMetadataRequest(BaseModel):
     title: str
     lyrics: str
     rescan: bool = False
-    cover_url: str = None
-    cover_base64: str = None
-    background_url: str = None
-    background_base64: str = None
+    cover_url: Optional[str] = None
+    cover_base64: Optional[str] = None
+    background_url: Optional[str] = None
+    background_base64: Optional[str] = None
 
 
 @app.post("/api/tracks/{track_id}/edit_metadata")
