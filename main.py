@@ -591,11 +591,21 @@ async def edit_track_metadata(
     Редактирование метаданных трека: название, артист, текст, обложки.
     Если rescan=True — запускает Whisper-пайплайн с новым текстом.
     """
+    log.info("📝 [edit_metadata] track_id=%s, artist='%s', title='%s', rescan=%s",
+             track_id, req.artist, req.title, req.rescan)
+    log.info("   cover_url=%s, cover_base64=%s",
+             req.cover_url[:80] if req.cover_url else None,
+             f"base64({len(req.cover_base64)})" if req.cover_base64 else None)
+    log.info("   bg_url=%s, bg_base64=%s",
+             req.background_url[:80] if req.background_url else None,
+             f"base64({len(req.background_base64)})" if req.background_base64 else None)
+
     track = db.query(Track).filter(Track.id == track_id).first()
     if not track:
+        log.error("   ❌ Трек не найден: %s", track_id)
         raise HTTPException(status_code=404, detail="Трек не найден")
-
     if track.status != "done":
+        log.error("   ❌ Трек не готов: %s (status=%s)", track_id, track.status)
         raise HTTPException(status_code=400, detail="Трек не готов к редактированию")
 
     base_name = os.path.splitext(track.filename)[0]
@@ -652,7 +662,7 @@ async def edit_track_metadata(
 
         with open(meta_path, "w", encoding="utf-8") as f:
             json.dump(meta, f, ensure_ascii=False, indent=2)
-        log.info("Метаданные обложек обновлены для трека %s", track_id)
+        log.info("💾 Метаданные обложек сохранены в %s", meta_path)
 
         # 4. Если rescan — запускаем Whisper-пайплайн
         if req.rescan:
@@ -836,8 +846,8 @@ async def edit_track_metadata(
         return {"status": "ok", "rescanned": req.rescan}
 
     except Exception as e:
-        log.error("Ошибка при редактировании метаданных: %s", e)
-        log.debug("Traceback:\n%s", traceback.format_exc())
+        log.error("❌ Ошибка при редактировании метаданных: %s", e)
+        log.error("Traceback:\n%s", traceback.format_exc())
         raise HTTPException(status_code=500, detail=str(e))
 
 

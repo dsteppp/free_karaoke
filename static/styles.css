@@ -1074,13 +1074,15 @@ body.fs-mode .lyric-line                    { font-size: clamp(2rem, 5vw, 4rem);
 .meta-cover-preview {
     width: 4.5rem;
     height: 4.5rem;
+    min-width: 4.5rem;
+    min-height: 4.5rem;
     object-fit: cover;
     border-radius: var(--radius-sm);
     background: var(--surface);
     border: 1px solid var(--border);
     flex-shrink: 0;
+    display: block;
 }
-.meta-cover-preview:empty { display: none; }
 
 /* Drag & Drop */
 .meta-cover-body.drag-over .meta-url-input {

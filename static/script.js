@@ -905,6 +905,9 @@ let metaBgBase64 = null;
 let metaCoverGeniusUrl = null;
 let metaBgGeniusUrl = null;
 
+// Прозрачный placeholder 1x1 для img без src
+const TRANSPARENT_PLACEHOLDER = "data:image/gif;base64,R0lGODlhAQABAIAAAP///wAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw==";
+
 // Элементы overlay
 const metaOverlay = document.getElementById("metadata-overlay");
 const metaPanel = document.querySelector(".meta-panel");
@@ -946,49 +949,60 @@ function openMetaEditor(trackId) {
     metaRescanHint.style.display = "none";
 
     // Сбрасываем превью
-    metaCoverPreview.src = "";
-    metaBgPreview.src = "";
+    metaCoverPreview.src = TRANSPARENT_PLACEHOLDER;
+    metaBgPreview.src = TRANSPARENT_PLACEHOLDER;
     metaCoverUrl.value = "";
     metaBgUrl.value = "";
 
     // Загружаем обложки из _meta.json
     const base = encodeURIComponent(track.filename.replace(/\.[^.]+$/, ""));
+    console.log("[meta] Loading covers for:", base);
     fetch(`/library/${base}_meta.json`)
         .then(r => r.json())
         .then(m => {
+            console.log("[meta] Got meta:", m);
             // Обложка трека
             const coverSrc = m.cover || "";
-            if (coverSrc) {
+            if (coverSrc && coverSrc !== "") {
                 if (coverSrc.startsWith("data:")) {
                     metaCoverBase64 = coverSrc;
                     metaCoverPreview.src = coverSrc;
                     metaCoverUrl.value = "";
+                    console.log("[meta] Cover: base64");
                 } else {
                     metaCoverUrl.value = coverSrc;
                     metaCoverPreview.src = coverSrc;
+                    console.log("[meta] Cover URL:", coverSrc);
                 }
             } else {
                 metaCoverPreview.src = fallbackCover;
+                console.log("[meta] Cover: using fallback");
             }
             metaCoverGeniusUrl = m.cover_genius || m.cover || "";
 
             // Фон плеера
             const bgSrc = m.background || m.bg || "";
-            if (bgSrc) {
+            if (bgSrc && bgSrc !== "") {
                 if (bgSrc.startsWith("data:")) {
                     metaBgBase64 = bgSrc;
                     metaBgPreview.src = bgSrc;
                     metaBgUrl.value = "";
+                    console.log("[meta] BG: base64");
                 } else {
                     metaBgUrl.value = bgSrc;
                     metaBgPreview.src = bgSrc;
+                    console.log("[meta] BG URL:", bgSrc);
                 }
+            } else {
+                metaBgPreview.src = fallbackCover;
+                console.log("[meta] BG: using fallback");
             }
             metaBgGeniusUrl = m.background_genius || m.background || m.bg || "";
         })
-        .catch(() => {
+        .catch(err => {
+            console.error("[meta] Failed to load meta.json:", err);
             metaCoverPreview.src = fallbackCover;
-            metaBgPreview.src = "";
+            metaBgPreview.src = fallbackCover;
         });
 
     metaOverlay.style.display = "flex";
@@ -1035,6 +1049,12 @@ async function saveMetaEditor() {
         background_url: metaBgBase64 ? null : (metaBgUrl.value.trim() || null),
         background_base64: metaBgBase64,
     };
+    const logPayload = {
+        ...payload,
+        cover_base64: metaCoverBase64 ? `(base64 ${metaCoverBase64.length} chars)` : null,
+        background_base64: metaBgBase64 ? `(base64 ${metaBgBase64.length} chars)` : null,
+    };
+    console.log("[meta] Sending payload:", JSON.stringify(logPayload, null, 2));
 
     try {
         const res = await fetch(`/api/tracks/${metaEditingTrackId}/edit_metadata`, {
@@ -1044,11 +1064,25 @@ async function saveMetaEditor() {
         });
 
         if (!res.ok) {
-            const errData = await res.json().catch(() => ({}));
-            const errMsg = errData.detail || errData.error || `HTTP ${res.status}`;
+            let errMsg = `HTTP ${res.status}`;
+            try {
+                const errData = await res.json();
+                // errData.detail может быть строкой, массивом или объектом
+                if (typeof errData.detail === "string") {
+                    errMsg = errData.detail;
+                } else if (Array.isArray(errData.detail)) {
+                    errMsg = errData.detail.map(d => d.msg || d).join("; ");
+                } else if (typeof errData.detail === "object" && errData.detail !== null) {
+                    errMsg = JSON.stringify(errData.detail);
+                }
+            } catch (_) {
+                // не удалось распарсить JSON — оставляем HTTP статус
+            }
+            console.error("[edit_metadata] Ошибка сервера:", errMsg);
             throw new Error(errMsg);
         }
 
+        console.log("[edit_metadata] Успешно сохранено");
         closeMetaEditor();
         loadTracks();
 
@@ -1057,6 +1091,7 @@ async function saveMetaEditor() {
             setTimeout(() => loadKar(currentTrack, document.getElementById("cover-img").src), 500);
         }
     } catch (e) {
+        console.error("[edit_metadata] Исключение:", e);
         alert("Ошибка при сохранении: " + e.message);
         metaPanel.classList.remove("blocked");
     } finally {
@@ -1087,6 +1122,7 @@ async function resetBgToGenius() {
 
 // Обработка файлов обложек
 function handleCoverFile(file) {
+    console.log("[meta] handleCoverFile:", file ? file.name : "null", file ? file.type : "", file ? file.size : 0);
     if (!file || !file.type.startsWith("image/")) return;
     if (file.size > 5 * 1024 * 1024) {
         alert("Файл слишком большой (макс. 5 МБ)");
@@ -1094,14 +1130,17 @@ function handleCoverFile(file) {
     }
     const reader = new FileReader();
     reader.onload = (e) => {
+        console.log("[meta] Cover file loaded, base64 length:", e.target.result.length);
         metaCoverBase64 = e.target.result;
         metaCoverPreview.src = e.target.result;
         metaCoverUrl.value = "";
     };
+    reader.onerror = (e) => console.error("[meta] Cover file read error:", e);
     reader.readAsDataURL(file);
 }
 
 function handleBgFile(file) {
+    console.log("[meta] handleBgFile:", file ? file.name : "null", file ? file.type : "", file ? file.size : 0);
     if (!file || !file.type.startsWith("image/")) return;
     if (file.size > 5 * 1024 * 1024) {
         alert("Файл слишком большой (макс. 5 МБ)");
@@ -1109,16 +1148,22 @@ function handleBgFile(file) {
     }
     const reader = new FileReader();
     reader.onload = (e) => {
+        console.log("[meta] BG file loaded, base64 length:", e.target.result.length);
         metaBgBase64 = e.target.result;
         metaBgPreview.src = e.target.result;
         metaBgUrl.value = "";
     };
+    reader.onerror = (e) => console.error("[meta] BG file read error:", e);
     reader.readAsDataURL(file);
 }
 
 // Drag & Drop для обложек
 function setupDropZone(dropzoneEl, fileInputEl, handler) {
-    if (!dropzoneEl || !fileInputEl) return;
+    if (!dropzoneEl || !fileInputEl) {
+        console.warn("[meta] setupDropZone: missing elements", dropzoneEl, fileInputEl);
+        return;
+    }
+    console.log("[meta] setupDropZone:", dropzoneEl.id, fileInputEl.id);
 
     ["dragenter", "dragover"].forEach(evt => {
         dropzoneEl.addEventListener(evt, (e) => {
@@ -1137,11 +1182,13 @@ function setupDropZone(dropzoneEl, fileInputEl, handler) {
     });
 
     dropzoneEl.addEventListener("drop", (e) => {
+        console.log("[meta] Drop event, files:", e.dataTransfer.files.length);
         const file = e.dataTransfer.files[0];
         if (file) handler(file);
     });
 
     fileInputEl.addEventListener("change", (e) => {
+        console.log("[meta] File input change, files:", e.target.files.length);
         const file = e.target.files[0];
         if (file) handler(file);
         fileInputEl.value = "";
