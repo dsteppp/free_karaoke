@@ -823,3 +823,432 @@ body.fs-mode .lyric-line                    { font-size: clamp(2rem, 5vw, 4rem);
     .fcp-timeline           { gap: 0.4rem; }
     .time-label             { font-size: 0.65rem; width: 2.2rem; }
 }
+
+/* ════════════════════════════════════════════════════════════════════════════
+   OVERLAY: Редактирование метаданных
+   ════════════════════════════════════════════════════════════════════════════ */
+.meta-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 99998;
+    background: rgba(0, 0, 0, 0.6);
+    backdrop-filter: blur(8px);
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    padding: 1rem;
+    animation: metaFadeIn 0.3s ease;
+}
+@keyframes metaFadeIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+
+.meta-panel {
+    width: 100%;
+    max-width: 32rem;
+    max-height: 90vh;
+    background: var(--bg-panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    animation: metaSlideIn 0.3s cubic-bezier(0.25, 1, 0.5, 1);
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+}
+@keyframes metaSlideIn {
+    from { opacity: 0; transform: translateX(3rem); }
+    to { opacity: 1; transform: translateX(0); }
+}
+
+/* Заголовок */
+.meta-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 1rem 1.25rem;
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+}
+.meta-header h2 {
+    font-size: 1.05rem;
+    font-weight: 700;
+    margin: 0;
+}
+.meta-close-btn {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+    width: 2rem;
+    height: 2rem;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.2s;
+}
+.meta-close-btn:hover { color: var(--danger); background: rgba(239, 68, 68, 0.1); }
+.meta-close-btn svg { width: 1.1rem; height: 1.1rem; }
+
+/* Тело */
+.meta-body {
+    flex: 1;
+    overflow-y: auto;
+    padding: 1.25rem;
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+}
+.meta-body::-webkit-scrollbar { width: 4px; }
+.meta-body::-webkit-scrollbar-thumb { background: var(--surface-hover); border-radius: 2px; }
+
+/* Строки */
+.meta-row { display: flex; flex-direction: column; gap: 0.35rem; }
+.meta-row label {
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.meta-input {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    color: var(--text-main);
+    padding: 0.5rem 0.75rem;
+    border-radius: var(--radius-sm);
+    font-family: inherit;
+    font-size: 0.9rem;
+    outline: none;
+    transition: border-color 0.2s, box-shadow 0.2s;
+}
+.meta-input:focus { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2); }
+
+.meta-textarea {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    color: var(--text-main);
+    padding: 0.6rem 0.75rem;
+    border-radius: var(--radius-sm);
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    font-size: 0.85rem;
+    line-height: 1.6;
+    outline: none;
+    min-height: 12rem;
+    resize: vertical;
+    transition: border-color 0.2s;
+}
+.meta-textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2); }
+
+/* Toggle */
+.meta-toggle-label {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    cursor: pointer;
+    user-select: none;
+}
+.meta-toggle-label input[type="checkbox"] { display: none; }
+.meta-toggle-slider {
+    width: 2.4rem;
+    height: 1.3rem;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 0.65rem;
+    position: relative;
+    transition: all 0.3s;
+    flex-shrink: 0;
+}
+.meta-toggle-slider::after {
+    content: "";
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 0.9rem;
+    height: 0.9rem;
+    background: var(--text-muted);
+    border-radius: 50%;
+    transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.meta-toggle-label input:checked + .meta-toggle-slider {
+    background: rgba(16, 185, 129, 0.2);
+    border-color: var(--success);
+}
+.meta-toggle-label input:checked + .meta-toggle-slider::after {
+    transform: translateX(1.1rem);
+    background: var(--success);
+}
+.meta-toggle-text { font-size: 0.85rem; font-weight: 500; }
+.meta-hint {
+    font-size: 0.75rem;
+    color: var(--warning);
+    margin-top: 0.25rem;
+    padding-left: 3rem;
+}
+
+/* Divider */
+.meta-divider {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    color: var(--text-muted);
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin: 0.25rem 0;
+}
+.meta-divider::before,
+.meta-divider::after {
+    content: "";
+    flex: 1;
+    height: 1px;
+    background: var(--border);
+}
+
+/* Обложки */
+.meta-cover-section { display: flex; flex-direction: column; gap: 0.5rem; }
+.meta-cover-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+.meta-cover-header span {
+    font-size: 0.8rem;
+    font-weight: 600;
+}
+.meta-reset-btn {
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    font-size: 0.75rem;
+    cursor: pointer;
+    padding: 0.2rem 0.4rem;
+    border-radius: var(--radius-sm);
+    transition: all 0.2s;
+}
+.meta-reset-btn:hover { color: var(--accent); background: var(--surface); }
+
+.meta-cover-body {
+    display: flex;
+    gap: 0.75rem;
+    align-items: flex-start;
+}
+.meta-cover-inputs {
+    flex: 1;
+    display: flex;
+    gap: 0.35rem;
+    align-items: center;
+}
+.meta-url-input {
+    flex: 1;
+    min-width: 0;
+}
+.meta-file-btn {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+    width: 2.2rem;
+    height: 2.2rem;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.2s;
+    flex-shrink: 0;
+}
+.meta-file-btn:hover { color: var(--accent); border-color: var(--accent); }
+.meta-file-btn svg { width: 1rem; height: 1rem; }
+
+.meta-cover-preview {
+    width: 4.5rem;
+    height: 4.5rem;
+    object-fit: cover;
+    border-radius: var(--radius-sm);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    flex-shrink: 0;
+}
+.meta-cover-preview:empty { display: none; }
+
+/* Drag & Drop */
+.meta-cover-body.drag-over .meta-url-input {
+    border-color: var(--accent);
+    background: rgba(59, 130, 246, 0.1);
+}
+
+/* Футер */
+.meta-footer {
+    display: flex;
+    gap: 0.75rem;
+    padding: 1rem 1.25rem;
+    border-top: 1px solid var(--border);
+    flex-shrink: 0;
+}
+.meta-save-btn,
+.meta-cancel-btn {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.4rem;
+    padding: 0.6rem 1rem;
+    border-radius: var(--radius-sm);
+    font-weight: 600;
+    font-size: 0.85rem;
+    border: none;
+    cursor: pointer;
+    transition: all 0.2s;
+    font-family: inherit;
+    color: var(--text-main);
+}
+.meta-save-btn {
+    background: var(--accent);
+    box-shadow: 0 4px 12px rgba(59, 130, 246, 0.25);
+}
+.meta-save-btn:hover { filter: brightness(1.15); }
+.meta-save-btn:active { transform: scale(0.96); }
+.meta-save-btn svg { width: 1.1rem; height: 1.1rem; }
+
+.meta-cancel-btn {
+    background: var(--surface);
+    border: 1px solid var(--border);
+}
+.meta-cancel-btn:hover { background: var(--surface-hover); }
+.meta-cancel-btn:active { transform: scale(0.96); }
+.meta-cancel-btn svg { width: 1.1rem; height: 1.1rem; }
+
+/* Состояние: заблокировано при перескане */
+.meta-panel.blocked { pointer-events: none; opacity: 0.7; }
+.meta-panel.blocked .meta-save-btn {
+    pointer-events: auto;
+    opacity: 1;
+    background: var(--warning);
+}
+.meta-panel.blocked .meta-cancel-btn {
+    pointer-events: auto;
+    opacity: 1;
+}
+
+/* Спиннер на кнопке сохранения */
+.meta-save-btn.saving {
+    pointer-events: none;
+    opacity: 0.8;
+}
+.meta-save-btn.saving svg {
+    animation: metaSpin 1s linear infinite;
+}
+@keyframes metaSpin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+}
+
+/* ════════════════════════════════════════════════════════════════════════════
+   Кнопка редактирования в строке трека
+   ════════════════════════════════════════════════════════════════════════════ */
+.edit-meta-btn {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+    width: 2.2rem !important;
+    height: 2.2rem !important;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.2s;
+    flex-shrink: 0;
+}
+.edit-meta-btn:hover { color: var(--accent); border-color: var(--accent); background: var(--surface-hover); }
+.edit-meta-btn:active { transform: scale(0.9); }
+.edit-meta-btn svg { width: 1rem; height: 1rem; }
+.edit-meta-btn.active { color: var(--warning); border-color: var(--warning); background: rgba(245, 158, 11, 0.1); }
+.edit-meta-btn.saving { pointer-events: none; opacity: 0.6; }
+.edit-meta-btn.saving svg { animation: metaSpin 1s linear infinite; }
+
+/* ════════════════════════════════════════════════════════════════════════════
+   Улучшенный прогресс-бар (SSE)
+   ════════════════════════════════════════════════════════════════════════════ */
+.progress-banner {
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
+    background: var(--bg-panel);
+    padding: 0.9rem 1rem;
+    border-radius: var(--radius-md);
+    border: 1px solid var(--border);
+    flex-shrink: 0;
+    animation: fadeIn 0.4s cubic-bezier(0.25, 1, 0.5, 1);
+}
+
+.progress-header {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 0.85rem;
+    font-weight: 500;
+}
+.progress-track-name {
+    flex: 1;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    color: var(--text-main);
+}
+.progress-queue-pos {
+    font-size: 0.7rem;
+    color: var(--text-muted);
+    background: var(--surface);
+    padding: 0.1rem 0.4rem;
+    border-radius: 0.25rem;
+    white-space: nowrap;
+}
+.progress-percent {
+    font-family: monospace;
+    font-weight: 700;
+    color: var(--accent);
+    min-width: 2.5rem;
+    text-align: right;
+}
+
+.progress-bar-bg {
+    height: 0.35rem;
+    background: var(--surface);
+    border-radius: 1rem;
+    overflow: hidden;
+}
+.progress-bar-fill {
+    height: 100%;
+    width: 0%;
+    background: var(--accent);
+    transition: width 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    border-radius: 1rem;
+}
+.progress-bar-fill.done { background: var(--success); }
+.progress-bar-fill.error { background: var(--danger); }
+
+.progress-stage {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-size: 0.8rem;
+    color: var(--text-muted);
+}
+.stage-icon {
+    font-size: 1rem;
+    line-height: 1;
+    display: inline-block;
+}
+
+/* Адаптив для overlay */
+@media (max-width: 48rem) {
+    .meta-panel { max-width: 100%; max-height: 95vh; }
+    .meta-cover-body { flex-direction: column; }
+    .meta-cover-preview { width: 3.5rem; height: 3.5rem; align-self: center; }
+    .meta-footer { flex-direction: column; }
+}

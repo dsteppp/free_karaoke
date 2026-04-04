@@ -1,18 +1,25 @@
 from fastapi import FastAPI, Depends, UploadFile, File, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi import Response
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from typing import List
 import aiofiles
 import os
+import json
 import traceback
+import gc
+import torch
 
 from database import get_db, Track
 from tasks import process_audio_task
 from huey_config import huey
 from ai_pipeline import get_audio_metadata
 from app_logger import get_logger
+from sse_events import register_client, unregister_client, broadcast_progress
+import asyncio
+import uuid
 
 # --- ВРЕЗКА РЕДАКТОРА ---
 from editor_backend import router as editor_router
@@ -496,6 +503,342 @@ async def clear_library(db: Session = Depends(get_db)):
         db.rollback()
         log.error("Clear error: %s", e)
         raise HTTPException(status_code=500, detail=f"Ошибка: {e}")
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# GET /api/events — SSE-стрим событий обработки
+# ──────────────────────────────────────────────────────────────────────────────
+@app.get("/api/events")
+async def sse_events():
+    """Server-Sent Events стрим для реалтайм-отчёта о прогрессе."""
+    client_id = str(uuid.uuid4())
+    q = register_client(client_id)
+
+    async def event_generator():
+        try:
+            while True:
+                try:
+                    event = await asyncio.get_event_loop().run_in_executor(
+                        None, q.get, True, 30
+                    )
+                    yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+                except Exception:
+                    # Таймаут — отправляем keep-alive комментарий
+                    yield ": keep-alive\n\n"
+        finally:
+            unregister_client(client_id)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# GET /api/tracks/{track_id}/cover_genius — возврат оригинальной обложки Genius
+# ──────────────────────────────────────────────────────────────────────────────
+@app.get("/api/tracks/{track_id}/cover_genius")
+async def get_cover_genius(track_id: str, db: Session = Depends(get_db)):
+    """Возвращает оригинальную обложку от Genius для кнопки сброса."""
+    track = db.query(Track).filter(Track.id == track_id).first()
+    if not track:
+        raise HTTPException(status_code=404, detail="Трек не найден")
+
+    if not track.karaoke_json_path:
+        raise HTTPException(status_code=404, detail="Метаданные не найдены")
+
+    meta_path = track.karaoke_json_path.replace("_(Karaoke Lyrics).json", "_meta.json")
+    if not os.path.exists(meta_path):
+        raise HTTPException(status_code=404, detail="_meta.json не найден")
+
+    try:
+        with open(meta_path, "r", encoding="utf-8") as f:
+            meta = json.load(f)
+        genius_url = meta.get("cover_genius") or meta.get("cover_url")
+        if genius_url:
+            return {"url": genius_url}
+        return {"url": None}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# POST /api/tracks/{track_id}/edit_metadata — редактирование метаданных
+# ──────────────────────────────────────────────────────────────────────────────
+class EditMetadataRequest(BaseModel):
+    artist: str
+    title: str
+    lyrics: str
+    rescan: bool = False
+    cover_url: str = None
+    cover_base64: str = None
+    background_url: str = None
+    background_base64: str = None
+
+
+@app.post("/api/tracks/{track_id}/edit_metadata")
+async def edit_track_metadata(
+    track_id: str,
+    req: EditMetadataRequest,
+    db: Session = Depends(get_db),
+):
+    """
+    Редактирование метаданных трека: название, артист, текст, обложки.
+    Если rescan=True — запускает Whisper-пайплайн с новым текстом.
+    """
+    track = db.query(Track).filter(Track.id == track_id).first()
+    if not track:
+        raise HTTPException(status_code=404, detail="Трек не найден")
+
+    if track.status != "done":
+        raise HTTPException(status_code=400, detail="Трек не готов к редактированию")
+
+    base_name = os.path.splitext(track.filename)[0]
+    base_path = os.path.join("library", base_name)
+    lyrics_path = f"{base_path}_(Genius Lyrics).txt"
+    meta_path = f"{base_path}_meta.json"
+    karaoke_json_path = f"{base_path}_(Karaoke Lyrics).json"
+
+    try:
+        # 1. Обновляем название и артиста в БД (файлы не переименовываем)
+        track.artist = req.artist or None
+        track.title = req.title or None
+        db.commit()
+
+        # 2. Сохраняем новый текст
+        if req.lyrics:
+            with open(lyrics_path, "w", encoding="utf-8") as f:
+                f.write(req.lyrics)
+            if track_id in LYRICS_CACHE:
+                del LYRICS_CACHE[track_id]
+            log.info("Текст обновлён для трека %s", track_id)
+
+        # 3. Обновляем _meta.json с обложками
+        meta = {}
+        if os.path.exists(meta_path):
+            try:
+                with open(meta_path, "r", encoding="utf-8") as f:
+                    meta = json.load(f)
+            except Exception:
+                meta = {}
+
+        # Обложка трека: последний источник побеждает
+        if req.cover_base64:
+            meta["cover"] = req.cover_base64
+        elif req.cover_url:
+            meta["cover"] = req.cover_url
+        elif "cover_base64" in meta and meta.get("cover") == meta.get("cover_base64"):
+            # Если cover был base64 и пользователь его не менял — сохраняем
+            pass
+
+        # Сохраняем оригинальную обложку Genius (если ещё не сохранена)
+        if "cover_genius" not in meta and meta.get("cover"):
+            meta["cover_genius"] = meta["cover"]
+
+        # Фон плеера
+        if req.background_base64:
+            meta["background"] = req.background_base64
+        elif req.background_url:
+            meta["background"] = req.background_url
+
+        # Сохраняем оригинальный фон Genius
+        if "background_genius" not in meta and meta.get("background"):
+            meta["background_genius"] = meta["background"]
+
+        with open(meta_path, "w", encoding="utf-8") as f:
+            json.dump(meta, f, ensure_ascii=False, indent=2)
+        log.info("Метаданные обложек обновлены для трека %s", track_id)
+
+        # 4. Если rescan — запускаем Whisper-пайплайн
+        if req.rescan:
+            log.info("Запуск перескана таймингов для трека %s", track_id)
+            from karaoke_aligner import KaraokeAligner
+            from aligner_acoustics import get_vocal_intervals
+            from aligner_orchestra import _elastic_vad_assembly
+            import librosa
+            import numpy as np
+
+            vocals_path = f"{base_path}_(Vocals).mp3"
+            instrumental_path = f"{base_path}_(Instrumental).mp3"
+            vad_path = f"{base_path}_(VAD).json"
+            new_karaoke_path = karaoke_json_path
+
+            # Загружаем VAD из кэша
+            vad_intervals = None
+            audio_duration = None
+            if os.path.exists(vad_path):
+                try:
+                    with open(vad_path, "r", encoding="utf-8") as f:
+                        vad_data = json.load(f)
+                    vad_intervals = vad_data.get("intervals", [])
+                    audio_duration = vad_data.get("duration", 0)
+                    log.info("VAD загружен из кэша: %d интервалов", len(vad_intervals))
+                except Exception as e:
+                    log.warning("Не удалось загрузить VAD из кэша: %s", e)
+
+            # Если VAD нет в кэше — сканируем заново
+            if not vad_intervals:
+                log.info("VAD не найден в кэше — сканирование вокального стема…")
+                broadcast_progress(
+                    track_id=track_id,
+                    track_name=f"{track.artist or ''} — {track.title or ''}".strip(" — "),
+                    stage="vad",
+                    percent=5,
+                    message="Сканирование вокального стема…",
+                )
+                audio_data, sr = librosa.load(vocals_path, sr=16000, mono=True)
+                audio_duration = len(audio_data) / sr
+                vad_intervals = get_vocal_intervals(audio_data, sr, top_db=35.0)
+                if not vad_intervals:
+                    vad_intervals = [(0.0, audio_duration)]
+
+                # Сохраняем VAD в кэш
+                try:
+                    with open(vad_path, "w", encoding="utf-8") as f:
+                        json.dump({"duration": audio_duration, "intervals": vad_intervals}, f)
+                except Exception:
+                    pass
+
+            # Запускаем Aligner с существующими стемами и новым текстом
+            broadcast_progress(
+                track_id=track_id,
+                track_name=f"{track.artist or ''} — {track.title or ''}".strip(" — "),
+                stage="transcribe",
+                percent=5,
+                message="Нейросеть слушает вокальный стем…",
+            )
+
+            aligner = KaraokeAligner()
+
+            # Загружаем аудио (если ещё не загружено при сканировании VAD)
+            if 'audio_data' not in locals() or audio_data is None:
+                audio_data, sr = librosa.load(vocals_path, sr=16000, mono=True)
+                audio_duration = len(audio_data) / sr
+
+            from stable_whisper import load_model
+            from aligner_utils import detect_language, prepare_text, clean_word
+            lang = detect_language(req.lyrics)
+            model = load_model("medium", download_root=aligner.whisper_model_dir, device=aligner.device)
+
+            result = model.transcribe(
+                audio_data,
+                language=lang,
+                word_timestamps=True,
+                vad=True,
+            )
+
+            broadcast_progress(
+                track_id=track_id,
+                track_name=f"{track.artist or ''} — {track.title or ''}".strip(" — "),
+                stage="transcribe",
+                percent=75,
+                message="Транскрипция завершена",
+            )
+
+            raw_heard_words = []
+            for segment in result.segments:
+                for w in segment.words:
+                    cw = clean_word(w.word)
+                    if cw:
+                        raw_heard_words.append({
+                            "word": w.word,
+                            "clean": cw,
+                            "start": w.start,
+                            "end": w.end,
+                            "probability": w.probability,
+                        })
+
+            from aligner_acoustics import filter_whisper_hallucinations
+            heard_words = filter_whisper_hallucinations(raw_heard_words, vad_intervals)
+
+            # Sequence Matching
+            broadcast_progress(
+                track_id=track_id,
+                track_name=f"{track.artist or ''} — {track.title or ''}".strip(" — "),
+                stage="match",
+                percent=75,
+                message="Сопоставление текста с аудио…",
+            )
+
+            from aligner_orchestra import execute_sequence_matching
+            canon_words = prepare_text(req.lyrics)
+            canon_words = execute_sequence_matching(canon_words, heard_words, vad_intervals, audio_duration)
+
+            # Elastic Assembly
+            broadcast_progress(
+                track_id=track_id,
+                track_name=f"{track.artist or ''} — {track.title or ''}".strip(" — "),
+                stage="elastic",
+                percent=90,
+                message="Точное выравнивание таймингов…",
+            )
+
+            _elastic_vad_assembly(canon_words, vad_intervals, audio_duration)
+
+            # Физический контроль
+            from aligner_acoustics import constrain_to_vad
+            for w in canon_words:
+                w["start"], w["end"], _ = constrain_to_vad(w["start"], w["end"], vad_intervals, max_shift_sec=1.5)
+                if w["end"] - w["start"] < 0.05:
+                    w["end"] = w["start"] + 0.1
+
+            # Устранение нахлёстов
+            aligner._resolve_overlaps(canon_words)
+
+            # Формируем JSON
+            broadcast_progress(
+                track_id=track_id,
+                track_name=f"{track.artist or ''} — {track.title or ''}".strip(" — "),
+                stage="save",
+                percent=97,
+                message="Сохранение результатов…",
+            )
+
+            final_json = []
+            for w in canon_words:
+                final_json.append({
+                    "word": w["word"],
+                    "start": round(w["start"], 3),
+                    "end": round(w["end"], 3),
+                    "line_break": w["line_break"],
+                    "letters": [],
+                })
+
+            with open(new_karaoke_path, "w", encoding="utf-8") as f:
+                json.dump(final_json, f, ensure_ascii=False, indent=2)
+
+            # Освобождение памяти
+            if 'model' in locals() and model:
+                del model
+            if 'audio_data' in locals():
+                del audio_data
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                torch.cuda.ipc_collect()
+
+            log.info("Перескан завершён для трека %s", track_id)
+
+        broadcast_progress(
+            track_id=track_id,
+            track_name=f"{track.artist or ''} — {track.title or ''}".strip(" — "),
+            stage="done",
+            percent=100,
+            message="Сохранение завершено!",
+        )
+
+        log.info("Метаданные обновлены для трека %s", track_id)
+        return {"status": "ok", "rescanned": req.rescan}
+
+    except Exception as e:
+        log.error("Ошибка при редактировании метаданных: %s", e)
+        log.debug("Traceback:\n%s", traceback.format_exc())
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ──────────────────────────────────────────────────────────────────────────────

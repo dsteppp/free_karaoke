@@ -14,14 +14,19 @@
 
 <div class="app-container">
 
-    <!-- Прогресс-баннер обработки -->
+    <!-- Прогресс-баннер обработки (SSE) -->
     <div id="upload-progress-box" class="progress-banner" style="display: none;">
-        <div class="status-text">
-            <span id="upload-status">Инициализация...</span>
-            <span id="progress-percent" class="color-accent">0%</span>
+        <div class="progress-header">
+            <span id="progress-track-name" class="progress-track-name">—</span>
+            <span id="progress-queue-pos" class="progress-queue-pos"></span>
+            <span id="progress-percent" class="progress-percent">0%</span>
         </div>
         <div class="progress-bar-bg">
             <div id="upload-fill" class="progress-bar-fill"></div>
+        </div>
+        <div class="progress-stage">
+            <span id="progress-stage-icon" class="stage-icon">⏳</span>
+            <span id="upload-status">Инициализация…</span>
         </div>
     </div>
 
@@ -230,6 +235,101 @@
         </section>
 
     </main>
+</div>
+
+<!-- ═══════════════════════════════════════════ OVERLAY: Редактирование метаданных -->
+<div id="metadata-overlay" class="meta-overlay" style="display: none;">
+    <div class="meta-panel">
+        <div class="meta-header">
+            <h2>✏️ Редактирование метаданных</h2>
+            <button id="meta-close-btn" class="meta-close-btn" title="Закрыть (Escape)">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+                </svg>
+            </button>
+        </div>
+
+        <div class="meta-body">
+            <!-- Название и артист -->
+            <div class="meta-row">
+                <label for="meta-title-input">Название</label>
+                <input type="text" id="meta-title-input" class="meta-input" placeholder="Название трека">
+            </div>
+            <div class="meta-row">
+                <label for="meta-artist-input">Исполнитель</label>
+                <input type="text" id="meta-artist-input" class="meta-input" placeholder="Исполнитель">
+            </div>
+
+            <!-- Текст песни -->
+            <div class="meta-row meta-lyrics-row">
+                <label for="meta-lyrics-input">Текст песни</label>
+                <textarea id="meta-lyrics-input" class="meta-textarea" placeholder="Текст песни…"></textarea>
+            </div>
+
+            <!-- Тумблер перескана -->
+            <div class="meta-row meta-toggle-row">
+                <label class="meta-toggle-label">
+                    <input type="checkbox" id="meta-rescan-toggle">
+                    <span class="meta-toggle-slider"></span>
+                    <span class="meta-toggle-text">Пересканировать тайминги</span>
+                </label>
+                <div id="meta-rescan-hint" class="meta-hint" style="display: none;">
+                    Тайминги будут пересчитаны. Это может занять некоторое время.
+                </div>
+            </div>
+
+            <!-- Обложки -->
+            <div class="meta-divider"><span>Обложки</span></div>
+
+            <!-- Обложка трека -->
+            <div class="meta-cover-section">
+                <div class="meta-cover-header">
+                    <span>Обложка трека</span>
+                    <button id="meta-reset-cover-btn" class="meta-reset-btn" title="Вернуть обложку от Genius">↺ Сбросить</button>
+                </div>
+                <div class="meta-cover-body">
+                    <div class="meta-cover-inputs">
+                        <input type="text" id="meta-cover-url" class="meta-input meta-url-input" placeholder="URL изображения или перетащите файл">
+                        <button id="meta-cover-file-btn" class="meta-file-btn" title="Загрузить файл">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                        </button>
+                        <input type="file" id="meta-cover-file-input" accept="image/*" style="display:none;">
+                    </div>
+                    <img id="meta-cover-preview" class="meta-cover-preview" src="" alt="Превью">
+                </div>
+            </div>
+
+            <!-- Фон плеера -->
+            <div class="meta-cover-section">
+                <div class="meta-cover-header">
+                    <span>Фон плеера</span>
+                    <button id="meta-reset-bg-btn" class="meta-reset-btn" title="Вернуть фон от Genius">↺ Сбросить</button>
+                </div>
+                <div class="meta-cover-body">
+                    <div class="meta-cover-inputs">
+                        <input type="text" id="meta-bg-url" class="meta-input meta-url-input" placeholder="URL изображения или перетащите файл">
+                        <button id="meta-bg-file-btn" class="meta-file-btn" title="Загрузить файл">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                        </button>
+                        <input type="file" id="meta-bg-file-input" accept="image/*" style="display:none;">
+                    </div>
+                    <img id="meta-bg-preview" class="meta-cover-preview" src="" alt="Превью">
+                </div>
+            </div>
+        </div>
+
+        <!-- Футер с кнопками -->
+        <div class="meta-footer">
+            <button id="meta-save-btn" class="meta-save-btn">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>
+                <span>Сохранить</span>
+            </button>
+            <button id="meta-cancel-btn" class="meta-cancel-btn">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                <span>Отмена</span>
+            </button>
+        </div>
+    </div>
 </div>
 
 <script src="/static/script.js"></script>

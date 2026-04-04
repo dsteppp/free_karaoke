@@ -249,60 +249,100 @@ async function loadTracks() {
 
 function startPolling() {
     if (pollingInterval) return;
-    if (!animationFrameIdProgress)
-        animationFrameIdProgress = requestAnimationFrame(animProg);
+
+    // Подключаем SSE для реалтайм-прогресса
+    connectSSE();
 
     pollingInterval = setInterval(async () => {
         try {
             const r = await fetch("/api/status");
             const d = await r.json();
             allTracks = d.tracks;
-
-            const active = allTracks.filter(t => t.status !== "done" && t.status !== "error");
-            if (active.length > 0) {
-                els.progBox.style.display = "flex";
-                const label = active[0].original_name +
-                    (active.length > 1 ? ` (+${active.length - 1})` : "");
-                setProg(active[0].status, label);
-            } else {
-                clearInterval(pollingInterval);
-                pollingInterval = null;
-                if (els.progBox.style.display === "flex") {
-                    setProg("done", "");
-                    setTimeout(() => {
-                        els.progBox.style.display = "none";
-                        currentVisualProgress = targetProgress = 0;
-                        els.progFill.style.width = "0%";
-                        cancelAnimationFrame(animationFrameIdProgress);
-                        animationFrameIdProgress = null;
-                    }, 2000);
-                }
-            }
             renderList();
         } catch (e) { console.error(e); }
-    }, 1500);
+    }, 3000);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SSE — реалтайм-прогресс обработки
+// ─────────────────────────────────────────────────────────────────────────────
+let sse = null;
+let sseReconnectCount = 0;
+const SSE_MAX_RECONNECTS = 5;
+
+const STAGE_ICONS = {
+    start: "⏳", convert: "📁", separate: "🔊", lyrics: "📝",
+    covers: "🖼️", vad: "🎙️", transcribe: "🧠", match: "🔗",
+    elastic: "🧲", save: "💾", done: "✅", error: "❌"
+};
+
+function connectSSE() {
+    if (sse) { sse.close(); sse = null; }
+
+    sse = new EventSource("/api/events");
+
+    sse.onmessage = (e) => {
+        try {
+            const data = JSON.parse(e.data);
+            handleSSEEvent(data);
+        } catch (err) { /* ignore parse errors */ }
+    };
+
+    sse.onerror = () => {
+        sse.close();
+        sse = null;
+        if (sseReconnectCount < SSE_MAX_RECONNECTS) {
+            sseReconnectCount++;
+            setTimeout(connectSSE, Math.min(1000 * sseReconnectCount, 5000));
+        }
+    };
+
+    sseReconnectCount = 0;
+}
+
+function handleSSEEvent(data) {
+    const fill = els.progFill;
+    const pctEl = document.getElementById("progress-percent");
+    const statusEl = document.getElementById("upload-status");
+    const nameEl = document.getElementById("progress-track-name");
+    const queueEl = document.getElementById("progress-queue-pos");
+    const iconEl = document.getElementById("progress-stage-icon");
+    const box = els.progBox;
+
+    box.style.display = "flex";
+    fill.className = "progress-bar-fill";
+
+    nameEl.textContent = data.track_name || "—";
+    queueEl.textContent = data.queue_position || "";
+    iconEl.textContent = STAGE_ICONS[data.stage] || "⏳";
+    statusEl.textContent = data.message || "";
+    pctEl.textContent = `${data.percent}%`;
+
+    if (data.percent > 0) {
+        targetProgress = data.percent;
+    }
+
+    if (data.type === "done") {
+        fill.classList.add(data.success ? "done" : "error");
+        statusEl.textContent = data.success ? "Готово!" : `Ошибка: ${data.error || "неизвестно"}`;
+        iconEl.textContent = data.success ? "✅" : "❌";
+        setTimeout(() => {
+            box.style.display = "none";
+            currentVisualProgress = targetProgress = 0;
+            fill.style.width = "0%";
+            fill.className = "progress-bar-fill";
+        }, 2500);
+        loadTracks();
+    }
 }
 
 function animProg() {
     currentVisualProgress += (targetProgress - currentVisualProgress) * 0.05;
     if (targetProgress === 100 && currentVisualProgress > 99) currentVisualProgress = 100;
     els.progFill.style.width = `${Math.min(currentVisualProgress, 100)}%`;
-    els.progPct.innerText    = `${Math.round(currentVisualProgress)}%`;
+    const pctEl = document.getElementById("progress-percent");
+    if (pctEl) pctEl.textContent = `${Math.round(currentVisualProgress)}%`;
     animationFrameIdProgress = requestAnimationFrame(animProg);
-}
-
-function setProg(s, f) {
-    if (s === "done")  { targetProgress = 100; els.progFill.style.background = "var(--success)"; els.progStat.innerText = "Готово!"; return; }
-    if (s === "error") { targetProgress = 100; els.progFill.style.background = "var(--danger)";  els.progStat.innerText = "Ошибка"; return; }
-    els.progFill.style.background = "var(--accent)";
-    targetProgress = {
-        "pending": 5,
-        "Конвертация в MP3...": 15,
-        "Разделение вокала и музыки...": 60,
-        "Поиск текста и обложек...": 70,
-        "Нейросетевая синхронизация (Whisper)...": 95,
-    }[s] || 10;
-    els.progStat.innerText = `[${f}] ${s}`;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -395,7 +435,15 @@ function renderList() {
             rB.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.3"/></svg>`;
             rB.onclick = () => apiReq(t.id, "reset_text");
 
-            acts.append(pB, rB);
+            // ✏️ Кнопка редактирования метаданных
+            const eB = document.createElement("button");
+            eB.className = "edit-meta-btn";
+            eB.setAttribute("data-meta-track", t.id);
+            eB.title = "Редактировать метаданные";
+            eB.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>`;
+            eB.onclick = () => openMetaEditor(t.id);
+
+            acts.append(pB, rB, eB);
         }
 
         const dB = document.createElement("button");
@@ -414,6 +462,9 @@ async function apiReq(id, act) {
     if (act === "del"        && !confirm("Удалить трек?"))         return;
     if (act === "reset_text" && !confirm("Пересинхронизировать?")) return;
 
+    // Закрываем overlay если он открыт для этого трека
+    if (metaEditingTrackId === id) closeMetaEditor();
+
     const url    = `/api/tracks/${id}${act === "reset_text" ? "/reset_text" : ""}`;
     const method = act === "del" ? "DELETE" : "POST";
     await fetch(url, { method });
@@ -430,15 +481,19 @@ function uploadFiles() {
 
     els.progBox.style.display = "flex";
     els.progFill.style.width  = "0%";
-    els.progStat.innerText    = "Загрузка...";
+    document.getElementById("progress-percent").textContent = "0%";
+    document.getElementById("upload-status").textContent = "Загрузка…";
+    document.getElementById("progress-track-name").textContent = `${els.fileInput.files.length} файл(ов)`;
+    document.getElementById("progress-queue-pos").textContent = "";
+    document.getElementById("progress-stage-icon").textContent = "📤";
 
     const x = new XMLHttpRequest();
     x.open("POST", "/api/upload", true);
     x.upload.onprogress = e => {
         if (e.lengthComputable) {
-            targetProgress = (e.loaded / e.total) * 10;
-            if (!animationFrameIdProgress)
-                animationFrameIdProgress = requestAnimationFrame(animProg);
+            const pct = Math.round((e.loaded / e.total) * 10);
+            document.getElementById("progress-percent").textContent = `${pct}%`;
+            els.progFill.style.width = `${pct}%`;
         }
     };
     x.onload = async () => {
@@ -453,16 +508,21 @@ async function cancelProcessing() {
     if (!confirm("Остановить все задачи?")) return;
     clearInterval(pollingInterval);
     pollingInterval = null;
-    els.progFill.style.background = "var(--danger)";
+    if (sse) { sse.close(); sse = null; }
+    els.progFill.classList.add("error");
+    document.getElementById("upload-status").textContent = "Отменено";
+    document.getElementById("progress-stage-icon").textContent = "❌";
     await fetch("/api/cancel", { method: "POST" });
-    targetProgress = 0;
     setTimeout(() => { els.progBox.style.display = "none"; }, 1000);
     loadTracks();
 }
 
 async function scanLibrary() {
     els.progBox.style.display = "flex";
-    els.progStat.innerText    = "Сканирование библиотеки...";
+    document.getElementById("upload-status").textContent = "Сканирование библиотеки…";
+    document.getElementById("progress-stage-icon").textContent = "🔍";
+    document.getElementById("progress-track-name").textContent = "—";
+    document.getElementById("progress-queue-pos").textContent = "";
     await fetch("/api/scan", { method: "POST" });
     loadTracks();
     startPolling();
@@ -833,3 +893,306 @@ function toggleFS() {
 
 syncSliders();
 loadTracks();
+
+// ════════════════════════════════════════════════════════════════════════════════
+// OVERLAY: Редактирование метаданных
+// ════════════════════════════════════════════════════════════════════════════════
+
+let metaEditingTrackId = null;
+let metaOriginalData = null;
+let metaCoverBase64 = null;
+let metaBgBase64 = null;
+let metaCoverGeniusUrl = null;
+let metaBgGeniusUrl = null;
+
+// Элементы overlay
+const metaOverlay = document.getElementById("metadata-overlay");
+const metaPanel = document.querySelector(".meta-panel");
+const metaTitleInput = document.getElementById("meta-title-input");
+const metaArtistInput = document.getElementById("meta-artist-input");
+const metaLyricsInput = document.getElementById("meta-lyrics-input");
+const metaRescanToggle = document.getElementById("meta-rescan-toggle");
+const metaRescanHint = document.getElementById("meta-rescan-hint");
+const metaCoverUrl = document.getElementById("meta-cover-url");
+const metaBgUrl = document.getElementById("meta-bg-url");
+const metaCoverPreview = document.getElementById("meta-cover-preview");
+const metaBgPreview = document.getElementById("meta-bg-preview");
+const metaCoverFileInput = document.getElementById("meta-cover-file-input");
+const metaBgFileInput = document.getElementById("meta-bg-file-input");
+
+// Открытие overlay
+function openMetaEditor(trackId) {
+    const track = allTracks.find(t => t.id === trackId);
+    if (!track || track.status !== "done") return;
+
+    metaEditingTrackId = trackId;
+    metaOriginalData = {
+        artist: track.artist || "",
+        title: track.title || "",
+        lyrics: track.lyrics_text || "",
+    };
+    metaCoverBase64 = null;
+    metaBgBase64 = null;
+    metaCoverGeniusUrl = null;
+    metaBgGeniusUrl = null;
+
+    // Заполняем поля
+    metaTitleInput.value = metaOriginalData.title;
+    metaArtistInput.value = metaOriginalData.artist;
+    metaLyricsInput.value = metaOriginalData.lyrics;
+    metaRescanToggle.checked = false;
+    metaRescanHint.style.display = "none";
+
+    // Загружаем обложки из _meta.json
+    const base = encodeURIComponent(track.filename.replace(/\.[^.]+$/, ""));
+    fetch(`/library/${base}_meta.json`)
+        .then(r => r.json())
+        .then(m => {
+            // Обложка трека
+            const coverSrc = m.cover_base64 || m.cover || m.cover_genius || "";
+            if (coverSrc) {
+                metaCoverPreview.src = coverSrc;
+                if (coverSrc.startsWith("data:")) {
+                    metaCoverUrl.value = "";
+                    metaCoverBase64 = coverSrc;
+                } else {
+                    metaCoverUrl.value = coverSrc;
+                }
+            } else {
+                metaCoverPreview.src = fallbackCover;
+                metaCoverUrl.value = "";
+            }
+            metaCoverGeniusUrl = m.cover_genius || m.cover || "";
+
+            // Фон плеера
+            const bgSrc = m.background_base64 || m.background || m.bg || m.background_genius || "";
+            if (bgSrc) {
+                metaBgPreview.src = bgSrc;
+                if (bgSrc.startsWith("data:")) {
+                    metaBgUrl.value = "";
+                    metaBgBase64 = bgSrc;
+                } else {
+                    metaBgUrl.value = bgSrc;
+                }
+            } else {
+                metaBgPreview.src = "";
+                metaBgUrl.value = "";
+            }
+            metaBgGeniusUrl = m.background_genius || m.background || m.bg || "";
+        })
+        .catch(() => {
+            metaCoverPreview.src = fallbackCover;
+            metaBgPreview.src = "";
+            metaCoverUrl.value = "";
+            metaBgUrl.value = "";
+        });
+
+    metaOverlay.style.display = "flex";
+    metaPanel.classList.remove("blocked");
+
+    // Обновляем кнопку в строке трека
+    const btn = document.querySelector(`[data-meta-track="${trackId}"]`);
+    if (btn) btn.classList.add("active");
+}
+
+// Закрытие overlay
+function closeMetaEditor() {
+    metaOverlay.style.display = "none";
+    metaEditingTrackId = null;
+    metaOriginalData = null;
+    metaCoverBase64 = null;
+    metaBgBase64 = null;
+
+    const btn = document.querySelector(`[data-meta-track]`);
+    if (btn) btn.classList.remove("active");
+}
+
+// Сохранение метаданных
+async function saveMetaEditor() {
+    if (!metaEditingTrackId) return;
+
+    const saveBtn = document.getElementById("meta-save-btn");
+    const cancelBtn = document.getElementById("meta-cancel-btn");
+
+    saveBtn.classList.add("saving");
+    saveBtn.querySelector("span").textContent = "Сохранение…";
+    cancelBtn.style.display = "none";
+    metaPanel.classList.add("blocked");
+
+    const payload = {
+        artist: metaArtistInput.value.trim(),
+        title: metaTitleInput.value.trim(),
+        lyrics: metaLyricsInput.value,
+        rescan: metaRescanToggle.checked,
+        cover_url: metaCoverBase64 ? null : (metaCoverUrl.value.trim() || null),
+        cover_base64: metaCoverBase64,
+        background_url: metaBgBase64 ? null : (metaBgUrl.value.trim() || null),
+        background_base64: metaBgBase64,
+    };
+
+    try {
+        const res = await fetch(`/api/tracks/${metaEditingTrackId}/edit_metadata`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+        });
+
+        if (!res.ok) {
+            const err = await res.json();
+            throw new Error(err.detail || "Ошибка сервера");
+        }
+
+        closeMetaEditor();
+        loadTracks();
+
+        // Если был перескан — обновляем плеер
+        if (payload.rescan && currentTrack && currentTrack.id === metaEditingTrackId) {
+            setTimeout(() => loadKar(currentTrack, document.getElementById("cover-img").src), 500);
+        }
+    } catch (e) {
+        alert("Ошибка при сохранении: " + e.message);
+        metaPanel.classList.remove("blocked");
+    } finally {
+        saveBtn.classList.remove("saving");
+        saveBtn.querySelector("span").textContent = "Сохранить";
+        cancelBtn.style.display = "";
+    }
+}
+
+// Сброс обложки к оригиналу от Genius
+async function resetCoverToGenius() {
+    if (!metaEditingTrackId) return;
+    try {
+        const res = await fetch(`/api/tracks/${metaEditingTrackId}/cover_genius`);
+        if (res.ok) {
+            const data = await res.json();
+            if (data.url) {
+                metaCoverUrl.value = data.url;
+                metaCoverBase64 = null;
+                metaCoverPreview.src = data.url;
+            }
+        }
+    } catch (e) {
+        console.error("Ошибка сброса обложки:", e);
+    }
+}
+
+async function resetBgToGenius() {
+    if (!metaEditingTrackId) return;
+    try {
+        const res = await fetch(`/api/tracks/${metaEditingTrackId}/cover_genius`);
+        if (res.ok) {
+            const data = await res.json();
+            // Для фона используем background_genius из _meta.json
+            const track = allTracks.find(t => t.id === metaEditingTrackId);
+            if (track) {
+                const base = encodeURIComponent(track.filename.replace(/\.[^.]+$/, ""));
+                fetch(`/library/${base}_meta.json`)
+                    .then(r => r.json())
+                    .then(m => {
+                        const bgUrl = m.background_genius || m.bg || "";
+                        if (bgUrl) {
+                            metaBgUrl.value = bgUrl;
+                            metaBgBase64 = null;
+                            metaBgPreview.src = bgUrl;
+                        }
+                    });
+            }
+        }
+    } catch (e) {
+        console.error("Ошибка сброса фона:", e);
+    }
+}
+
+// Обработка файлов обложек
+function handleCoverFile(file) {
+    if (!file || !file.type.startsWith("image/")) return;
+    if (file.size > 5 * 1024 * 1024) {
+        alert("Файл слишком большой (макс. 5 МБ)");
+        return;
+    }
+    const reader = new FileReader();
+    reader.onload = (e) => {
+        metaCoverBase64 = e.target.result;
+        metaCoverPreview.src = e.target.result;
+        metaCoverUrl.value = "";
+    };
+    reader.readAsDataURL(file);
+}
+
+function handleBgFile(file) {
+    if (!file || !file.type.startsWith("image/")) return;
+    if (file.size > 5 * 1024 * 1024) {
+        alert("Файл слишком большой (макс. 5 МБ)");
+        return;
+    }
+    const reader = new FileReader();
+    reader.onload = (e) => {
+        metaBgBase64 = e.target.result;
+        metaBgPreview.src = e.target.result;
+        metaBgUrl.value = "";
+    };
+    reader.readAsDataURL(file);
+}
+
+// Drag & Drop для обложек
+function setupDropZone(container, fileInput, handler) {
+    container.addEventListener("dragover", (e) => {
+        e.preventDefault();
+        container.classList.add("drag-over");
+    });
+    container.addEventListener("dragleave", () => {
+        container.classList.remove("drag-over");
+    });
+    container.addEventListener("drop", (e) => {
+        e.preventDefault();
+        container.classList.remove("drag-over");
+        const file = e.dataTransfer.files[0];
+        if (file) handler(file);
+    });
+    fileInput.addEventListener("change", (e) => {
+        const file = e.target.files[0];
+        if (file) handler(file);
+        fileInput.value = "";
+    });
+}
+
+// ── Привязка событий overlay ──────────────────────────────────────────────
+document.getElementById("meta-close-btn").addEventListener("click", closeMetaEditor);
+document.getElementById("meta-cancel-btn").addEventListener("click", closeMetaEditor);
+document.getElementById("meta-save-btn").addEventListener("click", saveMetaEditor);
+document.getElementById("meta-reset-cover-btn").addEventListener("click", resetCoverToGenius);
+document.getElementById("meta-reset-bg-btn").addEventListener("click", resetBgToGenius);
+document.getElementById("meta-cover-file-btn").addEventListener("click", () => metaCoverFileInput.click());
+document.getElementById("meta-bg-file-btn").addEventListener("click", () => metaBgFileInput.click());
+
+metaRescanToggle.addEventListener("change", () => {
+    metaRescanHint.style.display = metaRescanToggle.checked ? "block" : "none";
+});
+
+// Drag & Drop
+setupDropZone(document.querySelector(".meta-cover-section:nth-child(1) .meta-cover-body"), metaCoverFileInput, handleCoverFile);
+setupDropZone(document.querySelector(".meta-cover-section:nth-child(2) .meta-cover-body"), metaBgFileInput, handleBgFile);
+
+// Обновление превью при вводе URL
+metaCoverUrl.addEventListener("input", () => {
+    const url = metaCoverUrl.value.trim();
+    if (url) {
+        metaCoverBase64 = null;
+        metaCoverPreview.src = url;
+    }
+});
+metaBgUrl.addEventListener("input", () => {
+    const url = metaBgUrl.value.trim();
+    if (url) {
+        metaBgBase64 = null;
+        metaBgPreview.src = url;
+    }
+});
+
+// Escape закрывает overlay
+document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && metaOverlay.style.display === "flex") {
+        closeMetaEditor();
+    }
+});
