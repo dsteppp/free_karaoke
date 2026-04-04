@@ -248,9 +248,6 @@ async function loadTracks() {
 }
 
 function startPolling() {
-    // Всегда подключа SSE если ещё не подключён
-    if (!sse) connectSSE();
-
     if (pollingInterval) return;
 
     pollingInterval = setInterval(async () => {
@@ -259,98 +256,22 @@ function startPolling() {
             const d = await r.json();
             allTracks = d.tracks;
             renderList();
+
+            // Если есть активные треки — перезагружаем плеер если текущий обновился
+            const active = d.tracks.some(t => t.status !== "done" && t.status !== "error");
+            if (!active && currentTrack) {
+                const updated = d.tracks.find(t => t.id === currentTrack.id);
+                if (updated && updated.status === "done") {
+                    loadKar(currentTrack, document.getElementById("cover-img").src);
+                }
+            }
         } catch (e) { console.error(e); }
-    }, 3000);
+    }, 2000);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// SSE — реалтайм-прогресс обработки
+// Анимация прогресс-бара (плавная интерполяция)
 // ─────────────────────────────────────────────────────────────────────────────
-let sse = null;
-let sseReconnectCount = 0;
-const SSE_MAX_RECONNECTS = 5;
-let completedTrackIds = new Set(); // Треки, для которых уже показали "done"
-
-const STAGE_ICONS = {
-    start: "⏳", convert: "📁", separate: "🔊", lyrics: "📝",
-    covers: "🖼️", vad: "🎙️", transcribe: "🧠", match: "🔗",
-    elastic: "🧲", save: "💾", done: "✅", error: "❌"
-};
-
-function connectSSE() {
-    if (sse) { sse.close(); sse = null; }
-
-    sse = new EventSource("/api/events");
-
-    sse.onmessage = (e) => {
-        try {
-            const data = JSON.parse(e.data);
-            handleSSEEvent(data);
-        } catch (err) { /* ignore parse errors */ }
-    };
-
-    sse.onerror = () => {
-        sse.close();
-        sse = null;
-        if (sseReconnectCount < SSE_MAX_RECONNECTS) {
-            sseReconnectCount++;
-            setTimeout(connectSSE, Math.min(1000 * sseReconnectCount, 5000));
-        }
-    };
-
-    sseReconnectCount = 0;
-}
-
-function handleSSEEvent(data) {
-    const fill = els.progFill;
-    const pctEl = document.getElementById("progress-percent");
-    const statusEl = document.getElementById("upload-status");
-    const nameEl = document.getElementById("progress-track-name");
-    const queueEl = document.getElementById("progress-queue-pos");
-    const iconEl = document.getElementById("progress-stage-icon");
-    const box = els.progBox;
-
-    // Игнорируем повторные события для уже завершённых треков
-    if (data.type === "done" && completedTrackIds.has(data.track_id)) return;
-
-    box.style.display = "flex";
-    fill.className = "progress-bar-fill";
-
-    nameEl.textContent = data.track_name || "—";
-    queueEl.textContent = data.queue_position || "";
-    iconEl.textContent = STAGE_ICONS[data.stage] || "⏳";
-    statusEl.textContent = data.message || "";
-    pctEl.textContent = `${data.percent}%`;
-
-    if (data.percent > 0) {
-        targetProgress = data.percent;
-    }
-
-    if (data.type === "done") {
-        completedTrackIds.add(data.track_id);
-        fill.classList.add(data.success ? "done" : "error");
-        statusEl.textContent = data.success ? "Готово!" : `Ошибка: ${data.error || "неизвестно"}`;
-        iconEl.textContent = data.success ? "✅" : "❌";
-        setTimeout(() => {
-            box.style.display = "none";
-            currentVisualProgress = targetProgress = 0;
-            fill.style.width = "0%";
-            fill.className = "progress-bar-fill";
-        }, 2500);
-        loadTracks();
-
-        // Если обработка завершилась для текущего трека — перезагружаем плеер
-        if (data.success && currentTrack && data.track_id === currentTrack.id) {
-            setTimeout(() => {
-                loadKar(currentTrack, document.getElementById("cover-img").src);
-            }, 300);
-        }
-    } else {
-        // Для промежуточных событий сбрасываем completed (трек снова в обработке)
-        completedTrackIds.delete(data.track_id);
-    }
-}
-
 function animProg() {
     currentVisualProgress += (targetProgress - currentVisualProgress) * 0.05;
     if (targetProgress === 100 && currentVisualProgress > 99) currentVisualProgress = 100;
@@ -494,23 +415,8 @@ function uploadFiles() {
     const fd = new FormData();
     for (const f of els.fileInput.files) fd.append("files", f);
 
-    els.progBox.style.display = "flex";
-    els.progFill.style.width  = "0%";
-    document.getElementById("progress-percent").textContent = "0%";
-    document.getElementById("upload-status").textContent = "Загрузка…";
-    document.getElementById("progress-track-name").textContent = `${els.fileInput.files.length} файл(ов)`;
-    document.getElementById("progress-queue-pos").textContent = "";
-    document.getElementById("progress-stage-icon").textContent = "📤";
-
     const x = new XMLHttpRequest();
     x.open("POST", "/api/upload", true);
-    x.upload.onprogress = e => {
-        if (e.lengthComputable) {
-            const pct = Math.round((e.loaded / e.total) * 10);
-            document.getElementById("progress-percent").textContent = `${pct}%`;
-            els.progFill.style.width = `${pct}%`;
-        }
-    };
     x.onload = async () => {
         els.fileInput.value = "";
         await loadTracks();
@@ -523,21 +429,11 @@ async function cancelProcessing() {
     if (!confirm("Остановить все задачи?")) return;
     clearInterval(pollingInterval);
     pollingInterval = null;
-    if (sse) { sse.close(); sse = null; }
-    els.progFill.classList.add("error");
-    document.getElementById("upload-status").textContent = "Отменено";
-    document.getElementById("progress-stage-icon").textContent = "❌";
     await fetch("/api/cancel", { method: "POST" });
-    setTimeout(() => { els.progBox.style.display = "none"; }, 1000);
     loadTracks();
 }
 
 async function scanLibrary() {
-    els.progBox.style.display = "flex";
-    document.getElementById("upload-status").textContent = "Сканирование библиотеки…";
-    document.getElementById("progress-stage-icon").textContent = "🔍";
-    document.getElementById("progress-track-name").textContent = "—";
-    document.getElementById("progress-queue-pos").textContent = "";
     await fetch("/api/scan", { method: "POST" });
     loadTracks();
     startPolling();
@@ -1097,17 +993,15 @@ async function saveMetaEditor() {
             throw new Error(errMsg);
         }
 
-        console.log("[edit_metadata] Успешно сохранено");
+        console.log("[meta] Успешно сохранено");
         closeMetaEditor();
         loadTracks();
 
         if (payload.rescan) {
-            // При перескане запускаем polling чтобы видеть прогресс-бар
+            // При перескане запускаем polling чтобы обновлялся статус трека
             startPolling();
-            // Не вызываем loadKar сразу — трек сейчас в обработке
-            // SSE обновит UI когда обработка завершится
         } else {
-            // Без перескана — просто обновляем текущий трек для новых обложек
+            // Без перескана — обновляем текущий трек для новых обложек
             if (currentTrack && currentTrack.id === metaEditingTrackId) {
                 loadKar(currentTrack, document.getElementById("cover-img").src);
             }

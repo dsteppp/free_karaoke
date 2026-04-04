@@ -1,6 +1,6 @@
 from fastapi import FastAPI, Depends, UploadFile, File, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi import Response
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -17,9 +17,6 @@ from tasks import process_audio_task
 from huey_config import huey
 from ai_pipeline import get_audio_metadata
 from app_logger import get_logger
-from sse_events import register_client, unregister_client, broadcast_progress
-import asyncio
-import uuid
 
 # --- ВРЕЗКА РЕДАКТОРА ---
 from editor_backend import router as editor_router
@@ -511,40 +508,6 @@ async def clear_library(db: Session = Depends(get_db)):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# GET /api/events — SSE-стрим событий обработки
-# ──────────────────────────────────────────────────────────────────────────────
-@app.get("/api/events")
-async def sse_events():
-    """Server-Sent Events стрим для реалтайм-отчёта о прогрессе."""
-    client_id = str(uuid.uuid4())
-    q = register_client(client_id)
-
-    async def event_generator():
-        try:
-            while True:
-                try:
-                    event = await asyncio.get_event_loop().run_in_executor(
-                        None, q.get, True, 30
-                    )
-                    yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
-                except Exception:
-                    # Таймаут — отправляем keep-alive комментарий
-                    yield ": keep-alive\n\n"
-        finally:
-            unregister_client(client_id)
-
-    return StreamingResponse(
-        event_generator(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
-    )
-
-
-# ──────────────────────────────────────────────────────────────────────────────
 # GET /api/tracks/{track_id}/cover_genius — возврат оригинальной обложки Genius
 # ──────────────────────────────────────────────────────────────────────────────
 @app.get("/api/tracks/{track_id}/cover_genius")
@@ -838,10 +801,6 @@ async def edit_track_metadata(
                 torch.cuda.ipc_collect()
 
             log.info("Перескан завершён для трека %s", track_id)
-
-        # Отправляем SSE событие только если был перескан (есть прогресс-бар)
-        if req.rescan:
-            broadcast_done(track_id, f"{track.artist or ''} — {track.title or ''}".strip(" — "), True)
 
         log.info("Метаданные обновлены для трека %s", track_id)
         return {"status": "ok", "rescanned": req.rescan}
