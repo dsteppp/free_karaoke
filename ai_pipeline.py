@@ -232,10 +232,10 @@ def fetch_lyrics(artist: str, title: str, base_path: str) -> tuple[str | None, s
         g_title  = clean_metadata_string(song.title)
 
         meta = {
-            "cover":          getattr(song, "song_art_image_url", "") or "",
-            "bg":             getattr(song, "header_image_url",   "") or "",
-            "cover_genius":   getattr(song, "song_art_image_url", "") or "",
-            "background_genius": getattr(song, "header_image_url", "") or "",
+            "cover":        getattr(song, "song_art_image_url", "") or "",
+            "bg":           getattr(song, "header_image_url",   "") or "",
+            "cover_genius": getattr(song, "song_art_image_url", "") or "",
+            "bg_genius":    getattr(song, "header_image_url",   "") or "",
         }
         with open(meta_file, "w", encoding="utf-8") as f:
             json.dump(meta, f, ensure_ascii=False)

@@ -248,10 +248,10 @@ async function loadTracks() {
 }
 
 function startPolling() {
-    if (pollingInterval) return;
+    // Всегда подключа SSE если ещё не подключён
+    if (!sse) connectSSE();
 
-    // Подключаем SSE для реалтайм-прогресса
-    connectSSE();
+    if (pollingInterval) return;
 
     pollingInterval = setInterval(async () => {
         try {
@@ -269,6 +269,7 @@ function startPolling() {
 let sse = null;
 let sseReconnectCount = 0;
 const SSE_MAX_RECONNECTS = 5;
+let completedTrackIds = new Set(); // Треки, для которых уже показали "done"
 
 const STAGE_ICONS = {
     start: "⏳", convert: "📁", separate: "🔊", lyrics: "📝",
@@ -309,6 +310,9 @@ function handleSSEEvent(data) {
     const iconEl = document.getElementById("progress-stage-icon");
     const box = els.progBox;
 
+    // Игнорируем повторные события для уже завершённых треков
+    if (data.type === "done" && completedTrackIds.has(data.track_id)) return;
+
     box.style.display = "flex";
     fill.className = "progress-bar-fill";
 
@@ -323,6 +327,7 @@ function handleSSEEvent(data) {
     }
 
     if (data.type === "done") {
+        completedTrackIds.add(data.track_id);
         fill.classList.add(data.success ? "done" : "error");
         statusEl.textContent = data.success ? "Готово!" : `Ошибка: ${data.error || "неизвестно"}`;
         iconEl.textContent = data.success ? "✅" : "❌";
@@ -340,6 +345,9 @@ function handleSSEEvent(data) {
                 loadKar(currentTrack, document.getElementById("cover-img").src);
             }, 300);
         }
+    } else {
+        // Для промежуточных событий сбрасываем completed (трек снова в обработке)
+        completedTrackIds.delete(data.track_id);
     }
 }
 
@@ -589,9 +597,9 @@ async function loadKar(t, cvr) {
     try {
         const m = await fetch(`/library/${bn}_meta.json`).then(r => r.json());
         if (m.cover) document.getElementById("cover-img").src = m.cover;
-        if (m.bg || m.background || m.cover) {
+        if (m.bg || m.cover) {
             const bgEl = document.getElementById("bg-img-1");
-            bgEl.style.backgroundImage = `url('${m.bg || m.background || m.cover}')`;
+            bgEl.style.backgroundImage = `url('${m.bg || m.cover}')`;
             bgEl.classList.add("active");
         }
     } catch (_) {}
@@ -988,7 +996,7 @@ function openMetaEditor(trackId) {
             metaCoverGeniusUrl = m.cover_genius || m.cover || "";
 
             // Фон плеера
-            const bgSrc = m.background || m.bg || "";
+            const bgSrc = m.bg || "";
             if (bgSrc && bgSrc !== "") {
                 if (bgSrc.startsWith("data:")) {
                     metaBgBase64 = bgSrc;
@@ -1004,7 +1012,7 @@ function openMetaEditor(trackId) {
                 metaBgPreview.src = fallbackCover;
                 console.log("[meta] BG: using fallback");
             }
-            metaBgGeniusUrl = m.background_genius || m.background || m.bg || "";
+            metaBgGeniusUrl = m.bg_genius || m.bg || "";
         })
         .catch(err => {
             console.error("[meta] Failed to load meta.json:", err);

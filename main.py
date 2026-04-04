@@ -655,15 +655,15 @@ async def edit_track_metadata(
         if "cover_genius" not in meta and meta.get("cover"):
             meta["cover_genius"] = meta["cover"]
 
-        # Фон плеера
+        # Фон плеера — ключ "bg" (единый с ai_pipeline.py)
         if req.background_base64:
-            meta["background"] = req.background_base64
+            meta["bg"] = req.background_base64
         elif req.background_url:
-            meta["background"] = req.background_url
+            meta["bg"] = req.background_url
 
         # Сохраняем оригинальный фон Genius
-        if "background_genius" not in meta and meta.get("background"):
-            meta["background_genius"] = meta["background"]
+        if "bg_genius" not in meta and meta.get("bg"):
+            meta["bg_genius"] = meta["bg"]
 
         with open(meta_path, "w", encoding="utf-8") as f:
             json.dump(meta, f, ensure_ascii=False, indent=2)
@@ -839,13 +839,9 @@ async def edit_track_metadata(
 
             log.info("Перескан завершён для трека %s", track_id)
 
-        broadcast_progress(
-            track_id=track_id,
-            track_name=f"{track.artist or ''} — {track.title or ''}".strip(" — "),
-            stage="done",
-            percent=100,
-            message="Сохранение завершено!",
-        )
+        # Отправляем SSE событие только если был перескан (есть прогресс-бар)
+        if req.rescan:
+            broadcast_done(track_id, f"{track.artist or ''} — {track.title or ''}".strip(" — "), True)
 
         log.info("Метаданные обновлены для трека %s", track_id)
         return {"status": "ok", "rescanned": req.rescan}

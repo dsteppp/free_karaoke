@@ -220,6 +220,17 @@ def _signal_handler(signum, frame):
 
 
 def main():
+    # Очищаем старые логи при каждом запуске
+    debug_logs_dir = os.path.join(BASE_DIR, "debug_logs")
+    if os.path.exists(debug_logs_dir):
+        for fname in os.listdir(debug_logs_dir):
+            fpath = os.path.join(debug_logs_dir, fname)
+            try:
+                if os.path.isfile(fpath):
+                    os.remove(fpath)
+            except Exception:
+                pass
+
     log_startup()
 
     # Регистрируем обработчики завершения
