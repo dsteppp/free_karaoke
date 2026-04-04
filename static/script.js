@@ -752,10 +752,6 @@ function loop() {
     if (instAudio.paused && !isSeeking) return;
 
     const t = instAudio.currentTime;
-    
-    if (!instAudio.paused && Math.abs(t - vocAudio.currentTime) > 0.05) {
-        vocAudio.currentTime = t;
-    }
 
     if (!isSeeking) {
         els.seek.value = t;
