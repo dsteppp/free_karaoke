@@ -582,9 +582,9 @@ async function loadKar(t, cvr) {
     try {
         const m = await fetch(`/library/${bn}_meta.json`).then(r => r.json());
         if (m.cover) document.getElementById("cover-img").src = m.cover;
-        if (m.bg || m.cover) {
+        if (m.bg || m.background || m.cover) {
             const bgEl = document.getElementById("bg-img-1");
-            bgEl.style.backgroundImage = `url('${m.bg || m.cover}')`;
+            bgEl.style.backgroundImage = `url('${m.bg || m.background || m.cover}')`;
             bgEl.classList.add("active");
         }
     } catch (_) {}
