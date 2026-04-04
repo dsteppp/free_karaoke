@@ -117,14 +117,14 @@ def separate_vocals(mp3_path: str) -> tuple[str, str]:
     vocals_final       = os.path.join(basedir, f"{basename}_(Vocals).mp3")
     instrumental_final = os.path.join(basedir, f"{basename}_(Instrumental).mp3")
 
-    # Принудительно активируем CPUExecutionProvider
+    # Принудительно CPU
     separator = Separator(
         model_file_dir=MODELS_DIR,
         output_dir=basedir,
         output_format="MP3",
         normalization_threshold=0.9,
-        execution_providers=["CPUExecutionProvider"]
     )
+    separator.set_device("cpu")
     separator.load_model(model_filename="MDX23C-8KFFT-InstVoc_HQ.ckpt")
     output_files = separator.separate(mp3_path)
 
