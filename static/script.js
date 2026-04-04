@@ -250,6 +250,7 @@ async function loadTracks() {
 function startPolling() {
     if (pollingInterval) return;
 
+    let prevStatus = {};
     pollingInterval = setInterval(async () => {
         try {
             const r = await fetch("/api/status");
@@ -257,12 +258,25 @@ function startPolling() {
             allTracks = d.tracks;
             renderList();
 
-            // Если есть активные треки — перезагружаем плеер если текущий обновился
-            const active = d.tracks.some(t => t.status !== "done" && t.status !== "error");
-            if (!active && currentTrack) {
+            // Обновляем текст кнопки сохранения если идёт перескан текущего трека
+            if (metaEditingTrackId) {
+                const editing = d.tracks.find(t => t.id === metaEditingTrackId);
+                if (editing && editing.status !== "done" && editing.status !== "error") {
+                    const saveBtn = document.getElementById("meta-save-btn");
+                    if (saveBtn && saveBtn.classList.contains("saving")) {
+                        saveBtn.querySelector("span").textContent = editing.status;
+                    }
+                }
+            }
+
+            // Перезагружаем плеер только если статус трека изменился на "done"
+            if (currentTrack) {
                 const updated = d.tracks.find(t => t.id === currentTrack.id);
-                if (updated && updated.status === "done") {
+                if (updated && updated.status === "done" && prevStatus[currentTrack.id] !== "done") {
+                    prevStatus[currentTrack.id] = "done";
                     loadKar(currentTrack, document.getElementById("cover-img").src);
+                } else if (updated) {
+                    prevStatus[currentTrack.id] = updated.status;
                 }
             }
         } catch (e) { console.error(e); }
@@ -967,6 +981,9 @@ async function saveMetaEditor() {
     };
     console.log("[meta] Sending payload:", JSON.stringify(logPayload, null, 2));
 
+    // При рескане запускаем polling ДО отправки — кнопка будет показывать текущий этап
+    if (payload.rescan) startPolling();
+
     try {
         const res = await fetch(`/api/tracks/${metaEditingTrackId}/edit_metadata`, {
             method: "POST",
@@ -997,14 +1014,9 @@ async function saveMetaEditor() {
         closeMetaEditor();
         loadTracks();
 
-        if (payload.rescan) {
-            // При перескане запускаем polling чтобы обновлялся статус трека
-            startPolling();
-        } else {
-            // Без перескана — обновляем текущий трек для новых обложек
-            if (currentTrack && currentTrack.id === metaEditingTrackId) {
-                loadKar(currentTrack, document.getElementById("cover-img").src);
-            }
+        // При рескане плеер обновится когда polling detect смену статуса на "done"
+        if (!payload.rescan && currentTrack && currentTrack.id === metaEditingTrackId) {
+            loadKar(currentTrack, document.getElementById("cover-img").src);
         }
     } catch (e) {
         console.error("[edit_metadata] Исключение:", e);
