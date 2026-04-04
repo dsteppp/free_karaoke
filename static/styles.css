@@ -934,6 +934,7 @@ body.fs-mode .lyric-line                    { font-size: clamp(2rem, 5vw, 4rem);
     line-height: 1.6;
     outline: none;
     min-height: 12rem;
+    max-height: 50vh;
     resize: vertical;
     transition: border-color 0.2s;
     scrollbar-width: thin;
@@ -950,6 +951,13 @@ body.fs-mode .lyric-line                    { font-size: clamp(2rem, 5vw, 4rem);
 .meta-textarea::-webkit-scrollbar-thumb:hover {
     background: var(--text-muted);
     background-clip: padding-box;
+}
+.meta-textarea::-webkit-resizer {
+    background: var(--surface-hover);
+    border-radius: 2px;
+}
+.meta-textarea::-webkit-resizer:hover {
+    background: var(--text-muted);
 }
 .meta-textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2); }
 
