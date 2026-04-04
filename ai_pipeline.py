@@ -124,7 +124,6 @@ def separate_vocals(mp3_path: str) -> tuple[str, str]:
         output_format="MP3",
         normalization_threshold=0.9,
     )
-    separator.set_device("cpu")
     separator.load_model(model_filename="MDX23C-8KFFT-InstVoc_HQ.ckpt")
     output_files = separator.separate(mp3_path)
 
