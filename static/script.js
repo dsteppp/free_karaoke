@@ -247,10 +247,12 @@ async function loadTracks() {
     } catch (e) { console.error(e); }
 }
 
+// ── Глобальное состояние для отслеживания статуса треков ──
+let prevTrackStatus = {};
+
 function startPolling() {
     if (pollingInterval) return;
 
-    let prevStatus = {};
     pollingInterval = setInterval(async () => {
         try {
             const r = await fetch("/api/status");
@@ -272,11 +274,13 @@ function startPolling() {
             // Перезагружаем плеер только если статус трека изменился на "done"
             if (currentTrack) {
                 const updated = d.tracks.find(t => t.id === currentTrack.id);
-                if (updated && updated.status === "done" && prevStatus[currentTrack.id] !== "done") {
-                    prevStatus[currentTrack.id] = "done";
+                const wasDone = prevTrackStatus[currentTrack.id] === "done";
+                const isDone = updated && updated.status === "done";
+                if (isDone && !wasDone) {
+                    prevTrackStatus[currentTrack.id] = "done";
                     loadKar(currentTrack, document.getElementById("cover-img").src);
                 } else if (updated) {
-                    prevStatus[currentTrack.id] = updated.status;
+                    prevTrackStatus[currentTrack.id] = updated.status;
                 }
             }
         } catch (e) { console.error(e); }
