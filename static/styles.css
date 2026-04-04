@@ -887,8 +887,18 @@ body.fs-mode .lyric-line                    { font-size: clamp(2rem, 5vw, 4rem);
     flex-direction: column;
     gap: 1rem;
 }
-.meta-body::-webkit-scrollbar { width: 4px; }
-.meta-body::-webkit-scrollbar-thumb { background: var(--surface-hover); border-radius: 2px; }
+.meta-body::-webkit-scrollbar { width: 8px; }
+.meta-body::-webkit-scrollbar-track { background: transparent; }
+.meta-body::-webkit-scrollbar-thumb {
+    background: var(--surface-hover);
+    border-radius: 4px;
+    border: 2px solid transparent;
+    background-clip: padding-box;
+}
+.meta-body::-webkit-scrollbar-thumb:hover {
+    background: var(--text-muted);
+    background-clip: padding-box;
+}
 
 /* Строки */
 .meta-row { display: flex; flex-direction: column; gap: 0.35rem; }
@@ -926,6 +936,20 @@ body.fs-mode .lyric-line                    { font-size: clamp(2rem, 5vw, 4rem);
     min-height: 12rem;
     resize: vertical;
     transition: border-color 0.2s;
+    scrollbar-width: thin;
+    scrollbar-color: var(--surface-hover) transparent;
+}
+.meta-textarea::-webkit-scrollbar { width: 8px; }
+.meta-textarea::-webkit-scrollbar-track { background: transparent; }
+.meta-textarea::-webkit-scrollbar-thumb {
+    background: var(--surface-hover);
+    border-radius: 4px;
+    border: 2px solid transparent;
+    background-clip: padding-box;
+}
+.meta-textarea::-webkit-scrollbar-thumb:hover {
+    background: var(--text-muted);
+    background-clip: padding-box;
 }
 .meta-textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2); }
 
