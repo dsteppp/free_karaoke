@@ -1166,3 +1166,34 @@ document.addEventListener("keydown", (e) => {
         closeMetaEditor();
     }
 });
+
+// ── Кастомный ресайз textarea (только вертикально) ──────────────────────────────
+const textareaWrapper = document.getElementById("meta-textarea-wrapper");
+const textareaEl = document.getElementById("meta-lyrics-input");
+let isResizing = false;
+let resizeStartY = 0;
+let resizeStartHeight = 0;
+
+if (textareaWrapper && textareaEl) {
+    textareaWrapper.addEventListener("mousedown", (e) => {
+        // Проверяем что клик в правом нижнем углу (зона handle)
+        const rect = textareaWrapper.getBoundingClientRect();
+        if (e.clientX > rect.right - 24 && e.clientY > rect.bottom - 24) {
+            isResizing = true;
+            resizeStartY = e.clientY;
+            resizeStartHeight = textareaEl.offsetHeight;
+            e.preventDefault();
+        }
+    });
+
+    document.addEventListener("mousemove", (e) => {
+        if (!isResizing) return;
+        const deltaY = e.clientY - resizeStartY;
+        const newHeight = Math.max(120, Math.min(window.innerHeight * 0.5, resizeStartHeight + deltaY));
+        textareaEl.style.height = newHeight + "px";
+    });
+
+    document.addEventListener("mouseup", () => {
+        isResizing = false;
+    });
+}

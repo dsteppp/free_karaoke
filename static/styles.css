@@ -923,6 +923,34 @@ body.fs-mode .lyric-line                    { font-size: clamp(2rem, 5vw, 4rem);
 }
 .meta-input:focus { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2); }
 
+/* Обёртка textarea для кастомного ресайзера */
+.meta-textarea-wrapper {
+    position: relative;
+    display: block;
+}
+.meta-textarea-wrapper::after {
+    content: "⠿";
+    position: absolute;
+    right: 4px;
+    bottom: 4px;
+    width: 16px;
+    height: 16px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-muted);
+    font-size: 10px;
+    cursor: ns-resize;
+    pointer-events: auto;
+    user-select: none;
+    opacity: 0.5;
+    transition: opacity 0.2s;
+    z-index: 2;
+}
+.meta-textarea-wrapper:hover::after {
+    opacity: 1;
+}
+
 .meta-textarea {
     background: var(--surface);
     border: 1px solid var(--border);
@@ -935,10 +963,12 @@ body.fs-mode .lyric-line                    { font-size: clamp(2rem, 5vw, 4rem);
     outline: none;
     min-height: 12rem;
     max-height: 50vh;
-    resize: vertical;
+    resize: none;
     transition: border-color 0.2s;
     scrollbar-width: thin;
     scrollbar-color: var(--surface-hover) transparent;
+    width: 100%;
+    box-sizing: border-box;
 }
 .meta-textarea::-webkit-scrollbar { width: 8px; }
 .meta-textarea::-webkit-scrollbar-track { background: transparent; }
@@ -951,13 +981,6 @@ body.fs-mode .lyric-line                    { font-size: clamp(2rem, 5vw, 4rem);
 .meta-textarea::-webkit-scrollbar-thumb:hover {
     background: var(--text-muted);
     background-clip: padding-box;
-}
-.meta-textarea::-webkit-resizer {
-    background: var(--surface-hover);
-    border-radius: 2px;
-}
-.meta-textarea::-webkit-resizer:hover {
-    background: var(--text-muted);
 }
 .meta-textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2); }
 
