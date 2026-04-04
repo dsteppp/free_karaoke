@@ -1,4 +1,5 @@
 import rapidfuzz
+from bisect import bisect_right
 from aligner_utils import (
     get_phonetic_bounds, get_vowel_weight, check_sdr_sanity
 )
@@ -10,17 +11,18 @@ def execute_sequence_matching(canon_words: list, heard_words: list, vad_interval
     """
     V8.4 Elastic Cluster Alignment.
     Математика кластеров + Эластичная заливка VAD.
+    Оптимизировано: бинарный поиск по времени для DP-цикла.
     """
     log.info("=" * 50)
     log.info("🧠 [Orchestra] Старт Elastic Sequence Matching...")
-    
+
     n_canon = len(canon_words)
     n_heard = len(heard_words)
-    
+
     if n_heard == 0:
         log.warning("   ⚠️ Транскрипт пуст. Sequence Matching отменен.")
         return canon_words
-        
+
     # 1. Формируем пул кандидатов (совпадения > 60%)
     candidates = []
     for c_idx in range(n_canon):
@@ -36,31 +38,40 @@ def execute_sequence_matching(canon_words: list, heard_words: list, vad_interval
                     "start": heard_words[h_idx]["start"],
                     "end": heard_words[h_idx]["end"]
                 })
-                
+
     candidates.sort(key=lambda x: x["start"])
-    
+
     # 2. SDR-Guard v2: Динамическое программирование пути
     num_cand = len(candidates)
     dp = [c["sim"] for c in candidates]
     parent = [-1] * num_cand
-    
+
+    # Оптимизация: массив времен end для бинарного поиска
+    end_times = [c["end"] for c in candidates]
+
     for i in range(1, num_cand):
         best_score = dp[i]
         best_p = -1
         curr = candidates[i]
-        
-        for j in range(i - 1, -1, -1):
+
+        # Бинарный поиск: находим границу j_max, после которой end_j > curr["start"] + 0.1
+        # Все кандидаты с j >= j_max заведомо не подходят по времени
+        j_max = bisect_right(end_times, curr["start"] + 0.1)
+        # Ограничиваем поиск только до i (нельзя ссылаться на самого себя)
+        search_limit = min(j_max, i)
+
+        for j in range(search_limit - 1, -1, -1):
             prev = candidates[j]
-            
+
             if curr["c_idx"] <= prev["c_idx"]:
                 continue
-                
+
             dur = curr["start"] - prev["end"]
-            if dur < -0.1: 
+            if dur < -0.1:
                 continue
-                
+
             is_sane = False
-            
+
             if curr["c_idx"] == prev["c_idx"] + 1:
                 is_same_line = not canon_words[prev["c_idx"]]["line_break"]
                 if is_same_line and dur > 2.5:
@@ -69,13 +80,13 @@ def execute_sequence_matching(canon_words: list, heard_words: list, vad_interval
                     is_sane = True
             else:
                 is_sane, _ = check_sdr_sanity(canon_words, prev["c_idx"] + 1, curr["c_idx"] - 1, dur, False)
-                
+
             if is_sane:
                 score = dp[j] + curr["sim"]
                 if score > best_score:
                     best_score = score
                     best_p = j
-                    
+
         dp[i] = best_score
         parent[i] = best_p
         
