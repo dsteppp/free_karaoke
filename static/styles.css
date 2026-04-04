@@ -770,6 +770,12 @@ body.fs-mode #karaoke-container {
     padding: 0 !important;
 }
 
+/* Позиционирование для overlay метаданных */
+#karaoke-container {
+    position: relative;
+    overflow: hidden;
+}
+
 body.fs-mode .floating-control-panel        { bottom: 2rem; max-width: 55rem; }
 body.fs-mode .fcp-meta-text,
 body.fs-mode .fcp-vol-col                   { height: 3.5rem; }
@@ -825,19 +831,20 @@ body.fs-mode .lyric-line                    { font-size: clamp(2rem, 5vw, 4rem);
 }
 
 /* ════════════════════════════════════════════════════════════════════════════
-   OVERLAY: Редактирование метаданных
+   OVERLAY: Редактирование метаданных (внутри плеера)
    ════════════════════════════════════════════════════════════════════════════ */
 .meta-overlay {
-    position: fixed;
+    position: absolute;
     inset: 0;
-    z-index: 99998;
-    background: rgba(0, 0, 0, 0.6);
-    backdrop-filter: blur(8px);
+    z-index: 10000;
+    background: rgba(0, 0, 0, 0.5);
+    backdrop-filter: blur(6px);
     display: flex;
     align-items: center;
-    justify-content: flex-end;
-    padding: 1rem;
-    animation: metaFadeIn 0.3s ease;
+    justify-content: center;
+    padding: 0.75rem;
+    animation: metaFadeIn 0.25s ease;
+    border-radius: var(--radius-lg);
 }
 @keyframes metaFadeIn {
     from { opacity: 0; }
@@ -846,20 +853,20 @@ body.fs-mode .lyric-line                    { font-size: clamp(2rem, 5vw, 4rem);
 
 .meta-panel {
     width: 100%;
-    max-width: 32rem;
-    max-height: 90vh;
+    max-width: 30rem;
+    max-height: 95%;
     background: var(--bg-panel);
     border: 1px solid var(--border);
     border-radius: var(--radius-lg);
     display: flex;
     flex-direction: column;
     overflow: hidden;
-    animation: metaSlideIn 0.3s cubic-bezier(0.25, 1, 0.5, 1);
+    animation: metaSlideIn 0.25s cubic-bezier(0.25, 1, 0.5, 1);
     box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
 }
 @keyframes metaSlideIn {
-    from { opacity: 0; transform: translateX(3rem); }
-    to { opacity: 1; transform: translateX(0); }
+    from { opacity: 0; transform: translateY(1rem); }
+    to { opacity: 1; transform: translateY(0); }
 }
 
 /* Заголовок */
@@ -1247,8 +1254,16 @@ body.fs-mode .lyric-line                    { font-size: clamp(2rem, 5vw, 4rem);
 
 /* Адаптив для overlay */
 @media (max-width: 48rem) {
-    .meta-panel { max-width: 100%; max-height: 95vh; }
+    .meta-panel { max-width: 100%; max-height: 98%; }
     .meta-cover-body { flex-direction: column; }
     .meta-cover-preview { width: 3.5rem; height: 3.5rem; align-self: center; }
     .meta-footer { flex-direction: column; }
+}
+
+/* Затемнение левой панели при открытом overlay */
+body.meta-open #library-box {
+    pointer-events: none;
+    opacity: 0.4;
+    filter: brightness(0.5);
+    transition: opacity 0.3s, filter 0.3s;
 }

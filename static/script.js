@@ -895,7 +895,7 @@ syncSliders();
 loadTracks();
 
 // ════════════════════════════════════════════════════════════════════════════════
-// OVERLAY: Редактирование метаданных
+// OVERLAY: Редактирование метаданных (внутри плеера)
 // ════════════════════════════════════════════════════════════════════════════════
 
 let metaEditingTrackId = null;
@@ -919,6 +919,8 @@ const metaCoverPreview = document.getElementById("meta-cover-preview");
 const metaBgPreview = document.getElementById("meta-bg-preview");
 const metaCoverFileInput = document.getElementById("meta-cover-file-input");
 const metaBgFileInput = document.getElementById("meta-bg-file-input");
+const metaCoverDropzone = document.getElementById("meta-cover-dropzone");
+const metaBgDropzone = document.getElementById("meta-bg-dropzone");
 
 // Открытие overlay
 function openMetaEditor(trackId) {
@@ -943,52 +945,55 @@ function openMetaEditor(trackId) {
     metaRescanToggle.checked = false;
     metaRescanHint.style.display = "none";
 
+    // Сбрасываем превью
+    metaCoverPreview.src = "";
+    metaBgPreview.src = "";
+    metaCoverUrl.value = "";
+    metaBgUrl.value = "";
+
     // Загружаем обложки из _meta.json
     const base = encodeURIComponent(track.filename.replace(/\.[^.]+$/, ""));
     fetch(`/library/${base}_meta.json`)
         .then(r => r.json())
         .then(m => {
             // Обложка трека
-            const coverSrc = m.cover_base64 || m.cover || m.cover_genius || "";
+            const coverSrc = m.cover || "";
             if (coverSrc) {
-                metaCoverPreview.src = coverSrc;
                 if (coverSrc.startsWith("data:")) {
-                    metaCoverUrl.value = "";
                     metaCoverBase64 = coverSrc;
+                    metaCoverPreview.src = coverSrc;
+                    metaCoverUrl.value = "";
                 } else {
                     metaCoverUrl.value = coverSrc;
+                    metaCoverPreview.src = coverSrc;
                 }
             } else {
                 metaCoverPreview.src = fallbackCover;
-                metaCoverUrl.value = "";
             }
             metaCoverGeniusUrl = m.cover_genius || m.cover || "";
 
             // Фон плеера
-            const bgSrc = m.background_base64 || m.background || m.bg || m.background_genius || "";
+            const bgSrc = m.background || m.bg || "";
             if (bgSrc) {
-                metaBgPreview.src = bgSrc;
                 if (bgSrc.startsWith("data:")) {
-                    metaBgUrl.value = "";
                     metaBgBase64 = bgSrc;
+                    metaBgPreview.src = bgSrc;
+                    metaBgUrl.value = "";
                 } else {
                     metaBgUrl.value = bgSrc;
+                    metaBgPreview.src = bgSrc;
                 }
-            } else {
-                metaBgPreview.src = "";
-                metaBgUrl.value = "";
             }
             metaBgGeniusUrl = m.background_genius || m.background || m.bg || "";
         })
         .catch(() => {
             metaCoverPreview.src = fallbackCover;
             metaBgPreview.src = "";
-            metaCoverUrl.value = "";
-            metaBgUrl.value = "";
         });
 
     metaOverlay.style.display = "flex";
     metaPanel.classList.remove("blocked");
+    document.body.classList.add("meta-open");
 
     // Обновляем кнопку в строке трека
     const btn = document.querySelector(`[data-meta-track="${trackId}"]`);
@@ -1002,6 +1007,7 @@ function closeMetaEditor() {
     metaOriginalData = null;
     metaCoverBase64 = null;
     metaBgBase64 = null;
+    document.body.classList.remove("meta-open");
 
     const btn = document.querySelector(`[data-meta-track]`);
     if (btn) btn.classList.remove("active");
@@ -1038,8 +1044,9 @@ async function saveMetaEditor() {
         });
 
         if (!res.ok) {
-            const err = await res.json();
-            throw new Error(err.detail || "Ошибка сервера");
+            const errData = await res.json().catch(() => ({}));
+            const errMsg = errData.detail || errData.error || `HTTP ${res.status}`;
+            throw new Error(errMsg);
         }
 
         closeMetaEditor();
@@ -1062,45 +1069,19 @@ async function saveMetaEditor() {
 // Сброс обложки к оригиналу от Genius
 async function resetCoverToGenius() {
     if (!metaEditingTrackId) return;
-    try {
-        const res = await fetch(`/api/tracks/${metaEditingTrackId}/cover_genius`);
-        if (res.ok) {
-            const data = await res.json();
-            if (data.url) {
-                metaCoverUrl.value = data.url;
-                metaCoverBase64 = null;
-                metaCoverPreview.src = data.url;
-            }
-        }
-    } catch (e) {
-        console.error("Ошибка сброса обложки:", e);
+    if (metaCoverGeniusUrl) {
+        metaCoverUrl.value = metaCoverGeniusUrl;
+        metaCoverBase64 = null;
+        metaCoverPreview.src = metaCoverGeniusUrl;
     }
 }
 
 async function resetBgToGenius() {
     if (!metaEditingTrackId) return;
-    try {
-        const res = await fetch(`/api/tracks/${metaEditingTrackId}/cover_genius`);
-        if (res.ok) {
-            const data = await res.json();
-            // Для фона используем background_genius из _meta.json
-            const track = allTracks.find(t => t.id === metaEditingTrackId);
-            if (track) {
-                const base = encodeURIComponent(track.filename.replace(/\.[^.]+$/, ""));
-                fetch(`/library/${base}_meta.json`)
-                    .then(r => r.json())
-                    .then(m => {
-                        const bgUrl = m.background_genius || m.bg || "";
-                        if (bgUrl) {
-                            metaBgUrl.value = bgUrl;
-                            metaBgBase64 = null;
-                            metaBgPreview.src = bgUrl;
-                        }
-                    });
-            }
-        }
-    } catch (e) {
-        console.error("Ошибка сброса фона:", e);
+    if (metaBgGeniusUrl) {
+        metaBgUrl.value = metaBgGeniusUrl;
+        metaBgBase64 = null;
+        metaBgPreview.src = metaBgGeniusUrl;
     }
 }
 
@@ -1136,24 +1117,46 @@ function handleBgFile(file) {
 }
 
 // Drag & Drop для обложек
-function setupDropZone(container, fileInput, handler) {
-    container.addEventListener("dragover", (e) => {
-        e.preventDefault();
-        container.classList.add("drag-over");
+function setupDropZone(dropzoneEl, fileInputEl, handler) {
+    if (!dropzoneEl || !fileInputEl) return;
+
+    ["dragenter", "dragover"].forEach(evt => {
+        dropzoneEl.addEventListener(evt, (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            dropzoneEl.classList.add("drag-over");
+        });
     });
-    container.addEventListener("dragleave", () => {
-        container.classList.remove("drag-over");
+
+    ["dragleave", "drop"].forEach(evt => {
+        dropzoneEl.addEventListener(evt, (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            dropzoneEl.classList.remove("drag-over");
+        });
     });
-    container.addEventListener("drop", (e) => {
-        e.preventDefault();
-        container.classList.remove("drag-over");
+
+    dropzoneEl.addEventListener("drop", (e) => {
         const file = e.dataTransfer.files[0];
         if (file) handler(file);
     });
-    fileInput.addEventListener("change", (e) => {
+
+    fileInputEl.addEventListener("change", (e) => {
         const file = e.target.files[0];
         if (file) handler(file);
-        fileInput.value = "";
+        fileInputEl.value = "";
+    });
+}
+
+// Обновление превью из URL при потере фокуса
+function setupUrlPreview(urlInput, previewImg, base64VarName) {
+    urlInput.addEventListener("blur", () => {
+        const url = urlInput.value.trim();
+        if (url && !url.startsWith("data:")) {
+            previewImg.src = url;
+            if (base64VarName === "cover") metaCoverBase64 = null;
+            else metaBgBase64 = null;
+        }
     });
 }
 
@@ -1170,25 +1173,13 @@ metaRescanToggle.addEventListener("change", () => {
     metaRescanHint.style.display = metaRescanToggle.checked ? "block" : "none";
 });
 
-// Drag & Drop
-setupDropZone(document.querySelector(".meta-cover-section:nth-child(1) .meta-cover-body"), metaCoverFileInput, handleCoverFile);
-setupDropZone(document.querySelector(".meta-cover-section:nth-child(2) .meta-cover-body"), metaBgFileInput, handleBgFile);
+// Drag & Drop — используем явные ID dropzone-элементов
+setupDropZone(metaCoverDropzone, metaCoverFileInput, handleCoverFile);
+setupDropZone(metaBgDropzone, metaBgFileInput, handleBgFile);
 
-// Обновление превью при вводе URL
-metaCoverUrl.addEventListener("input", () => {
-    const url = metaCoverUrl.value.trim();
-    if (url) {
-        metaCoverBase64 = null;
-        metaCoverPreview.src = url;
-    }
-});
-metaBgUrl.addEventListener("input", () => {
-    const url = metaBgUrl.value.trim();
-    if (url) {
-        metaBgBase64 = null;
-        metaBgPreview.src = url;
-    }
-});
+// Превью URL при blur
+setupUrlPreview(metaCoverUrl, metaCoverPreview, "cover");
+setupUrlPreview(metaBgUrl, metaBgPreview, "bg");
 
 // Escape закрывает overlay
 document.addEventListener("keydown", (e) => {
