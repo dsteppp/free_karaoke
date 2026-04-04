@@ -43,24 +43,32 @@ def execute_sequence_matching(canon_words: list, heard_words: list, vad_interval
 
     # 2. SDR-Guard v2: Динамическое программирование пути
     num_cand = len(candidates)
+    if num_cand == 0:
+        log.warning("   ⚠️ Нет ни одного валидного совпадения текста.")
+        return canon_words
+
     dp = [c["sim"] for c in candidates]
     parent = [-1] * num_cand
 
-    # Оптимизация: массив времен end для бинарного поиска
-    end_times = [c["end"] for c in candidates]
+    # Оптимизация: временное окно поиска.
+    # Кандидаты отсортированы по start, поэтому можно использовать бинарный поиск
+    # для нахождения нижней границы j_min. Слова дальше MAX_GAP секунд
+    # заведомо не могут быть связаны по времени.
+    MAX_GAP = 30.0  # Максимальный разрыв между словами в секундах
+    start_times = [c["start"] for c in candidates]
 
     for i in range(1, num_cand):
         best_score = dp[i]
         best_p = -1
         curr = candidates[i]
 
-        # Бинарный поиск: находим границу j_max, после которой end_j > curr["start"] + 0.1
-        # Все кандидаты с j >= j_max заведомо не подходят по времени
-        j_max = bisect_right(end_times, curr["start"] + 0.1)
-        # Ограничиваем поиск только до i (нельзя ссылаться на самого себя)
-        search_limit = min(j_max, i)
+        # Находим границу: кандидаты с start < curr["start"] - MAX_GAP
+        # заведомо слишком старые, их end тоже будет слишком старым.
+        min_start = curr["start"] - MAX_GAP
+        j_min = bisect_right(start_times, min_start)
 
-        for j in range(search_limit - 1, -1, -1):
+        # Итерируем только в пределах временного окна [j_min, i)
+        for j in range(i - 1, j_min - 1, -1):
             prev = candidates[j]
 
             if curr["c_idx"] <= prev["c_idx"]:
@@ -68,6 +76,10 @@ def execute_sequence_matching(canon_words: list, heard_words: list, vad_interval
 
             dur = curr["start"] - prev["end"]
             if dur < -0.1:
+                continue
+
+            # Дополнительная отсечка: если разрыв слишком большой, SDR всё равно отвергнет
+            if dur > MAX_GAP:
                 continue
 
             is_sane = False
