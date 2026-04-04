@@ -249,6 +249,7 @@ async function loadTracks() {
 
 // ── Глобальное состояние для отслеживания статуса треков ──
 let prevTrackStatus = {};
+let lastRenderHash = ""; // Для предотвращения лишних перерисовок
 
 function startPolling() {
     if (pollingInterval) return;
@@ -257,7 +258,14 @@ function startPolling() {
         try {
             const r = await fetch("/api/status");
             const d = await r.json();
-            allTracks = d.tracks;
+            const newTracks = d.tracks;
+
+            // Проверяем, изменились ли данные — хэш по статусам
+            const hash = newTracks.map(t => `${t.id}:${t.status}`).join("|");
+            if (hash === lastRenderHash) return; // Ничего не изменилось — не перерисовываем
+            lastRenderHash = hash;
+
+            allTracks = newTracks;
             renderList();
 
             // Обновляем текст кнопки сохранения если идёт перескан текущего трека
