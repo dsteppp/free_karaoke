@@ -662,13 +662,6 @@ async def edit_track_metadata(
             # Если VAD нет в кэше — сканируем заново
             if not vad_intervals:
                 log.info("VAD не найден в кэше — сканирование вокального стема…")
-                broadcast_progress(
-                    track_id=track_id,
-                    track_name=f"{track.artist or ''} — {track.title or ''}".strip(" — "),
-                    stage="vad",
-                    percent=5,
-                    message="Сканирование вокального стема…",
-                )
                 audio_data, sr = librosa.load(vocals_path, sr=16000, mono=True)
                 audio_duration = len(audio_data) / sr
                 vad_intervals = get_vocal_intervals(audio_data, sr, top_db=35.0)
@@ -683,13 +676,7 @@ async def edit_track_metadata(
                     pass
 
             # Запускаем Aligner с существующими стемами и новым текстом
-            broadcast_progress(
-                track_id=track_id,
-                track_name=f"{track.artist or ''} — {track.title or ''}".strip(" — "),
-                stage="transcribe",
-                percent=5,
-                message="Нейросеть слушает вокальный стем…",
-            )
+            log.info("Запуск Aligner для перескана…")
 
             aligner = KaraokeAligner()
 
@@ -710,13 +697,7 @@ async def edit_track_metadata(
                 vad=True,
             )
 
-            broadcast_progress(
-                track_id=track_id,
-                track_name=f"{track.artist or ''} — {track.title or ''}".strip(" — "),
-                stage="transcribe",
-                percent=75,
-                message="Транскрипция завершена",
-            )
+            log.info("Транскрипция завершена")
 
             raw_heard_words = []
             for segment in result.segments:
@@ -735,26 +716,14 @@ async def edit_track_metadata(
             heard_words = filter_whisper_hallucinations(raw_heard_words, vad_intervals)
 
             # Sequence Matching
-            broadcast_progress(
-                track_id=track_id,
-                track_name=f"{track.artist or ''} — {track.title or ''}".strip(" — "),
-                stage="match",
-                percent=75,
-                message="Сопоставление текста с аудио…",
-            )
+            log.info("Сопоставление текста с аудио…")
 
             from aligner_orchestra import execute_sequence_matching
             canon_words = prepare_text(req.lyrics)
             canon_words = execute_sequence_matching(canon_words, heard_words, vad_intervals, audio_duration)
 
             # Elastic Assembly
-            broadcast_progress(
-                track_id=track_id,
-                track_name=f"{track.artist or ''} — {track.title or ''}".strip(" — "),
-                stage="elastic",
-                percent=90,
-                message="Точное выравнивание таймингов…",
-            )
+            log.info("Точное выравнивание таймингов…")
 
             _elastic_vad_assembly(canon_words, vad_intervals, audio_duration)
 
@@ -769,13 +738,7 @@ async def edit_track_metadata(
             aligner._resolve_overlaps(canon_words)
 
             # Формируем JSON
-            broadcast_progress(
-                track_id=track_id,
-                track_name=f"{track.artist or ''} — {track.title or ''}".strip(" — "),
-                stage="save",
-                percent=97,
-                message="Сохранение результатов…",
-            )
+            log.info("Сохранение результатов…")
 
             final_json = []
             for w in canon_words:
