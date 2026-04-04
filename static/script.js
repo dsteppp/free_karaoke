@@ -333,6 +333,13 @@ function handleSSEEvent(data) {
             fill.className = "progress-bar-fill";
         }, 2500);
         loadTracks();
+
+        // Если обработка завершилась для текущего трека — перезагружаем плеер
+        if (data.success && currentTrack && data.track_id === currentTrack.id) {
+            setTimeout(() => {
+                loadKar(currentTrack, document.getElementById("cover-img").src);
+            }, 300);
+        }
     }
 }
 
@@ -1086,9 +1093,16 @@ async function saveMetaEditor() {
         closeMetaEditor();
         loadTracks();
 
-        // Если был перескан — обновляем плеер
-        if (payload.rescan && currentTrack && currentTrack.id === metaEditingTrackId) {
-            setTimeout(() => loadKar(currentTrack, document.getElementById("cover-img").src), 500);
+        if (payload.rescan) {
+            // При перескане запускаем polling чтобы видеть прогресс-бар
+            startPolling();
+            // Не вызываем loadKar сразу — трек сейчас в обработке
+            // SSE обновит UI когда обработка завершится
+        } else {
+            // Без перескана — просто обновляем текущий трек для новых обложек
+            if (currentTrack && currentTrack.id === metaEditingTrackId) {
+                loadKar(currentTrack, document.getElementById("cover-img").src);
+            }
         }
     } catch (e) {
         console.error("[edit_metadata] Исключение:", e);

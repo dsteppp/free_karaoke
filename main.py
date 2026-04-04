@@ -420,6 +420,7 @@ async def reset_track_text(track_id: str, db: Session = Depends(get_db)):
     if not track:
         raise HTTPException(status_code=404, detail="Трек не найден")
 
+    # Удаляем JSON и lyrics — полный перескан с Genius
     for path in [track.karaoke_json_path, track.lyrics_path]:
         if path and os.path.exists(path):
             try:
@@ -427,8 +428,12 @@ async def reset_track_text(track_id: str, db: Session = Depends(get_db)):
             except Exception:
                 pass
 
+    # Сбрасываем artist/title в None — tasks.py перечитает теги/имя файла перед Genius
+    track.artist = None
+    track.title = None
+
     if track.id in LYRICS_CACHE:
-        del LYRICS_CACHE[track.id]
+        del LYRICS_CACHE[track_id]
 
     track.karaoke_json_path = None
     track.lyrics_path       = None
@@ -436,7 +441,7 @@ async def reset_track_text(track_id: str, db: Session = Depends(get_db)):
     track.error_message     = None
     db.commit()
     process_audio_task(track.id)
-    log.info("Reset text: track=%s", track_id)
+    log.info("Reset text: track=%s (artist/title сброшены)", track_id)
     return {"status": "ok"}
 
 
