@@ -302,13 +302,20 @@ def main():
         min_size=(900, 600),
         background_color='#09090b',
         confirm_close=True,
+        text_select=True,
     )
 
     try:
+        # На Linux пробуем GTK (не зависит от интернета), fallback на Qt
+        import sys
+        gui_backend = "gtk" if sys.platform.startswith("linux") else "qt"
+        log.info("WebView backend: %s", gui_backend)
+
         webview.start(
-            gui="qt",
+            gui=gui_backend,
             private_mode=False,
             debug=False,
+            storage_path=os.path.join(BASE_DIR, "cache", "webview"),
         )
     except Exception as e:
         log.error("Ошибка при запуске окна: %s", e)
