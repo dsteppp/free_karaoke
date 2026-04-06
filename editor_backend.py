@@ -44,8 +44,20 @@ async def apply_lyrics_edit(track_id: str, payload: EditPayload, db: Session = D
     if not track:
         raise HTTPException(status_code=404, detail="Трек не найден")
 
-    if not track.karaoke_json_path or not os.path.exists(track.karaoke_json_path):
+    # Вычисляем путь к JSON из filename если поле пустое (старые треки)
+    json_path = track.karaoke_json_path
+    if not json_path:
+        base_name = os.path.splitext(track.filename)[0]
+        json_path = os.path.join(LIBRARY_DIR, f"{base_name}_(Karaoke Lyrics).json")
+
+    if not os.path.exists(json_path):
+        log.error("JSON субтитров не найден: %s", json_path)
         raise HTTPException(status_code=400, detail="JSON субтитров не найден")
+
+    # Обновляем поле в БД на будущее
+    if not track.karaoke_json_path:
+        track.karaoke_json_path = json_path
+        db.commit()
 
     log.info(f"✏️ [Editor] Применение ручных правок для трека: {track.original_name}")
 
@@ -151,9 +163,9 @@ async def apply_lyrics_edit(track_id: str, payload: EditPayload, db: Session = D
         })
 
     try:
-        with open(track.karaoke_json_path, "w", encoding="utf-8") as f:
+        with open(json_path, "w", encoding="utf-8") as f:
             json.dump(final_json, f, ensure_ascii=False, indent=2)
-        log.info(f"   ✅ Файл успешно обновлен: {track.karaoke_json_path}")
+        log.info(f"   ✅ Файл успешно обновлен: {json_path}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Ошибка сохранения файла: {e}")
 
