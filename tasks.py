@@ -96,8 +96,11 @@ def _process_track(track_id: str):
                 pass
 
             artist, title  = get_audio_metadata(mp3_path, track.original_name)
-            track.artist   = artist or None
-            track.title    = title  or None
+            # Сохраняем artist/title из БД если они уже есть (пересканирование)
+            if not track.artist and artist:
+                track.artist = artist
+            if not track.title and title:
+                track.title = title
             # Обновляем display_name после извлечения метаданных
             display_name = track.title or track.original_name or track.filename
             if track.artist:
@@ -154,10 +157,11 @@ def _process_track(track_id: str):
                 lyrics_path = new_lyrics
                 log.info("Текст найден: %s", lyrics_path)
 
-                if genius_artist:
+                # Сохраняем artist/title из БД если они уже есть (пересканирование)
+                if not track.artist and genius_artist:
                     track.artist = genius_artist
                     log.info("Artist обновлён из Genius: %s", genius_artist)
-                if genius_title:
+                if not track.title and genius_title:
                     track.title = genius_title
                     log.info("Title обновлён из Genius: %s", genius_title)
                     display_name = f"{track.artist or ''} — {track.title}".strip(" —")

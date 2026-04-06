@@ -334,6 +334,105 @@ def migrate_create_library_meta(library_dir: str, db_path: str = "", max_total_t
     else:
         log.info("ℹ️ Миграция _library.json: всё уже создано (%d файлов) — %.1fс", total, elapsed)
 
+
+def repair_all_library_meta(library_dir: str, db_path: str = ""):
+    """
+    Принудительно обновляет _library.json данными из БД для ВСЕХ треков.
+    - artist, title — принудительно из БД
+    - cover, bg — из существующего _library.json (или пусто)
+    - cover_genius, bg_genius — из _meta.json если есть
+    - lyrics — из _(Genius Lyrics).txt если есть
+    После обработки удаляет старые _meta.json файлы.
+    """
+    import time
+    t_start = time.time()
+
+    if not os.path.exists(library_dir):
+        return
+
+    # Читаем БД
+    db_tracks = {}
+    if db_path and os.path.exists(db_path):
+        try:
+            from database import SessionLocal, Track
+            db = SessionLocal()
+            for t in db.query(Track).all():
+                base = os.path.splitext(t.filename)[0]
+                db_tracks[base] = {
+                    "artist": t.artist or "",
+                    "title": t.title or "",
+                }
+            db.close()
+        except Exception as e:
+            log.warning("Не удалось прочитать БД для ремонта: %s", e)
+            return
+
+    repaired = 0
+    removed_meta = 0
+
+    for base_name, db_info in db_tracks.items():
+        lib_path = os.path.join(library_dir, f"{base_name}_library.json")
+        meta_path = os.path.join(library_dir, f"{base_name}_meta.json")
+        lyrics_path = os.path.join(library_dir, f"{base_name}_(Genius Lyrics).txt")
+
+        # Читаем существующие данные
+        existing = {}
+        if os.path.exists(lib_path):
+            try:
+                with open(lib_path, "r", encoding="utf-8") as f:
+                    existing = json.load(f)
+            except Exception:
+                pass
+
+        # Читаем Genius-пути из _meta.json
+        genius_cover = existing.get("cover_genius", "")
+        genius_bg = existing.get("bg_genius", "")
+        if os.path.exists(meta_path):
+            try:
+                with open(meta_path, "r", encoding="utf-8") as f:
+                    old_meta = json.load(f)
+                    genius_cover = old_meta.get("cover_genius", "") or old_meta.get("cover", "")
+                    genius_bg = old_meta.get("bg_genius", "") or old_meta.get("bg", "")
+            except Exception:
+                pass
+
+        # Читаем текст
+        lyrics = existing.get("lyrics", "")
+        if os.path.exists(lyrics_path):
+            try:
+                with open(lyrics_path, "r", encoding="utf-8") as f:
+                    lyrics = f.read()
+            except Exception:
+                pass
+
+        # Формируем обновлённый _library.json
+        library_meta = {
+            "artist": db_info["artist"],
+            "title": db_info["title"],
+            "lyrics": lyrics,
+            "cover": existing.get("cover", ""),
+            "bg": existing.get("bg", ""),
+            "cover_genius": genius_cover,
+            "bg_genius": genius_bg,
+        }
+
+        with open(lib_path, "w", encoding="utf-8") as f:
+            json.dump(library_meta, f, ensure_ascii=False, indent=2)
+
+        repaired += 1
+
+        # Удаляем _meta.json
+        if os.path.exists(meta_path):
+            try:
+                os.remove(meta_path)
+                removed_meta += 1
+            except Exception:
+                pass
+
+    elapsed = time.time() - t_start
+    log.info("🔧 Ремонт _library.json: обновлено %d файлов, удалено %d _meta.json за %.1fс",
+             repaired, removed_meta, elapsed)
+
 BASE_DIR    = os.path.dirname(os.path.abspath(__file__))
 MODELS_DIR  = os.path.join(BASE_DIR, "models")
 WHISPER_DIR = os.path.join(MODELS_DIR, "whisper")

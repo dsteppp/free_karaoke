@@ -461,6 +461,14 @@ async def scan_library(db: Session = Depends(get_db)):
                 db.commit()
 
     log.info("Scan finished: queued=%d", queued_count)
+
+    # ── Ремонт: обновляем _library.json из БД + удаляем _meta.json ────────
+    from ai_pipeline import repair_all_library_meta
+    try:
+        repair_all_library_meta(LIBRARY_DIR, db_path=SQLALCHEMY_DATABASE_URL.replace("sqlite:///", ""))
+    except Exception as e:
+        log.warning("Ремонт _library.json пропущен: %s", e)
+
     return {"status": "ok", "queued": queued_count}
 
 
@@ -494,6 +502,10 @@ async def reset_track_text(track_id: str, db: Session = Depends(get_db)):
     if not track:
         raise HTTPException(status_code=404, detail="Трек не найден")
 
+    # Сохраняем artist/title из БД — они НЕ должны быть перезаписаны из Genius
+    saved_artist = track.artist
+    saved_title = track.title
+
     # Удаляем JSON и lyrics — полный перескан с Genius
     for path in [track.karaoke_json_path, track.lyrics_path]:
         if path and os.path.exists(path):
@@ -502,10 +514,6 @@ async def reset_track_text(track_id: str, db: Session = Depends(get_db)):
             except Exception:
                 pass
 
-    # Сбрасываем artist/title в None — tasks.py перечитает теги/имя файла перед Genius
-    track.artist = None
-    track.title = None
-
     if track.id in LYRICS_CACHE:
         del LYRICS_CACHE[track_id]
 
@@ -513,9 +521,13 @@ async def reset_track_text(track_id: str, db: Session = Depends(get_db)):
     track.lyrics_path       = None
     track.status            = "pending"
     track.error_message     = None
+    # Восстанавливаем artist/title ДО запуска задачи — чтобы tasks.py их не перезаписал
+    track.artist = saved_artist
+    track.title = saved_title
     db.commit()
+
     process_audio_task(track.id)
-    log.info("Reset text: track=%s (artist/title сброшены)", track_id)
+    log.info("Reset text: track=%s (artist/title сохранены: %s — %s)", track_id, saved_artist, saved_title)
     return {"status": "ok"}
 
 
