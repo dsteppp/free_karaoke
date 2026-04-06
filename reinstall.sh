@@ -169,6 +169,7 @@ safetensors==0.7.0
 diffq==0.2.4
 rotary-embedding-torch==0.6.5
 tinytag==2.2.0
+mutagen==1.47.0
 lyricsgenius==3.10.1
 beautifulsoup4==4.14.3
 soupsieve==2.8.3

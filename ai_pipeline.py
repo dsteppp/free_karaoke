@@ -8,11 +8,17 @@ import json
 import traceback
 import gc
 import unicodedata
+import base64
 import torch
 
 import lyricsgenius
 from dotenv import load_dotenv
 from tinytag import TinyTag
+from mutagen import File as MutagenFile
+from mutagen.id3 import ID3
+from mutagen.flac import FLAC
+from mutagen.mp4 import MP4
+from mutagen.oggvorbis import OggVorbis
 from audio_separator.separator import Separator
 
 # Наш обновленный безотказный выравниватель
@@ -81,6 +87,7 @@ def convert_to_mp3(input_path: str) -> str:
     subprocess.run(
         ["ffmpeg", "-i", input_path,
          "-vn", "-ar", "44100", "-ac", "2", "-b:a", "192k",
+         "-map_metadata", "0",  # Копируем теги из оригинала
          temp_path, "-y"],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.STDOUT,
@@ -107,17 +114,40 @@ def compress_stem_mp3(file_path: str) -> None:
     os.replace(temp, file_path)
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Разделение вокала (audio-separator)
+# Разделение вокала (audio-separator с GPU)
 # ──────────────────────────────────────────────────────────────────────────────
+def _get_execution_providers():
+    """Автоопределение GPU-провайдера для ONNX."""
+    if torch.cuda.is_available():
+        log.info("🟢 GPU: NVIDIA CUDA")
+        return ["CUDAExecutionProvider"]
+    # AMD ROCM через torch
+    if hasattr(torch, 'hip') and torch.cuda.is_available():
+        log.info("🟢 GPU: AMD ROCM")
+        return ["ROCMExecutionProvider"]
+    # DirectML (AMD на Windows)
+    try:
+        import onnxruntime as ort
+        if "DmlExecutionProvider" in ort.get_available_providers():
+            log.info("🟢 GPU: DirectML")
+            return ["DmlExecutionProvider"]
+    except Exception:
+        pass
+    log.info("⚪ Fallback: CPU")
+    return ["CPUExecutionProvider"]
+
 def separate_vocals(mp3_path: str) -> tuple[str, str]:
-    log.info("Запуск сепарации аудио (audio-separator на CPU)...")
+    import time
+    t_start = time.time()
+    log.info("Запуск сепарации аудио (GPU/CPU авто-определение)...")
+
     basedir  = os.path.dirname(mp3_path)
     basename = os.path.splitext(os.path.basename(mp3_path))[0]
 
     vocals_final       = os.path.join(basedir, f"{basename}_(Vocals).mp3")
     instrumental_final = os.path.join(basedir, f"{basename}_(Instrumental).mp3")
 
-    # Принудительно CPU
+    t_model = time.time()
     separator = Separator(
         model_file_dir=MODELS_DIR,
         output_dir=basedir,
@@ -125,7 +155,15 @@ def separate_vocals(mp3_path: str) -> tuple[str, str]:
         normalization_threshold=0.9,
     )
     separator.load_model(model_filename="MDX23C-8KFFT-InstVoc_HQ.ckpt")
+    log.info("   ⏱️ Загрузка модели: %.1fс", time.time() - t_model)
+
+    t_infer = time.time()
+    providers = _get_execution_providers()
+    separator._model.set_providers(providers)
+    log.info("   ⏱️ Провайдеры: %s", providers)
+
     output_files = separator.separate(mp3_path)
+    log.info("   ⏱️ Inference: %.1fс", time.time() - t_infer)
 
     del separator
     gc.collect()
@@ -152,31 +190,136 @@ def separate_vocals(mp3_path: str) -> tuple[str, str]:
         if os.path.exists(instrumental_final): os.remove(instrumental_final)
         os.rename(found_instrumental, instrumental_final)
 
+    t_compress = time.time()
     log.info("Сжатие стемов...")
     compress_stem_mp3(vocals_final)
     compress_stem_mp3(instrumental_final)
+    log.info("   ⏱️ Сжатие: %.1fс", time.time() - t_compress)
+
+    total = time.time() - t_start
+    log.info("   ⏱️ СЕПАРАЦИЯ ЗАВЕРШЕНА: %.1fс", total)
 
     return vocals_final, instrumental_final
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Метаданные
+# Метаданные (mutagen: artist, title, lyrics, cover)
 # ──────────────────────────────────────────────────────────────────────────────
+def extract_tags_from_file(file_path: str) -> dict:
+    """
+    Извлекает ВСЕ доступные теги из аудиофайла через mutagen.
+    Возвращает: {artist, title, lyrics, cover_base64}
+    """
+    result = {"artist": "", "title": "", "lyrics": "", "cover_base64": ""}
+    if not file_path or not os.path.exists(file_path):
+        return result
+
+    try:
+        # Пробуем ID3 (MP3)
+        if file_path.lower().endswith(".mp3"):
+            tags = ID3(file_path)
+            # Artist
+            if "TPE1" in tags:
+                result["artist"] = clean_metadata_string(str(tags["TPE1"]))
+            # Title
+            if "TIT2" in tags:
+                result["title"] = clean_metadata_string(str(tags["TIT2"]))
+            # Lyrics (USLT)
+            for key in tags:
+                if key.startswith("USLT"):
+                    result["lyrics"] = str(tags[key].text).strip()
+                    break
+            # Cover (APIC)
+            for key in tags:
+                if key.startswith("APIC"):
+                    img = tags[key]
+                    mime = img.mime.split("/")[1]  # jpeg → jpg
+                    result["cover_base64"] = f"data:image/{mime};base64,{base64.b64encode(img.data).decode()}"
+                    break
+
+        # FLAC
+        elif file_path.lower().endswith(".flac"):
+            tags = FLAC(file_path)
+            if tags.get("artist"):
+                result["artist"] = clean_metadata_string(tags["artist"][0])
+            if tags.get("title"):
+                result["title"] = clean_metadata_string(tags["title"][0])
+            if tags.get("lyrics"):
+                result["lyrics"] = tags["lyrics"][0].strip()
+            # FLAC cover — через pictures
+            if hasattr(tags, 'pictures') and tags.pictures:
+                pic = tags.pictures[0]
+                mime = pic.mime.split("/")[1]
+                result["cover_base64"] = f"data:image/{mime};base64,{base64.b64encode(pic.data).decode()}"
+
+        # M4A / ALAC
+        elif file_path.lower().endswith((".m4a", ".alac")):
+            tags = MP4(file_path)
+            if tags.get("\xa9ART"):
+                result["artist"] = clean_metadata_string(tags["\xa9ART"][0])
+            if tags.get("\xa9nam"):
+                result["title"] = clean_metadata_string(tags["\xa9nam"][0])
+            # Lyrics
+            if tags.get("\xa9lyr"):
+                result["lyrics"] = tags["\xa9lyr"][0].strip()
+            # Cover
+            if tags.get("covr"):
+                cover_data = tags["covr"][0]
+                # Определяем формат по первым байтам
+                if cover_data[:4] == b'\x89PNG':
+                    mime = "png"
+                else:
+                    mime = "jpeg"
+                result["cover_base64"] = f"data:image/{mime};base64,{base64.b64encode(cover_data).decode()}"
+
+        # OGG
+        elif file_path.lower().endswith(".ogg"):
+            tags = OggVorbis(file_path)
+            if tags.get("artist"):
+                result["artist"] = clean_metadata_string(tags["artist"][0])
+            if tags.get("title"):
+                result["title"] = clean_metadata_string(tags["title"][0])
+            if tags.get("lyrics"):
+                result["lyrics"] = tags["lyrics"][0].strip()
+
+        # Fallback: generic mutagen
+        else:
+            mfile = MutagenFile(file_path)
+            if mfile and mfile.tags:
+                # Пробуем стандартные ключи
+                for key in ("artist", "Artist", "ARTIST", "performer", "PERFORMER"):
+                    if key in mfile.tags:
+                        val = mfile.tags[key]
+                        result["artist"] = clean_metadata_string(val[0] if isinstance(val, list) else str(val))
+                        break
+                for key in ("title", "Title", "TITLE", "name", "NAME"):
+                    if key in mfile.tags:
+                        val = mfile.tags[key]
+                        result["title"] = clean_metadata_string(val[0] if isinstance(val, list) else str(val))
+                        break
+
+    except Exception as e:
+        log.warning("Ошибка чтения тегов mutagen: %s", e)
+
+    return result
+
+
 def strip_technical_suffix(text: str) -> str:
     return _TECHNICAL_SUFFIXES_RE.sub('', text).strip()
 
+
 def get_audio_metadata(file_path: str, original_filename: str) -> tuple[str, str]:
-    artist, title = "", ""
-    if file_path and os.path.exists(file_path):
-        try:
-            tag = TinyTag.get(file_path)
-            if tag.artist: artist = clean_metadata_string(tag.artist)
-            if tag.title: title = clean_metadata_string(tag.title)
-        except Exception:
-            pass
+    """
+    Извлекает artist/title из тегов.
+    Fallback на парсинг имени файла только если теги пустые.
+    """
+    tags = extract_tags_from_file(file_path)
+    artist = tags["artist"]
+    title = tags["title"]
 
     if artist and title:
         return artist, title
 
+    # Fallback: парсим имя файла
     clean = unicodedata.normalize('NFC', original_filename)
     clean = re.sub(r"\.[^.]+$", "", clean)
     clean = re.sub(r"_+", " ", clean)
@@ -214,44 +357,93 @@ def clean_genius_lyrics(raw_text: str) -> str:
     return text.strip()
 
 def fetch_lyrics(artist: str, title: str, base_path: str) -> tuple[str | None, str | None, str | None]:
+    """
+    Приоритет:
+    1. Genius (обложка + текст)
+    2. Теги файла (обложка + текст) — если Genius недоступен/не нашёл
+    """
     lyrics_file = f"{base_path}_(Genius Lyrics).txt"
     meta_file   = f"{base_path}_meta.json"
 
+    # ── Попытка 1: Genius ──
     token = os.getenv("GENIUS_ACCESS_TOKEN")
-    if not token: return None, None, None
+    if token:
+        try:
+            genius = lyricsgenius.Genius(token, verbose=False, timeout=15)
+            genius.remove_section_headers = False
+            song = genius.search_song(title, artist)
 
-    try:
-        genius = lyricsgenius.Genius(token, verbose=False, timeout=15)
-        genius.remove_section_headers = False 
-        song = genius.search_song(title, artist)
-        
-        if not song: return None, None, None
+            if song:
+                g_artist = clean_metadata_string(song.artist)
+                g_title  = clean_metadata_string(song.title)
 
-        g_artist = clean_metadata_string(song.artist)
-        g_title  = clean_metadata_string(song.title)
+                meta = {
+                    "cover":        getattr(song, "song_art_image_url", "") or "",
+                    "bg":           getattr(song, "header_image_url",   "") or "",
+                    "cover_genius": getattr(song, "song_art_image_url", "") or "",
+                    "bg_genius":    getattr(song, "header_image_url",   "") or "",
+                }
+                with open(meta_file, "w", encoding="utf-8") as f:
+                    json.dump(meta, f, ensure_ascii=False)
 
-        meta = {
-            "cover":        getattr(song, "song_art_image_url", "") or "",
-            "bg":           getattr(song, "header_image_url",   "") or "",
-            "cover_genius": getattr(song, "song_art_image_url", "") or "",
-            "bg_genius":    getattr(song, "header_image_url",   "") or "",
-        }
-        with open(meta_file, "w", encoding="utf-8") as f:
-            json.dump(meta, f, ensure_ascii=False)
+                track_stem = os.path.basename(base_path)
+                dump_debug_text("0_GeniusRaw", song.lyrics, track_stem)
 
-        track_stem = os.path.basename(base_path)
-        dump_debug_text("0_GeniusRaw", song.lyrics, track_stem)
+                cleaned_lyrics = clean_genius_lyrics(song.lyrics)
+                dump_debug_text("0_GeniusCleaned", cleaned_lyrics, track_stem)
 
-        cleaned_lyrics = clean_genius_lyrics(song.lyrics)
-        dump_debug_text("0_GeniusCleaned", cleaned_lyrics, track_stem)
+                with open(lyrics_file, "w", encoding="utf-8") as f:
+                    f.write(cleaned_lyrics)
 
+                log.info("Genius: текст найден для %s - %s", g_artist, g_title)
+                return lyrics_file, g_artist, g_title
+            else:
+                log.info("Genius: текст не найден для %s - %s, пробуем теги", artist, title)
+        except Exception as e:
+            log.warning("Genius ошибка: %s, пробуем теги", e)
+
+    # ── Попытка 2: Теги файла (обложка + текст) ──
+    log.info("📂 Пытаемся извлечь обложку и текст из тегов файла...")
+
+    # Находим исходный файл — он мог быть удалён после конвертации в MP3
+    # Ищем по base_name все возможные расширения
+    source_file = None
+    for ext in (".mp3", ".flac", ".m4a", ".alac", ".wav", ".ogg", ".aac"):
+        candidate = f"{base_path}{ext}"
+        if os.path.exists(candidate):
+            source_file = candidate
+            break
+
+    if not source_file:
+        # Может быть MP3 сконвертированный
+        source_file = f"{base_path}.mp3"
+        if not os.path.exists(source_file):
+            log.warning("Исходный файл не найден, теги недоступны")
+            return None, None, None
+
+    tags = extract_tags_from_file(source_file)
+    meta = {}
+
+    # Обложка из тегов
+    if tags["cover_base64"]:
+        meta["cover"] = tags["cover_base64"]
+        meta["cover_genius"] = tags["cover_base64"]
+        meta["bg"] = tags["cover_base64"]
+        meta["bg_genius"] = tags["cover_base64"]
+        log.info("   🖼️ Обложка из тегов: %s", tags["cover_base64"][:50] + "...")
+
+    with open(meta_file, "w", encoding="utf-8") as f:
+        json.dump(meta, f, ensure_ascii=False)
+
+    # Текст из тегов
+    if tags["lyrics"]:
         with open(lyrics_file, "w", encoding="utf-8") as f:
-            f.write(cleaned_lyrics)
+            f.write(tags["lyrics"])
+        log.info("   📝 Текст из тегов: %d символов", len(tags["lyrics"]))
+        return lyrics_file, artist, title
 
-        return lyrics_file, g_artist, g_title
-    except Exception as e:
-        log.error("Ошибка Genius: %s", e)
-        return None, None, None
+    log.info("   ⚠️ Текст в тегах не найден")
+    return None, None, None
 
 def generate_karaoke_subtitles(inst_mp3: str, vocals_mp3: str, lyrics_path: str) -> str | None:
     basename = os.path.basename(vocals_mp3).replace("_(Vocals).mp3", "")
