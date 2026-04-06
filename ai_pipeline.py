@@ -204,8 +204,9 @@ def compress_stem_mp3(file_path: str) -> None:
 # Автоустановка GPU-провайдера ONNX для AMD
 # ──────────────────────────────────────────────────────────────────────────────
 def _ensure_amd_onnx():
-    """Если AMD GPU + нет ROCM provider → устанавливаем onnxruntime-rocm."""
+    """Если AMD GPU — проверяем/устанавливаем onnxruntime-rocm."""
     import subprocess
+
     # Проверяем AMD
     try:
         result = subprocess.run(["lspci"], capture_output=True, text=True)
@@ -214,12 +215,34 @@ def _ensure_amd_onnx():
         has_amd = False
 
     if not has_amd:
-        return False  # Не AMD — не нужно
+        return  # Не AMD — не нужно
 
-    # Проверяем ONNX провайдеры
-    import onnxruntime as ort
-    if "ROCMExecutionProvider" in ort.get_available_providers():
-        return False  # Уже установлен
+    # Проверяем, может ROCM уже установлен (даже без интернета)
+    try:
+        import onnxruntime as ort
+        if "ROCMExecutionProvider" in ort.get_available_providers():
+            return  # Уже работает
+    except Exception:
+        pass
+
+    # Проверяем наличие установленного пакета (pip list)
+    try:
+        result = subprocess.run(
+            ["pip", "list"], capture_output=True, text=True
+        )
+        if "onnxruntime-rocm" in result.stdout:
+            # Пакет установлен, но ONNX его не видит — возможно конфликт с onnxruntime-cpu
+            # Принудительно удаляем CPU-версию
+            log.info("   ⚠️ onnxruntime-rocm установлен, но конфликтует с onnxruntime (CPU)")
+            log.info("   🔧 Удаляю onnxruntime (CPU)...")
+            subprocess.run(
+                ["pip", "uninstall", "-y", "onnxruntime"],
+                capture_output=True, timeout=30
+            )
+            log.info("   ⚠️ Перезапустите приложение для активации AMD GPU")
+            return
+    except Exception:
+        pass
 
     # Проверяем интернет
     import socket
@@ -232,7 +255,7 @@ def _ensure_amd_onnx():
     if not has_internet:
         log.warning("⚠️ AMD GPU обнаружен, но нет интернета. Сепарация на CPU (медленно).")
         log.warning("   Для ускорения: подключите интернет и запустите: pip install onnxruntime-rocm")
-        return False
+        return
 
     # Устанавливаем
     log.info("🔧 AMD GPU: устанавливаю onnxruntime-rocm для ускорения сепарации...")
@@ -241,12 +264,15 @@ def _ensure_amd_onnx():
             ["pip", "install", "-q", "onnxruntime-rocm"],
             capture_output=True, timeout=300
         )
+        # Удаляем конфликтующий CPU-пакет
+        subprocess.run(
+            ["pip", "uninstall", "-y", "onnxruntime"],
+            capture_output=True, timeout=30
+        )
         log.info("   ✅ onnxruntime-rocm установлен!")
         log.info("   ⚠️ Перезапустите приложение для активации GPU-ускорения")
-        return True
     except Exception as e:
         log.warning("   ⚠️ Не удалось установить onnxruntime-rocm: %s", e)
-        return False
 
 
 # ──────────────────────────────────────────────────────────────────────────────
