@@ -37,7 +37,7 @@ def url_to_base64(url: str, max_size: int = 5 * 1024 * 1024) -> str | None:
     if not url or not url.startswith("http"):
         return None
     try:
-        resp = requests.get(url, timeout=15, stream=True)
+        resp = requests.get(url, timeout=5, stream=True)
         resp.raise_for_status()
         # Проверяем размер
         total = int(resp.headers.get("content-length", 0))
@@ -65,17 +65,35 @@ def url_to_base64(url: str, max_size: int = 5 * 1024 * 1024) -> str | None:
         return None
 
 
-def download_and_embed_covers(library_dir: str):
+def download_and_embed_covers(library_dir: str, max_total_time: float = 30.0):
     """
     При запуске: находит все _meta.json, скачивает URL-обложки → вшивает в base64.
+    Если интернет недоступен — молча пропускает обложки (graceful degradation).
+    Общий таймаут на всю функцию — max_total_time секунд.
     """
+    import time
+    t_start = time.time()
+
     if not os.path.exists(library_dir):
         return
 
     count = 0
+    total_files = 0
     for fname in os.listdir(library_dir):
         if not fname.endswith("_meta.json"):
             continue
+        total_files += 1
+
+    # Проверяем общий таймаут перед каждой итерацией
+    for fname in os.listdir(library_dir):
+        if not fname.endswith("_meta.json"):
+            continue
+
+        # Общий таймаут: если прошло больше max_total_time — выходим
+        elapsed = time.time() - t_start
+        if elapsed > max_total_time:
+            log.warning("⏱️ Timeout на встраивание обложек (%.1fс) — пропуск остальных", elapsed)
+            break
 
         meta_path = os.path.join(library_dir, fname)
         try:
@@ -93,6 +111,8 @@ def download_and_embed_covers(library_dir: str):
                     meta["cover_genius"] = b64
                     updated = True
                     log.info("   🖼️ Вшита обложка: %s", fname)
+                else:
+                    log.debug("   ⏭️ Пропуск обложки (недоступна): %s", fname)
 
             # Фон плеера
             bg = meta.get("bg", "")
@@ -103,6 +123,8 @@ def download_and_embed_covers(library_dir: str):
                     meta["bg_genius"] = b64
                     updated = True
                     log.info("   🖼️ Вшит фон: %s", fname)
+                else:
+                    log.debug("   ⏭️ Пропуск фона (недоступен): %s", fname)
 
             if updated:
                 with open(meta_path, "w", encoding="utf-8") as f:
@@ -111,8 +133,11 @@ def download_and_embed_covers(library_dir: str):
         except Exception as e:
             log.warning("Ошибка обработки %s: %s", fname, e)
 
+    elapsed = time.time() - t_start
     if count > 0:
-        log.info("✅ Встроено обложек: %d", count)
+        log.info("✅ Встроено обложек: %d за %.1fс", count, elapsed)
+    elif total_files > 0:
+        log.info("ℹ️ Обложки не встроены (интернет недоступен или все уже в base64) — %.1fс", elapsed)
 
 BASE_DIR    = os.path.dirname(os.path.abspath(__file__))
 MODELS_DIR  = os.path.join(BASE_DIR, "models")
@@ -420,8 +445,10 @@ def clean_genius_lyrics(raw_text: str) -> str:
 def fetch_lyrics(artist: str, title: str, base_path: str) -> tuple[str | None, str | None, str | None]:
     """
     Приоритет:
-    1. Genius (обложка + текст)
+    1. Genius (обложка + текст) — с коротким таймаутом
     2. Теги файла (обложка + текст) — если Genius недоступен/не нашёл
+
+    Graceful degradation: если интернет недоступен, сразу fallback на теги.
     """
     lyrics_file = f"{base_path}_(Genius Lyrics).txt"
     meta_file   = f"{base_path}_meta.json"
@@ -430,7 +457,8 @@ def fetch_lyrics(artist: str, title: str, base_path: str) -> tuple[str | None, s
     token = os.getenv("GENIUS_ACCESS_TOKEN")
     if token:
         try:
-            genius = lyricsgenius.Genius(token, verbose=False, timeout=15)
+            log.info("Genius: поиск текста для %s - %s (timeout=5с)...", artist, title)
+            genius = lyricsgenius.Genius(token, verbose=False, timeout=5)
             genius.remove_section_headers = False
             song = genius.search_song(title, artist)
 
@@ -467,6 +495,9 @@ def fetch_lyrics(artist: str, title: str, base_path: str) -> tuple[str | None, s
                 return lyrics_file, g_artist, g_title
             else:
                 log.info("Genius: текст не найден для %s - %s, пробуем теги", artist, title)
+        except requests.exceptions.RequestException as e:
+            # Сетевые ошибки — сразу fallback на теги без лишних логов
+            log.info("Genius: нет доступа (%s) — пробуем теги файла", type(e).__name__)
         except Exception as e:
             log.warning("Genius ошибка: %s, пробуем теги", e)
 

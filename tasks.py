@@ -118,6 +118,8 @@ def _process_track(track_id: str):
             db.commit()
             log.info("Поиск текста на Genius: artist=%s, title=%s", track.artist, track.title)
 
+            check_if_cancelled()
+
             new_lyrics, genius_artist, genius_title = fetch_lyrics(
                 track.artist, track.title, base_path
             )

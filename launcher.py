@@ -135,19 +135,20 @@ def free_port(port):
 
 
 def kill_child_processes():
-    """Надёжная остановка: SIGTERM → ждём 3 с → SIGKILL."""
+    """Надёжная остановка: SIGTERM → ждём 1.5 с → SIGKILL → psutil recursive."""
     log.info("Остановка дочерних процессов...")
 
-    # Сначала мягко
+    # Сначала мягко — SIGTERM
     for p in _child_procs:
         try:
             if p.poll() is None:
+                log.info("SIGTERM → PID %d", p.pid)
                 p.terminate()
         except Exception:
             pass
 
-    # Ждём до 3 секунд
-    deadline = time.time() + 3.0
+    # Ждём до 1.5 секунд (сокращено с 3с для быстрого закрытия)
+    deadline = time.time() + 1.5
     for p in _child_procs:
         try:
             remaining = max(0, deadline - time.time())
@@ -157,7 +158,7 @@ def kill_child_processes():
         except Exception:
             pass
 
-    # Жёстко убиваем оставшихся
+    # Жёстко убиваем оставшихся через subprocess
     for p in _child_procs:
         try:
             if p.poll() is None:
@@ -167,7 +168,7 @@ def kill_child_processes():
         except Exception:
             pass
 
-    # Подчищаем через psutil (на случай внуков)
+    # Подчищаем через psutil (на случай внуков и зомби)
     try:
         current = psutil.Process(os.getpid())
         for child in current.children(recursive=True):
@@ -183,12 +184,13 @@ def kill_child_processes():
 
 
 def wait_for_server(url, timeout=30):
+    """Ждём готовности сервера. Используем urllib с коротким таймаутом."""
     start = time.time()
     while time.time() - start < timeout:
         try:
-            with urllib.request.urlopen(url, timeout=2) as r:
-                if r.status == 200:
-                    return True
+            resp = urllib.request.urlopen(url, timeout=2)
+            if resp.status == 200:
+                return True
         except Exception:
             pass
         time.sleep(0.5)
@@ -247,7 +249,10 @@ def main():
     # ── Встраиваем обложки из URL в base64 ─────────────────────────────────
     log.info("Сканирование библиотеки на наличие URL-обложек...")
     from ai_pipeline import download_and_embed_covers
-    download_and_embed_covers(os.path.join(BASE_DIR, "library"))
+    try:
+        download_and_embed_covers(os.path.join(BASE_DIR, "library"), max_total_time=30.0)
+    except Exception as e:
+        log.warning("Обложки не встроены (интернет недоступен): %s", e)
     log.info("Обложки обработаны.")
     log.info("")
 
@@ -294,55 +299,63 @@ def main():
 
     log.info("Сервер готов. Запуск графического интерфейса...")
 
-    # ── Нативный диалог выбора файлов (zenity/kdialog) ────────────────────
+    # ── Нативный диалог выбора файлов (kdialog, без сканирования NFS) ─────
     class FileDialogAPI:
         def open_file_dialog(self, multiple=True):
             """Открывает системный диалог выбора файлов.
-            zenity — не сканирует NFS, работает без интернета.
+            kdialog (Qt) — не сканирует NFS, работает без интернета.
             """
             import subprocess
+            # Определяем стартовую папку — только локальные, без NFS
+            start_dir = os.path.expanduser("~")
+            # Пробуем найти локальную папку с музыкой
+            for local_dir in ["~/Music", "~/Музыка", "~/Downloads", "~/Загрузки"]:
+                p = os.path.expanduser(local_dir)
+                if os.path.isdir(p) and not self._is_network_mount(p):
+                    start_dir = p
+                    break
+
             if multiple:
                 cmd = [
-                    "zenity",
-                    "--file-selection",
+                    "kdialog",
+                    "--title", "Выберите аудиофайлы",
+                    "--getopenfilename", start_dir,
+                    "Audio (*.mp3 *.flac *.m4a *.wav *.ogg *.aac *.alac *.wma)\nAll Files (*)",
                     "--multiple",
-                    "--separator=\n",
-                    "--title=Выберите аудиофайлы",
-                    "--filename=" + os.path.expanduser("~"),
+                    "--separate-output",
                 ]
             else:
                 cmd = [
-                    "zenity",
-                    "--file-selection",
-                    "--title=Выберите аудиофайл",
-                    "--filename=" + os.path.expanduser("~"),
+                    "kdialog",
+                    "--title", "Выберите аудиофайл",
+                    "--getopenfilename", start_dir,
+                    "Audio (*.mp3 *.flac *.m4a *.wav *.ogg *.aac *.alac *.wma)\nAll Files (*)",
                 ]
 
-            # Фильтры для zenity
-            cmd.append("--file-filter=Audio: *.mp3 *.flac *.m4a *.wav *.ogg *.aac *.alac *.wma")
-
             try:
-                result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
                 if result.returncode == 0 and result.stdout.strip():
                     paths = [p for p in result.stdout.strip().split("\n") if p]
                     return paths
             except subprocess.TimeoutExpired:
-                log.warning("zenity timeout")
+                log.warning("kdialog timeout (возможно NFS)")
             except Exception as e:
-                log.warning("zenity ошибка: %s, пробуем kdialog", e)
-                # Fallback: kdialog
-                try:
-                    sep = "\n"
-                    kcmd = ["kdialog", "--title", "Выберите аудиофайлы",
-                            "--getopenfilename", os.path.expanduser("~"),
-                            "Audio (*.mp3 *.flac *.m4a *.wav *.ogg *.aac *.alac *.wma)\nAll Files (*)",
-                            "--multiple", "--separate-output"]
-                    result = subprocess.run(kcmd, capture_output=True, text=True, timeout=60)
-                    if result.returncode == 0 and result.stdout.strip():
-                        return [p for p in result.stdout.strip().split(sep) if p]
-                except Exception as e2:
-                    log.warning("kdialog тоже не сработал: %s", e2)
+                log.warning("kdialog ошибка: %s", e)
             return []
+
+        def _is_network_mount(self, path: str) -> bool:
+            """Проверяет, является ли путь сетевым монтированием."""
+            try:
+                import subprocess
+                result = subprocess.run(["df", "-T", path], capture_output=True, text=True)
+                if result.returncode == 0:
+                    lines = result.stdout.strip().split("\n")
+                    if len(lines) > 1:
+                        fs_type = lines[-1].split()[-2]
+                        return fs_type in ("nfs", "nfs4", "cifs", "smbfs", "fuse.sshfs")
+            except Exception:
+                pass
+            return False
 
     file_api = FileDialogAPI()
 
@@ -364,7 +377,7 @@ def main():
     try:
         # На Linux пробуем GTK (не зависит от интернета), fallback на Qt
         gui_backend = "gtk" if sys.platform.startswith("linux") else "qt"
-        log.info("WebView backend: %s", gui_backend)
+        log.info("WebView backend: %s (GTK может быть недоступен — это нормально)", gui_backend)
 
         webview.start(
             gui=gui_backend,
