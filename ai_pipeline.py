@@ -203,26 +203,6 @@ def compress_stem_mp3(file_path: str) -> None:
 # ──────────────────────────────────────────────────────────────────────────────
 # Разделение вокала (audio-separator с GPU)
 # ──────────────────────────────────────────────────────────────────────────────
-def _get_execution_providers():
-    """Автоопределение GPU-провайдера для ONNX."""
-    if torch.cuda.is_available():
-        log.info("🟢 GPU: NVIDIA CUDA")
-        return ["CUDAExecutionProvider"]
-    # AMD ROCM через torch
-    if hasattr(torch, 'hip') and torch.cuda.is_available():
-        log.info("🟢 GPU: AMD ROCM")
-        return ["ROCMExecutionProvider"]
-    # DirectML (AMD на Windows)
-    try:
-        import onnxruntime as ort
-        if "DmlExecutionProvider" in ort.get_available_providers():
-            log.info("🟢 GPU: DirectML")
-            return ["DmlExecutionProvider"]
-    except Exception:
-        pass
-    log.info("⚪ Fallback: CPU")
-    return ["CPUExecutionProvider"]
-
 def separate_vocals(mp3_path: str) -> tuple[str, str]:
     import time
     t_start = time.time()
@@ -233,6 +213,25 @@ def separate_vocals(mp3_path: str) -> tuple[str, str]:
 
     vocals_final       = os.path.join(basedir, f"{basename}_(Vocals).mp3")
     instrumental_final = os.path.join(basedir, f"{basename}_(Instrumental).mp3")
+
+    # Автоопределение GPU-провайдера для ONNX
+    providers = []
+    try:
+        import onnxruntime as ort
+        available = ort.get_available_providers()
+        if "CUDAExecutionProvider" in available:
+            providers = ["CUDAExecutionProvider"]
+            log.info("   🟢 GPU: NVIDIA CUDA (ONNX)")
+        elif "ROCMExecutionProvider" in available:
+            providers = ["ROCMExecutionProvider"]
+            log.info("   🟢 GPU: AMD ROCM (ONNX)")
+        elif "DmlExecutionProvider" in available:
+            providers = ["DmlExecutionProvider"]
+            log.info("   🟢 GPU: DirectML")
+        else:
+            log.info("   ⚪ Fallback: CPU (установите onnxruntime-gpu для NVIDIA)")
+    except Exception:
+        pass
 
     t_model = time.time()
     separator = Separator(
@@ -245,10 +244,6 @@ def separate_vocals(mp3_path: str) -> tuple[str, str]:
     log.info("   ⏱️ Загрузка модели: %.1fс", time.time() - t_model)
 
     t_infer = time.time()
-    providers = _get_execution_providers()
-    separator._model.set_providers(providers)
-    log.info("   ⏱️ Провайдеры: %s", providers)
-
     output_files = separator.separate(mp3_path)
     log.info("   ⏱️ Inference: %.1fс", time.time() - t_infer)
 
