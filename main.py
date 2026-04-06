@@ -533,6 +533,9 @@ async def delete_single_track(track_id: str, db: Session = Depends(get_db)):
         meta_path = track.karaoke_json_path.replace(
             "_(Karaoke Lyrics).json", "_meta.json"
         )
+    library_meta_path = None
+    if track.filename:
+        library_meta_path = os.path.join(LIBRARY_DIR, track.filename.rsplit(".", 1)[0] + "_library.json")
 
     paths = [
         track.original_path,
@@ -541,6 +544,7 @@ async def delete_single_track(track_id: str, db: Session = Depends(get_db)):
         track.lyrics_path,
         track.karaoke_json_path,
         meta_path,
+        library_meta_path,
     ]
     for path in paths:
         if path and os.path.exists(path):

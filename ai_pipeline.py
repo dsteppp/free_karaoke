@@ -139,6 +139,173 @@ def download_and_embed_covers(library_dir: str, max_total_time: float = 30.0):
     elif total_files > 0:
         log.info("ℹ️ Обложки не встроены (интернет недоступен или все уже в base64) — %.1fс", elapsed)
 
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Полные метаданные трека (_library.json) — бэкап тегов + Genius + обложки
+# ──────────────────────────────────────────────────────────────────────────────
+
+def save_library_meta(base_path: str):
+    """
+    Сохраняет полные метаданные трека в {base_path}_library.json.
+    Собирает данные из _meta.json (обложки) и _(Genius Lyrics).txt (текст).
+    Этот файл — страховой полис: если оригинал удалён и Genius недоступен,
+    метаданные восстанавливаются отсюда.
+    """
+    import time
+    t_start = time.time()
+    lib_path = f"{base_path}_library.json"
+    meta_path = f"{base_path}_meta.json"
+    lyrics_path = f"{base_path}_(Genius Lyrics).txt"
+
+    try:
+        # Читаем обложки
+        cover = ""
+        bg = ""
+        cover_genius = ""
+        bg_genius = ""
+        if os.path.exists(meta_path):
+            with open(meta_path, "r", encoding="utf-8") as f:
+                meta = json.load(f)
+                cover = meta.get("cover", "")
+                bg = meta.get("bg", "")
+                cover_genius = meta.get("cover_genius", "")
+                bg_genius = meta.get("bg_genius", "")
+
+        # Читаем текст
+        lyrics = ""
+        if os.path.exists(lyrics_path):
+            with open(lyrics_path, "r", encoding="utf-8") as f:
+                lyrics = f.read()
+
+        library_meta = {
+            "artist": "",
+            "title": "",
+            "lyrics": lyrics,
+            "cover": cover,
+            "bg": bg,
+            "cover_genius": cover_genius,
+            "bg_genius": bg_genius,
+        }
+
+        with open(lib_path, "w", encoding="utf-8") as f:
+            json.dump(library_meta, f, ensure_ascii=False, indent=2)
+
+        elapsed = time.time() - t_start
+        log.info("📦 Метаданные сохранены в _library.json: %s (%.1fс)", os.path.basename(lib_path), elapsed)
+    except Exception as e:
+        log.warning("Не удалось сохранить _library.json: %s", e)
+
+
+def load_library_meta(base_path: str) -> dict | None:
+    """
+    Загружает метаданные из {base_path}_library.json.
+    Возвращает None если файла нет.
+    """
+    lib_path = f"{base_path}_library.json"
+    if not os.path.exists(lib_path):
+        return None
+    try:
+        with open(lib_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        log.info("📦 Метаданные загружены из _library.json: %s", os.path.basename(lib_path))
+        return data
+    except Exception as e:
+        log.warning("Ошибка чтения _library.json: %s", e)
+        return None
+
+
+def migrate_create_library_meta(library_dir: str, max_total_time: float = 60.0):
+    """
+    Миграция: для всех треков в библиотеке создаёт _library.json,
+    если его ещё нет. Заполняет из существующих _meta.json,
+    _(Genius Lyrics).txt и _(Karaoke Lyrics).json.
+    Вызывается при запуске.
+    """
+    import time
+    t_start = time.time()
+
+    if not os.path.exists(library_dir):
+        return
+
+    created = 0
+    total = 0
+    for fname in os.listdir(library_dir):
+        if not fname.endswith("_meta.json"):
+            continue
+        total += 1
+
+    for fname in os.listdir(library_dir):
+        if not fname.endswith("_meta.json"):
+            continue
+
+        elapsed = time.time() - t_start
+        if elapsed > max_total_time:
+            log.warning("⏱️ Timeout миграции _library.json (%.1fс) — пропуск остальных", elapsed)
+            break
+
+        base_name = fname.replace("_meta.json", "")
+        meta_path = os.path.join(library_dir, fname)
+        lib_path = os.path.join(library_dir, f"{base_name}_library.json")
+
+        # Пропускаем уже существующие
+        if os.path.exists(lib_path):
+            continue
+
+        try:
+            # Читаем обложки из _meta.json
+            with open(meta_path, "r", encoding="utf-8") as f:
+                meta = json.load(f)
+
+            # Читаем текст из _(Genius Lyrics).txt
+            lyrics_path = os.path.join(library_dir, f"{base_name}_(Genius Lyrics).txt")
+            lyrics = ""
+            if os.path.exists(lyrics_path):
+                try:
+                    with open(lyrics_path, "r", encoding="utf-8") as f:
+                        lyrics = f.read()
+                except Exception:
+                    pass
+
+            # Читаем Karaoke JSON для восстановления artist/title
+            karaoke_path = os.path.join(library_dir, f"{base_name}_(Karaoke Lyrics).json")
+            # Пробуем прочитать title из имени файла
+            artist = ""
+            title = ""
+            # Имя файла может быть "Artist - Title"
+            clean_name = re.sub(r"_+", " ", base_name)
+            clean_name = strip_technical_suffix(clean_name)
+            for sep in (" - ", "-"):
+                parts = clean_name.split(sep, 1)
+                if len(parts) == 2:
+                    artist = clean_metadata_string(parts[0])
+                    title = clean_metadata_string(parts[1])
+                    break
+
+            library_meta = {
+                "artist": artist,
+                "title": title,
+                "lyrics": lyrics,
+                "cover": meta.get("cover", ""),
+                "bg": meta.get("bg", ""),
+                "cover_genius": meta.get("cover_genius", ""),
+                "bg_genius": meta.get("bg_genius", ""),
+            }
+
+            with open(lib_path, "w", encoding="utf-8") as f:
+                json.dump(library_meta, f, ensure_ascii=False, indent=2)
+
+            created += 1
+            log.info("   📦 Создан _library.json: %s", base_name)
+
+        except Exception as e:
+            log.warning("Ошибка миграции %s: %s", base_name, e)
+
+    elapsed = time.time() - t_start
+    if created > 0:
+        log.info("✅ Создано _library.json файлов: %d из %d за %.1fс", created, total, elapsed)
+    else:
+        log.info("ℹ️ Миграция _library.json: всё уже создано (%d файлов) — %.1fс", total, elapsed)
+
 BASE_DIR    = os.path.dirname(os.path.abspath(__file__))
 MODELS_DIR  = os.path.join(BASE_DIR, "models")
 WHISPER_DIR = os.path.join(MODELS_DIR, "whisper")
@@ -541,6 +708,32 @@ def fetch_lyrics(artist: str, title: str, base_path: str) -> tuple[str | None, s
         return lyrics_file, artist, title
 
     log.info("   ⚠️ Текст в тегах не найден")
+
+    # ── Попытка 3: _library.json (бэкап метаданных) ──
+    log.info("📂 Пытаемся восстановить метаданные из _library.json...")
+    lib_meta = load_library_meta(base_path)
+
+    if lib_meta:
+        # Восстанавливаем обложки
+        meta = {}
+        if lib_meta.get("cover"):
+            meta["cover"] = lib_meta["cover"]
+            meta["cover_genius"] = lib_meta["cover"]
+            meta["bg"] = lib_meta.get("bg", lib_meta["cover"])
+            meta["bg_genius"] = lib_meta.get("bg_genius", lib_meta["cover"])
+            log.info("   🖼️ Обложка из _library.json")
+
+        with open(meta_file, "w", encoding="utf-8") as f:
+            json.dump(meta, f, ensure_ascii=False)
+
+        # Восстанавливаем текст
+        if lib_meta.get("lyrics"):
+            with open(lyrics_file, "w", encoding="utf-8") as f:
+                f.write(lib_meta["lyrics"])
+            log.info("   📝 Текст из _library.json: %d символов", len(lib_meta["lyrics"]))
+            return lyrics_file, artist, title
+
+    log.info("   ⚠️ Методанные в _library.json не найдены или пусты")
     return None, None, None
 
 def generate_karaoke_subtitles(inst_mp3: str, vocals_mp3: str, lyrics_path: str) -> str | None:

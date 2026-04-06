@@ -256,6 +256,15 @@ def main():
     log.info("Обложки обработаны.")
     log.info("")
 
+    # ── Миграция: создаём _library.json для старых треков ────────────────
+    log.info("Миграция: проверка _library.json...")
+    from ai_pipeline import migrate_create_library_meta
+    try:
+        migrate_create_library_meta(os.path.join(BASE_DIR, "library"), max_total_time=60.0)
+    except Exception as e:
+        log.warning("Миграция _library.json пропущена: %s", e)
+    log.info("")
+
     # Запуск Huey worker
     huey_proc = subprocess.Popen(
         [

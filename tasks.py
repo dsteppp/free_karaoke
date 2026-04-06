@@ -6,6 +6,7 @@ from ai_pipeline import (
     fetch_lyrics,
     generate_karaoke_subtitles,
     get_audio_metadata,
+    save_library_meta,
 )
 from app_status import set_status, clear_status
 from app_logger import get_logger
@@ -214,6 +215,12 @@ def _process_track(track_id: str):
                 track.original_path = None
             except Exception as e:
                 log.warning("Не удалось удалить промежуточный файл: %s", e)
+
+        # ── 5. Сохранение полных метаданных в _library.json ────────────────
+        try:
+            save_library_meta(base_path)
+        except Exception as e:
+            log.warning("Не удалось сохранить _library.json: %s", e)
 
         track.status = "done"
         db.commit()
