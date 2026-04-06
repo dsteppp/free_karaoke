@@ -102,8 +102,18 @@ def download_and_embed_covers(library_dir: str, max_total_time: float = 30.0):
 
             updated = False
 
-            # Обложка трека
+            # Обложка трека: если cover пуст — берём из cover_genius
             cover = meta.get("cover", "")
+            if not cover:
+                genius_cover = meta.get("cover_genius", "")
+                if genius_cover and genius_cover.startswith("data:"):
+                    meta["cover"] = genius_cover
+                    updated = True
+                    log.info("   🖼️ Обложка скопирована из cover_genius: %s", fname)
+                    cover = genius_cover
+                else:
+                    cover = genius_cover
+
             if cover and cover.startswith("http") and not cover.startswith("data:"):
                 b64 = url_to_base64(cover)
                 if b64:
@@ -113,8 +123,17 @@ def download_and_embed_covers(library_dir: str, max_total_time: float = 30.0):
                 else:
                     log.debug("   ⏭️ Пропуск обложки (недоступна): %s", fname)
 
-            # Фон плеера
+            # Фон плеера: если bg пуст — берём из bg_genius или cover
             bg = meta.get("bg", "")
+            if not bg:
+                genius_bg = meta.get("bg_genius", "")
+                if genius_bg and genius_bg.startswith("data:"):
+                    meta["bg"] = genius_bg
+                    updated = True
+                    bg = genius_bg
+                else:
+                    bg = genius_bg or meta.get("cover", "")
+
             if bg and bg.startswith("http") and not bg.startswith("data:"):
                 b64 = url_to_base64(bg)
                 if b64:
