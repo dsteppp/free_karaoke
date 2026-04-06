@@ -296,8 +296,8 @@ async def scan_library(db: Session = Depends(get_db)):
         elif fname.endswith("_(Karaoke Lyrics).json"):
             base  = fname.replace("_(Karaoke Lyrics).json", "")
             ftype = "json"
-        elif fname.endswith("_meta.json"):
-            base  = fname.replace("_meta.json", "")
+        elif fname.endswith("_library.json"):
+            base  = fname.replace("_library.json", "")
             ftype = "meta"
         else:
             matched = False
@@ -405,7 +405,7 @@ async def scan_library(db: Session = Depends(get_db)):
         i_path = os.path.join(LIBRARY_DIR, f"{base_name}_(Instrumental).mp3")
         l_path = os.path.join(LIBRARY_DIR, f"{base_name}_(Genius Lyrics).txt")
         k_path = os.path.join(LIBRARY_DIR, f"{base_name}_(Karaoke Lyrics).json")
-        m_path = os.path.join(LIBRARY_DIR, f"{base_name}_meta.json")
+        m_path = os.path.join(LIBRARY_DIR, f"{base_name}_library.json")
 
         # Ищем оригинал по всем поддерживаемым расширениям
         o_path = t.original_path
@@ -528,11 +528,6 @@ async def delete_single_track(track_id: str, db: Session = Depends(get_db)):
     if not track:
         raise HTTPException(status_code=404, detail="Трек не найден")
 
-    meta_path = None
-    if track.karaoke_json_path:
-        meta_path = track.karaoke_json_path.replace(
-            "_(Karaoke Lyrics).json", "_meta.json"
-        )
     library_meta_path = None
     if track.filename:
         library_meta_path = os.path.join(LIBRARY_DIR, track.filename.rsplit(".", 1)[0] + "_library.json")
@@ -543,7 +538,6 @@ async def delete_single_track(track_id: str, db: Session = Depends(get_db)):
         track.instrumental_path,
         track.lyrics_path,
         track.karaoke_json_path,
-        meta_path,
         library_meta_path,
     ]
     for path in paths:
@@ -601,12 +595,12 @@ async def get_cover_genius(track_id: str, db: Session = Depends(get_db)):
     if not track.karaoke_json_path:
         raise HTTPException(status_code=404, detail="Метаданные не найдены")
 
-    meta_path = track.karaoke_json_path.replace("_(Karaoke Lyrics).json", "_meta.json")
-    if not os.path.exists(meta_path):
-        raise HTTPException(status_code=404, detail="_meta.json не найден")
+    lib_path = track.karaoke_json_path.replace("_(Karaoke Lyrics).json", "_library.json")
+    if not os.path.exists(lib_path):
+        raise HTTPException(status_code=404, detail="_library.json не найден")
 
     try:
-        with open(meta_path, "r", encoding="utf-8") as f:
+        with open(lib_path, "r", encoding="utf-8") as f:
             meta = json.load(f)
         genius_url = meta.get("cover_genius") or meta.get("cover_url")
         if genius_url:
@@ -660,7 +654,7 @@ async def edit_track_metadata(
     base_name = os.path.splitext(track.filename)[0]
     base_path = os.path.join("library", base_name)
     lyrics_path = f"{base_path}_(Genius Lyrics).txt"
-    meta_path = f"{base_path}_meta.json"
+    lib_path = f"{base_path}_library.json"
     karaoke_json_path = f"{base_path}_(Karaoke Lyrics).json"
 
     try:
@@ -677,23 +671,31 @@ async def edit_track_metadata(
                 del LYRICS_CACHE[track_id]
             log.info("Текст обновлён для трека %s", track_id)
 
-        # 3. Обновляем _meta.json с обложками
+        # 3. Обновляем _library.json с обложками и метаданными
         meta = {}
-        if os.path.exists(meta_path):
+        if os.path.exists(lib_path):
             try:
-                with open(meta_path, "r", encoding="utf-8") as f:
+                with open(lib_path, "r", encoding="utf-8") as f:
                     meta = json.load(f)
             except Exception:
                 meta = {}
+
+        # Обновляем artist/title из запроса
+        if req.artist:
+            meta["artist"] = req.artist
+        if req.title:
+            meta["title"] = req.title
+
+        # Обновляем текст
+        if req.lyrics:
+            meta["lyrics"] = req.lyrics
 
         # Обложка трека: скачиваем URL → base64
         if req.cover_base64:
             meta["cover"] = req.cover_base64
         elif req.cover_url:
             b64 = url_to_base64(req.cover_url)
-            meta["cover"] = b64 or req.cover_url  # fallback на URL если не скачалось
-        elif "cover_base64" in meta and meta.get("cover") == meta.get("cover_base64"):
-            pass
+            meta["cover"] = b64 or req.cover_url
 
         # Сохраняем оригинальную обложку Genius (если ещё не сохранена)
         if "cover_genius" not in meta and meta.get("cover"):
@@ -710,9 +712,9 @@ async def edit_track_metadata(
         if "bg_genius" not in meta and meta.get("bg"):
             meta["bg_genius"] = meta["bg"]
 
-        with open(meta_path, "w", encoding="utf-8") as f:
+        with open(lib_path, "w", encoding="utf-8") as f:
             json.dump(meta, f, ensure_ascii=False, indent=2)
-        log.info("💾 Метаданные обложек сохранены в %s", meta_path)
+        log.info("💾 Метаданные сохранены в %s", lib_path)
 
         # 4. Если rescan — запускаем Whisper-пайплайн
         if req.rescan:

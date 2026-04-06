@@ -67,7 +67,7 @@ def url_to_base64(url: str, max_size: int = 5 * 1024 * 1024) -> str | None:
 
 def download_and_embed_covers(library_dir: str, max_total_time: float = 30.0):
     """
-    При запуске: находит все _meta.json, скачивает URL-обложки → вшивает в base64.
+    При запуске: находит все _library.json, скачивает URL-обложки → вшивает в base64.
     Если интернет недоступен — молча пропускает обложки (graceful degradation).
     Общий таймаут на всю функцию — max_total_time секунд.
     """
@@ -80,13 +80,13 @@ def download_and_embed_covers(library_dir: str, max_total_time: float = 30.0):
     count = 0
     total_files = 0
     for fname in os.listdir(library_dir):
-        if not fname.endswith("_meta.json"):
+        if not fname.endswith("_library.json"):
             continue
         total_files += 1
 
     # Проверяем общий таймаут перед каждой итерацией
     for fname in os.listdir(library_dir):
-        if not fname.endswith("_meta.json"):
+        if not fname.endswith("_library.json"):
             continue
 
         # Общий таймаут: если прошло больше max_total_time — выходим
@@ -95,9 +95,9 @@ def download_and_embed_covers(library_dir: str, max_total_time: float = 30.0):
             log.warning("⏱️ Timeout на встраивание обложек (%.1fс) — пропуск остальных", elapsed)
             break
 
-        meta_path = os.path.join(library_dir, fname)
+        lib_path = os.path.join(library_dir, fname)
         try:
-            with open(meta_path, "r", encoding="utf-8") as f:
+            with open(lib_path, "r", encoding="utf-8") as f:
                 meta = json.load(f)
 
             updated = False
@@ -108,7 +108,6 @@ def download_and_embed_covers(library_dir: str, max_total_time: float = 30.0):
                 b64 = url_to_base64(cover)
                 if b64:
                     meta["cover"] = b64
-                    meta["cover_genius"] = b64
                     updated = True
                     log.info("   🖼️ Вшита обложка: %s", fname)
                 else:
@@ -120,14 +119,13 @@ def download_and_embed_covers(library_dir: str, max_total_time: float = 30.0):
                 b64 = url_to_base64(bg)
                 if b64:
                     meta["bg"] = b64
-                    meta["bg_genius"] = b64
                     updated = True
                     log.info("   🖼️ Вшит фон: %s", fname)
                 else:
                     log.debug("   ⏭️ Пропуск фона (недоступен): %s", fname)
 
             if updated:
-                with open(meta_path, "w", encoding="utf-8") as f:
+                with open(lib_path, "w", encoding="utf-8") as f:
                     json.dump(meta, f, ensure_ascii=False)
                 count += 1
         except Exception as e:
@@ -144,47 +142,58 @@ def download_and_embed_covers(library_dir: str, max_total_time: float = 30.0):
 # Полные метаданные трека (_library.json) — бэкап тегов + Genius + обложки
 # ──────────────────────────────────────────────────────────────────────────────
 
-def save_library_meta(base_path: str):
+def save_library_meta(base_path: str, original_file_path: str = ""):
     """
     Сохраняет полные метаданные трека в {base_path}_library.json.
-    Собирает данные из _meta.json (обложки) и _(Genius Lyrics).txt (текст).
-    Этот файл — страховой полис: если оригинал удалён и Genius недоступен,
-    метаданные восстанавливаются отсюда.
+    Стратегия: сначала берём из тегов исходного файла (artist, title, cover, lyrics).
+    Затем, если есть Genius-данные (_(Genius Lyrics).txt или уже существующий _library.json),
+    дополняем недостающие поля.
+    original_file_path — путь к исходнику для извлечения тегов (опционально).
     """
     import time
     t_start = time.time()
     lib_path = f"{base_path}_library.json"
-    meta_path = f"{base_path}_meta.json"
     lyrics_path = f"{base_path}_(Genius Lyrics).txt"
 
     try:
-        # Читаем обложки
-        cover = ""
-        bg = ""
-        cover_genius = ""
-        bg_genius = ""
-        if os.path.exists(meta_path):
-            with open(meta_path, "r", encoding="utf-8") as f:
-                meta = json.load(f)
-                cover = meta.get("cover", "")
-                bg = meta.get("bg", "")
-                cover_genius = meta.get("cover_genius", "")
-                bg_genius = meta.get("bg_genius", "")
+        # 1. Теги из исходного файла
+        file_artist = ""
+        file_title = ""
+        file_lyrics = ""
+        file_cover = ""
+        if original_file_path and os.path.exists(original_file_path):
+            tags = extract_tags_from_file(original_file_path)
+            file_artist = tags.get("artist", "") or ""
+            file_title = tags.get("title", "") or ""
+            file_lyrics = tags.get("lyrics", "") or ""
+            file_cover = tags.get("cover_base64", "") or ""
 
-        # Читаем текст
-        lyrics = ""
+        # 2. Genius-данные (текст + существующий _library.json)
+        genius_lyrics = ""
         if os.path.exists(lyrics_path):
             with open(lyrics_path, "r", encoding="utf-8") as f:
-                lyrics = f.read()
+                genius_lyrics = f.read()
+
+        existing = {}
+        if os.path.exists(lib_path):
+            with open(lib_path, "r", encoding="utf-8") as f:
+                existing = json.load(f)
+
+        # 3. Merge: теги имеют приоритет, Genius/существующие данные дополняют
+        artist = file_artist or existing.get("artist", "")
+        title = file_title or existing.get("title", "")
+        lyrics = file_lyrics or genius_lyrics or existing.get("lyrics", "")
+        cover = file_cover or existing.get("cover", "")
+        bg = existing.get("bg", "") or cover
 
         library_meta = {
-            "artist": "",
-            "title": "",
+            "artist": artist,
+            "title": title,
             "lyrics": lyrics,
             "cover": cover,
             "bg": bg,
-            "cover_genius": cover_genius,
-            "bg_genius": bg_genius,
+            "cover_genius": existing.get("cover_genius", ""),
+            "bg_genius": existing.get("bg_genius", ""),
         }
 
         with open(lib_path, "w", encoding="utf-8") as f:
@@ -214,11 +223,11 @@ def load_library_meta(base_path: str) -> dict | None:
         return None
 
 
-def migrate_create_library_meta(library_dir: str, max_total_time: float = 60.0):
+def migrate_create_library_meta(library_dir: str, db_path: str = "", max_total_time: float = 60.0):
     """
     Миграция: для всех треков в библиотеке создаёт _library.json,
-    если его ещё нет. Заполняет из существующих _meta.json,
-    _(Genius Lyrics).txt и _(Karaoke Lyrics).json.
+    если его ещё нет. Данные берутся из БД (Track) — там уже корректные
+    artist, title, lyrics_path, karaoke_json_path.
     Вызывается при запуске.
     """
     import time
@@ -226,6 +235,23 @@ def migrate_create_library_meta(library_dir: str, max_total_time: float = 60.0):
 
     if not os.path.exists(library_dir):
         return
+
+    # Читаем БД
+    db_tracks = {}
+    if db_path and os.path.exists(db_path):
+        try:
+            from database import SessionLocal, Track
+            db = SessionLocal()
+            for t in db.query(Track).all():
+                base = os.path.splitext(t.filename)[0]
+                db_tracks[base] = {
+                    "artist": t.artist or "",
+                    "title": t.title or "",
+                    "lyrics_path": t.lyrics_path or "",
+                }
+            db.close()
+        except Exception as e:
+            log.warning("Не удалось прочитать БД для миграции: %s", e)
 
     created = 0
     total = 0
@@ -266,20 +292,22 @@ def migrate_create_library_meta(library_dir: str, max_total_time: float = 60.0):
                 except Exception:
                     pass
 
-            # Читаем Karaoke JSON для восстановления artist/title
-            karaoke_path = os.path.join(library_dir, f"{base_name}_(Karaoke Lyrics).json")
-            # Пробуем прочитать title из имени файла
+            # Данные из БД (приоритет)
             artist = ""
             title = ""
-            # Имя файла может быть "Artist - Title"
-            clean_name = re.sub(r"_+", " ", base_name)
-            clean_name = strip_technical_suffix(clean_name)
-            for sep in (" - ", "-"):
-                parts = clean_name.split(sep, 1)
-                if len(parts) == 2:
-                    artist = clean_metadata_string(parts[0])
-                    title = clean_metadata_string(parts[1])
-                    break
+            if base_name in db_tracks:
+                artist = db_tracks[base_name]["artist"]
+                title = db_tracks[base_name]["title"]
+            else:
+                # Fallback: парсим из имени файла
+                clean_name = re.sub(r"_+", " ", base_name)
+                clean_name = strip_technical_suffix(clean_name)
+                for sep in (" - ", "-"):
+                    parts = clean_name.split(sep, 1)
+                    if len(parts) == 2:
+                        artist = clean_metadata_string(parts[0])
+                        title = clean_metadata_string(parts[1])
+                        break
 
             library_meta = {
                 "artist": artist,
@@ -615,7 +643,7 @@ def fetch_lyrics(artist: str, title: str, base_path: str) -> tuple[str | None, s
     Graceful degradation: если интернет недоступен, сразу fallback на теги.
     """
     lyrics_file = f"{base_path}_(Genius Lyrics).txt"
-    meta_file   = f"{base_path}_meta.json"
+    lib_file    = f"{base_path}_library.json"
 
     # ── Попытка 1: Genius ──
     token = os.getenv("GENIUS_ACCESS_TOKEN")
@@ -636,13 +664,26 @@ def fetch_lyrics(artist: str, title: str, base_path: str) -> tuple[str | None, s
                 cover_b64 = url_to_base64(cover_url) if cover_url else ""
                 bg_b64    = url_to_base64(bg_url) if bg_url else cover_b64
 
+                # Читаем существующие данные, если есть
+                existing = {}
+                if os.path.exists(lib_file):
+                    try:
+                        with open(lib_file, "r", encoding="utf-8") as f:
+                            existing = json.load(f)
+                    except Exception:
+                        pass
+
+                # Теги файла имеют приоритет
                 meta = {
-                    "cover":        cover_b64 or cover_url,
-                    "bg":           bg_b64 or bg_url,
+                    "artist":       existing.get("artist", ""),
+                    "title":        existing.get("title", ""),
+                    "lyrics":       existing.get("lyrics", ""),
+                    "cover":        existing.get("cover", "") or cover_b64 or cover_url,
+                    "bg":           existing.get("bg", "") or bg_b64 or bg_url,
                     "cover_genius": cover_b64 or cover_url,
                     "bg_genius":    bg_b64 or bg_url,
                 }
-                with open(meta_file, "w", encoding="utf-8") as f:
+                with open(lib_file, "w", encoding="utf-8") as f:
                     json.dump(meta, f, ensure_ascii=False)
 
                 track_stem = os.path.basename(base_path)
@@ -687,23 +728,46 @@ def fetch_lyrics(artist: str, title: str, base_path: str) -> tuple[str | None, s
             return None, None, None
 
     tags = extract_tags_from_file(source_file)
-    meta = {}
 
-    # Обложка из тегов
+    # Читаем существующие данные, если есть
+    existing = {}
+    if os.path.exists(lib_file):
+        try:
+            with open(lib_file, "r", encoding="utf-8") as f:
+                existing = json.load(f)
+        except Exception:
+            pass
+
+    meta = {
+        "artist": tags.get("artist", "") or existing.get("artist", ""),
+        "title": tags.get("title", "") or existing.get("title", ""),
+        "lyrics": existing.get("lyrics", ""),
+        "cover": existing.get("cover", ""),
+        "bg": existing.get("bg", ""),
+        "cover_genius": existing.get("cover_genius", ""),
+        "bg_genius": existing.get("bg_genius", ""),
+    }
+
+    # Обложка из тегов (приоритет над Genius)
     if tags["cover_base64"]:
         meta["cover"] = tags["cover_base64"]
-        meta["cover_genius"] = tags["cover_base64"]
+        if not meta["cover_genius"]:
+            meta["cover_genius"] = tags["cover_base64"]
         meta["bg"] = tags["cover_base64"]
         meta["bg_genius"] = tags["cover_base64"]
         log.info("   🖼️ Обложка из тегов: %s", tags["cover_base64"][:50] + "...")
 
-    with open(meta_file, "w", encoding="utf-8") as f:
+    with open(lib_file, "w", encoding="utf-8") as f:
         json.dump(meta, f, ensure_ascii=False)
 
     # Текст из тегов
     if tags["lyrics"]:
         with open(lyrics_file, "w", encoding="utf-8") as f:
             f.write(tags["lyrics"])
+        # Обновляем lyrics в _library.json
+        meta["lyrics"] = tags["lyrics"]
+        with open(lib_file, "w", encoding="utf-8") as f:
+            json.dump(meta, f, ensure_ascii=False)
         log.info("   📝 Текст из тегов: %d символов", len(tags["lyrics"]))
         return lyrics_file, artist, title
 

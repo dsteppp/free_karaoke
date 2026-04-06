@@ -260,7 +260,11 @@ def main():
     log.info("Миграция: проверка _library.json...")
     from ai_pipeline import migrate_create_library_meta
     try:
-        migrate_create_library_meta(os.path.join(BASE_DIR, "library"), max_total_time=60.0)
+        migrate_create_library_meta(
+            os.path.join(BASE_DIR, "library"),
+            db_path=os.path.join(BASE_DIR, "karaoke.db"),
+            max_total_time=60.0,
+        )
     except Exception as e:
         log.warning("Миграция _library.json пропущена: %s", e)
     log.info("")

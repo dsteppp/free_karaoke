@@ -62,7 +62,6 @@ def _process_track(track_id: str):
         vocals_path       = f"{base_path}_(Vocals).mp3"
         instrumental_path = f"{base_path}_(Instrumental).mp3"
         lyrics_path       = f"{base_path}_(Genius Lyrics).txt"
-        meta_path         = f"{base_path}_meta.json"
         karaoke_json_path = f"{base_path}_(Karaoke Lyrics).json"
 
         log.debug("base_name=%s, base_path=%s", base_name, base_path)
@@ -138,7 +137,8 @@ def _process_track(track_id: str):
         check_if_cancelled()
 
         # ── 2. Поиск текста и обложек ─────────────────────────────────────
-        if not os.path.exists(lyrics_path) or not os.path.exists(meta_path):
+        lib_path_check = f"{base_path}_library.json"
+        if not os.path.exists(lyrics_path) or not os.path.exists(lib_path_check):
             track.status = "Поиск текста и обложек..."
             db.commit()
             set_status(f"🎵 {display_name} | Поиск текста и обложек…")
@@ -218,7 +218,7 @@ def _process_track(track_id: str):
 
         # ── 5. Сохранение полных метаданных в _library.json ────────────────
         try:
-            save_library_meta(base_path)
+            save_library_meta(base_path, original_file_before_conv if 'original_file_before_conv' in dir() else "")
         except Exception as e:
             log.warning("Не удалось сохранить _library.json: %s", e)
 

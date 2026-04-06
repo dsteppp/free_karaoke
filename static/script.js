@@ -434,7 +434,7 @@ function renderList() {
         img.src = fallbackCover;
         if (t.status === "done") {
             const base = encodeURIComponent(t.filename.replace(/\.[^.]+$/, ""));
-            fetch(`/library/${base}_meta.json`)
+            fetch(`/library/${base}_library.json`)
                 .then(r => r.json())
                 .then(d => { if (d.cover) img.src = d.cover; })
                 .catch(() => {});
@@ -601,12 +601,19 @@ async function loadKar(t, cvr) {
     updateVolumes();
 
     try {
-        const m = await fetch(`/library/${bn}_meta.json`).then(r => r.json());
+        const m = await fetch(`/library/${bn}_library.json`).then(r => r.json());
         if (m.cover) document.getElementById("cover-img").src = m.cover;
         if (m.bg || m.cover) {
             const bgEl = document.getElementById("bg-img-1");
             bgEl.style.backgroundImage = `url('${m.bg || m.cover}')`;
             bgEl.classList.add("active");
+        }
+        // Сохраняем artist/title из library.json для отображения в плеере
+        if (m.artist) {
+            document.getElementById("cv-artist").textContent = m.artist;
+        }
+        if (m.title) {
+            document.getElementById("cv-title").textContent = m.title;
         }
     } catch (_) {}
 
@@ -971,10 +978,10 @@ function openMetaEditor(trackId) {
     metaCoverUrl.value = "";
     metaBgUrl.value = "";
 
-    // Загружаем обложки из _meta.json
+    // Загружаем обложки из _library.json
     const base = encodeURIComponent(track.filename.replace(/\.[^.]+$/, ""));
     console.log("[meta] Loading covers for:", base);
-    fetch(`/library/${base}_meta.json`)
+    fetch(`/library/${base}_library.json`)
         .then(r => r.json())
         .then(m => {
             console.log("[meta] Got meta:", m);
