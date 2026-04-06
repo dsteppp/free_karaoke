@@ -294,17 +294,39 @@ def main():
 
     log.info("Сервер готов. Запуск графического интерфейса...")
 
-    # ── Нативный диалог выбора файлов (обходит песочницу Qt) ──────────────
+    # ── Нативный диалог выбора файлов через kdialog (KDE) ─────────────────
     class FileDialogAPI:
         def open_file_dialog(self, multiple=True):
-            """Открывает системный диалог выбора файлов через pywebview."""
-            import webview
-            dialog_type = webview.OPEN_DIALOG if multiple else webview.OPEN_DIALOG
-            result = self._window.create_file_dialog(
-                dialog_type,
-                allow_multiple=multiple,
-            )
-            return list(result) if result else []
+            """Открывает системный KDE-диалог выбора файлов."""
+            import subprocess
+            if multiple:
+                cmd = [
+                    "kdialog",
+                    "--title", "Выберите аудиофайлы",
+                    "--getopenfilename",
+                    os.path.expanduser("~"),
+                    "Audio (*.mp3 *.flac *.m4a *.wav *.ogg *.aac *.alac *.wma)\n"
+                    "All Files (*)",
+                    "--multiple",
+                    "--separate-output"
+                ]
+            else:
+                cmd = [
+                    "kdialog",
+                    "--title", "Выберите аудиофайл",
+                    "--getopenfilename",
+                    os.path.expanduser("~"),
+                    "Audio (*.mp3 *.flac *.m4a *.wav *.ogg *.aac *.alac *.wma)\n"
+                    "All Files (*)",
+                ]
+            try:
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+                if result.returncode == 0 and result.stdout.strip():
+                    paths = [p for p in result.stdout.strip().split("\n") if p]
+                    return paths
+            except Exception as e:
+                log.warning("kdialog ошибка: %s", e)
+            return []
 
     file_api = FileDialogAPI()
 

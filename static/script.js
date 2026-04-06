@@ -87,10 +87,18 @@ if (uploadLabel) {
 
 async function openNativeFileDialog() {
     try {
-        // Пытаемся использовать нативный диалог pywebview
+        // Проверяем что pywebview API доступен
+        if (!window.pywebview || !window.pywebview.api) {
+            console.warn("pywebview API недоступен, fallback на стандартный диалог");
+            els.fileInput.click();
+            return;
+        }
+
+        // Пытаемся использовать kdialog через pywebview js_api
         const files = await window.pywebview.api.open_file_dialog(true);
+        console.log("[upload] Выбранные файлы:", files);
+
         if (files && files.length > 0) {
-            console.log("[upload] Выбранные файлы:", files);
             // Отправляем пути на сервер — сервер сам прочитает файлы
             const res = await fetch("/api/upload-from-paths", {
                 method: "POST",
@@ -104,7 +112,6 @@ async function openNativeFileDialog() {
         }
     } catch (e) {
         console.warn("Нативный диалог недоступен, используем стандартный:", e);
-        // Fallback: показываем стандартный диалог
         els.fileInput.click();
     }
 }
