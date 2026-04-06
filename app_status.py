@@ -27,7 +27,7 @@ def clear_status():
     _write(_EMPTY)
 
 
-def get_status() -> dict:
+def read_status() -> dict:
     """Прочитать текущий статус."""
     try:
         with open(_STATUS_FILE, "r", encoding="utf-8") as f:

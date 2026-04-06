@@ -16,7 +16,7 @@ from database import get_db, Track
 from tasks import process_audio_task
 from huey_config import huey
 from ai_pipeline import get_audio_metadata, url_to_base64
-from app_status import get_status
+from app_status import read_status
 from app_logger import get_logger
 
 # --- ВРЕЗКА РЕДАКТОРА ---
@@ -109,7 +109,7 @@ async def get_status(db: Session = Depends(get_db)):
 # ──────────────────────────────────────────────────────────────────────────────
 @app.get("/api/app-status")
 async def get_app_status():
-    return get_status()
+    return read_status()
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -465,7 +465,7 @@ async def scan_library(db: Session = Depends(get_db)):
     # ── Ремонт: обновляем _library.json из БД + удаляем _meta.json ────────
     from ai_pipeline import repair_all_library_meta
     try:
-        repair_all_library_meta(LIBRARY_DIR, db_path=SQLALCHEMY_DATABASE_URL.replace("sqlite:///", ""))
+        repair_all_library_meta(LIBRARY_DIR, db_path=os.path.join(BASE_DIR, "karaoke.db"))
     except Exception as e:
         log.warning("Ремонт _library.json пропущен: %s", e)
 
