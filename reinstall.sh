@@ -105,7 +105,7 @@ if [ "$GPU_TYPE" = "NVIDIA" ]; then
     echo "torch" >> "$DIR/requirements.txt"
     echo "torchvision" >> "$DIR/requirements.txt"
     echo "torchaudio" >> "$DIR/requirements.txt"
-    echo "onnxruntime-gpu" >> "$DIR/requirements.txt"
+    echo "onnxruntime" >> "$DIR/requirements.txt"
 
 elif [ "$GPU_TYPE" = "AMD" ]; then
     echo "--extra-index-url https://download.pytorch.org/whl/rocm6.2" >> "$DIR/requirements.txt"
