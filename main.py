@@ -16,6 +16,7 @@ from database import get_db, Track
 from tasks import process_audio_task
 from huey_config import huey
 from ai_pipeline import get_audio_metadata, url_to_base64
+from app_status import get_status
 from app_logger import get_logger
 
 # --- ВРЕЗКА РЕДАКТОРА ---
@@ -101,6 +102,14 @@ async def get_status(db: Session = Depends(get_db)):
         })
 
     return {"status": "ok", "tracks": track_list}
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# GET /api/app-status  —  Общий статус приложения (для строки состояния)
+# ──────────────────────────────────────────────────────────────────────────────
+@app.get("/api/app-status")
+async def get_app_status():
+    return get_status()
 
 
 # ──────────────────────────────────────────────────────────────────────────────

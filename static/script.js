@@ -59,6 +59,12 @@ const els = {
     sDirBtn:     document.getElementById("sort-dir-btn"),
     statArtists: document.getElementById("stat-artists"),
     statTracks:  document.getElementById("stat-tracks"),
+    // Строка состояния
+    statusBar:   document.getElementById("app-status-bar"),
+    statusText:  document.getElementById("app-status-text"),
+    statusSpinner: document.getElementById("app-status-spinner"),
+    statusProgress: document.getElementById("app-status-progress"),
+    statusProgressFill: document.getElementById("app-status-progress-fill"),
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -284,6 +290,7 @@ async function loadTracks() {
         const d = await r.json();
         allTracks = d.tracks;
         renderList();
+        updateAppStatus(); // Инициализация строки состояния
         if (d.tracks.some(t => t.status !== "done" && t.status !== "error"))
             startPolling();
     } catch (e) { console.error(e); }
@@ -334,7 +341,42 @@ function startPolling() {
                 }
             }
         } catch (e) { console.error(e); }
+
+        // Обновляем строку состояния (каждый цикл polling)
+        updateAppStatus();
     }, 2000);
+}
+
+// ─── Строка состояния приложения ───────────────────────────────────────────
+async function updateAppStatus() {
+    try {
+        const r = await fetch("/api/app-status");
+        const d = await r.json();
+
+        if (d.active && d.message) {
+            els.statusBar.style.display = "";
+            els.statusText.textContent = d.message;
+
+            if (d.progress !== null && d.progress !== undefined) {
+                // Прогресс-бар
+                els.statusSpinner.style.display = "none";
+                els.statusProgress.style.display = "";
+                els.statusProgressFill.style.width = d.progress + "%";
+            } else {
+                // Спиннер
+                els.statusSpinner.style.display = "";
+                els.statusProgress.style.display = "none";
+            }
+        } else {
+            // Ничего не происходит — строка пустая (просто отступ)
+            els.statusText.textContent = "";
+            els.statusSpinner.style.display = "none";
+            els.statusProgress.style.display = "none";
+            els.statusProgressFill.style.width = "0%";
+        }
+    } catch (e) {
+        // Сеть недоступна — не показываем ошибку в строке состояния
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

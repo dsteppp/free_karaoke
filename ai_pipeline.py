@@ -191,6 +191,7 @@ def clean_metadata_string(text: str) -> str:
 # Конвертация и сжатие
 # ──────────────────────────────────────────────────────────────────────────────
 def convert_to_mp3(input_path: str) -> str:
+    """Конвертирует аудио в MP3 192k. НЕ удаляет оригинал — это делает tasks.py после извлечения тегов."""
     basename   = os.path.splitext(input_path)[0]
     final_path = f"{basename}.mp3"
     temp_path  = f"{basename}_tmp_conv.mp3"
@@ -205,10 +206,6 @@ def convert_to_mp3(input_path: str) -> str:
         stderr=subprocess.STDOUT,
         check=True,
     )
-
-    if os.path.abspath(input_path) != os.path.abspath(final_path):
-        if os.path.exists(input_path):
-            os.remove(input_path)
 
     os.rename(temp_path, final_path)
     return final_path
@@ -505,9 +502,11 @@ def fetch_lyrics(artist: str, title: str, base_path: str) -> tuple[str | None, s
     log.info("📂 Пытаемся извлечь обложку и текст из тегов файла...")
 
     # Находим исходный файл — он мог быть удалён после конвертации в MP3
-    # Ищем по base_name все возможные расширения
+    # Ищем по base_name все возможные расширения.
+    # ВАЖНО: .mp3 ищем ПОСЛЕДНИМ — если оригинал был M4A/FLAC и уже сконвертирован,
+    # то MP3 — это конвертированная копия без lyrics. Нужно найти оригинал.
     source_file = None
-    for ext in (".mp3", ".flac", ".m4a", ".alac", ".wav", ".ogg", ".aac"):
+    for ext in (".flac", ".m4a", ".alac", ".wav", ".ogg", ".aac", ".wma", ".mp3"):
         candidate = f"{base_path}{ext}"
         if os.path.exists(candidate):
             source_file = candidate

@@ -157,6 +157,68 @@ html, body {
 .stat-item.lh-element svg  { width: 1rem; height: 1rem; opacity: 0.8; margin-right: 0.3rem; }
 .stat-item.lh-element span { color: var(--text-main); }
 
+/* ─── Строка состояния приложения ───────────────────────────────────────── */
+.app-status-bar {
+    min-height: 1.5rem;
+    max-height: 1.5rem;
+    overflow: hidden;
+    transition: all 0.3s ease;
+}
+.app-status-bar:empty,
+.app-status-bar .app-status-content:empty {
+    min-height: 0;
+    max-height: 0;
+}
+.app-status-content {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 0.78rem;
+    color: var(--text-muted);
+    line-height: 1.5rem;
+}
+/* Спиннер */
+.app-status-spinner {
+    display: inline-flex;
+    flex-shrink: 0;
+    width: 1rem;
+    height: 1rem;
+    animation: app-status-spin 1s linear infinite;
+}
+.app-status-spinner svg {
+    width: 1rem;
+    height: 1rem;
+    stroke: var(--accent);
+}
+@keyframes app-status-spin {
+    from { transform: rotate(0deg); }
+    to   { transform: rotate(360deg); }
+}
+/* Текст */
+.app-status-text {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    flex: 1;
+    min-width: 0;
+}
+/* Прогресс-бар */
+.app-status-progress {
+    flex-shrink: 0;
+    width: 6rem;
+    height: 0.35rem;
+    background: var(--surface);
+    border-radius: 999px;
+    overflow: hidden;
+}
+.app-status-progress-fill {
+    height: 100%;
+    width: 0%;
+    background: var(--accent);
+    border-radius: 999px;
+    transition: width 0.4s ease;
+}
+
 /* ─── Поиск и сортировка ─────────────────────────────────────────────────── */
 .filters {
     display: flex;

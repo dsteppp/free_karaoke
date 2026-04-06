@@ -7,6 +7,7 @@ from ai_pipeline import (
     generate_karaoke_subtitles,
     get_audio_metadata,
 )
+from app_status import set_status, clear_status
 from app_logger import get_logger
 from tinytag import TinyTag
 import os
@@ -50,6 +51,11 @@ def _process_track(track_id: str):
         log.info("=" * 50)
         log.info("СТАРТ: %s (id=%s)", track.original_name, track_id)
 
+        # Формируем читаемое имя трека для строки состояния
+        display_name = track.title or track.original_name or track.filename
+        if track.artist:
+            display_name = f"{track.artist} — {display_name}"
+
         base_name         = os.path.splitext(track.filename)[0]
         base_path         = os.path.join("library", base_name)
         vocals_path       = f"{base_path}_(Vocals).mp3"
@@ -71,7 +77,12 @@ def _process_track(track_id: str):
 
             track.status = "Конвертация в MP3..."
             db.commit()
+            set_status(f"🎵 {display_name} | Конвертация в MP3…")
             log.info("Конвертация: %s", track.original_path)
+
+            # Сохраняем путь к оригиналу ДО конвертации — нужен для извлечения тегов
+            original_file_before_conv = track.original_path
+
             mp3_path = convert_to_mp3(track.original_path)
             track.filename      = os.path.basename(mp3_path)
             track.original_path = mp3_path
@@ -87,6 +98,10 @@ def _process_track(track_id: str):
             artist, title  = get_audio_metadata(mp3_path, track.original_name)
             track.artist   = artist or None
             track.title    = title  or None
+            # Обновляем display_name после извлечения метаданных
+            display_name = track.title or track.original_name or track.filename
+            if track.artist:
+                display_name = f"{track.artist} — {display_name}"
             log.info("Метаданные: artist=%s, title=%s", track.artist, track.title)
             db.commit()
 
@@ -94,6 +109,7 @@ def _process_track(track_id: str):
 
             track.status = "Разделение вокала и музыки..."
             db.commit()
+            set_status(f"🎵 {display_name} | Разделение вокала и музыки…")
             log.info("Сепарация вокала...")
             vocals_path, instrumental_path = separate_vocals(mp3_path)
             track.vocals_path       = vocals_path
@@ -110,12 +126,21 @@ def _process_track(track_id: str):
                 log.info("Метаданные из стемов: artist=%s, title=%s", track.artist, track.title)
                 db.commit()
 
+            # Если оригинал ещё остался от прошлого запуска — удаляем
+            if track.original_path and os.path.exists(track.original_path):
+                log.info("Удаляем оставшийся оригинал: %s", track.original_path)
+                try:
+                    os.remove(track.original_path)
+                except Exception:
+                    pass
+
         check_if_cancelled()
 
         # ── 2. Поиск текста и обложек ─────────────────────────────────────
         if not os.path.exists(lyrics_path) or not os.path.exists(meta_path):
             track.status = "Поиск текста и обложек..."
             db.commit()
+            set_status(f"🎵 {display_name} | Поиск текста и обложек…")
             log.info("Поиск текста на Genius: artist=%s, title=%s", track.artist, track.title)
 
             check_if_cancelled()
@@ -134,6 +159,7 @@ def _process_track(track_id: str):
                 if genius_title:
                     track.title = genius_title
                     log.info("Title обновлён из Genius: %s", genius_title)
+                    display_name = f"{track.artist or ''} — {track.title}".strip(" —")
             else:
                 log.warning("Текст не найден на Genius.")
 
@@ -142,6 +168,14 @@ def _process_track(track_id: str):
         else:
             log.info("Текст и обложки уже существуют — пропуск.")
 
+        # ── Удаляем оригинал ПОСЛЕ извлечения тегов (экономия места) ─────
+        if 'original_file_before_conv' in dir() and original_file_before_conv and os.path.exists(original_file_before_conv):
+            log.info("Удаляем оригинал (теги извлечены): %s", original_file_before_conv)
+            try:
+                os.remove(original_file_before_conv)
+            except Exception as e:
+                log.warning("Не удалось удалить оригинал: %s", e)
+
         check_if_cancelled()
 
         # ── 3. Нейросетевая синхронизация (Whisper) ───────────────────────
@@ -149,6 +183,7 @@ def _process_track(track_id: str):
             if not os.path.exists(karaoke_json_path):
                 track.status = "Нейросетевая синхронизация (Whisper)..."
                 db.commit()
+                set_status(f"🎵 {display_name} | Нейросетевая синхронизация (Whisper)…")
                 log.info("Запуск Whisper-синхронизации...")
 
                 karaoke_json_path = generate_karaoke_subtitles(
@@ -170,14 +205,15 @@ def _process_track(track_id: str):
 
         check_if_cancelled()
 
-        # ── 4. Удаление оригинала (экономия места) ────────────────────────
+        # ── 4. Очистка промежуточных файлов ───────────────────────────────
         if track.original_path and os.path.exists(track.original_path):
-            log.info("Удаляем оригинал: %s", track.original_path)
+            set_status(f"🎵 {display_name} | Завершение…")
+            log.info("Удаляем промежуточный MP3: %s", track.original_path)
             try:
                 os.remove(track.original_path)
                 track.original_path = None
             except Exception as e:
-                log.warning("Не удалось удалить оригинал: %s", e)
+                log.warning("Не удалось удалить промежуточный файл: %s", e)
 
         track.status = "done"
         db.commit()
@@ -200,6 +236,7 @@ def _process_track(track_id: str):
 
     finally:
         db.close()
+        clear_status()
 
         gc.collect()
         if torch.cuda.is_available():
