@@ -201,116 +201,32 @@ def compress_stem_mp3(file_path: str) -> None:
     os.replace(temp, file_path)
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Автоустановка GPU-провайдера ONNX для AMD
+# Сепарация вокала (audio-separator)
 # ──────────────────────────────────────────────────────────────────────────────
-def _ensure_amd_onnx():
-    """Если AMD GPU — проверяем/устанавливаем onnxruntime-rocm."""
-    import subprocess
-
-    # Проверяем AMD
-    try:
-        result = subprocess.run(["lspci"], capture_output=True, text=True)
-        has_amd = "radeon" in result.stdout.lower() or "amd" in result.stdout.lower()
-    except Exception:
-        has_amd = False
-
-    if not has_amd:
-        return  # Не AMD — не нужно
-
-    # Проверяем, может ROCM уже установлен (даже без интернета)
+def _check_gpu_availability():
+    """Проверяет доступность GPU через ONNX."""
     try:
         import onnxruntime as ort
-        if "ROCMExecutionProvider" in ort.get_available_providers():
-            return  # Уже работает
+        providers = ort.get_available_providers()
+        if "ROCMExecutionProvider" in providers:
+            return "AMD ROCM"
+        if "CUDAExecutionProvider" in providers:
+            return "NVIDIA CUDA"
     except Exception:
         pass
+    return "CPU"
 
-    # Проверяем наличие установленного пакета (pip list)
-    try:
-        result = subprocess.run(
-            ["pip", "list"], capture_output=True, text=True
-        )
-        if "onnxruntime-rocm" in result.stdout:
-            # Пакет установлен, но ONNX его не видит — возможно конфликт с onnxruntime-cpu
-            # Принудительно удаляем CPU-версию
-            log.info("   ⚠️ onnxruntime-rocm установлен, но конфликтует с onnxruntime (CPU)")
-            log.info("   🔧 Удаляю onnxruntime (CPU)...")
-            subprocess.run(
-                ["pip", "uninstall", "-y", "onnxruntime"],
-                capture_output=True, timeout=30
-            )
-            log.info("   ⚠️ Перезапустите приложение для активации AMD GPU")
-            return
-    except Exception:
-        pass
-
-    # Проверяем интернет
-    import socket
-    try:
-        socket.create_connection(("pypi.org", 443), timeout=3)
-        has_internet = True
-    except Exception:
-        has_internet = False
-
-    if not has_internet:
-        log.warning("⚠️ AMD GPU обнаружен, но нет интернета. Сепарация на CPU (медленно).")
-        log.warning("   Для ускорения: подключите интернет и запустите: pip install onnxruntime-rocm")
-        return
-
-    # Устанавливаем
-    log.info("🔧 AMD GPU: устанавливаю onnxruntime-rocm для ускорения сепарации...")
-    try:
-        subprocess.run(
-            ["pip", "install", "-q", "onnxruntime-rocm"],
-            capture_output=True, timeout=300
-        )
-        # Удаляем конфликтующий CPU-пакет
-        subprocess.run(
-            ["pip", "uninstall", "-y", "onnxruntime"],
-            capture_output=True, timeout=30
-        )
-        log.info("   ✅ onnxruntime-rocm установлен!")
-        log.info("   ⚠️ Перезапустите приложение для активации GPU-ускорения")
-    except Exception as e:
-        log.warning("   ⚠️ Не удалось установить onnxruntime-rocm: %s", e)
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Разделение вокала (audio-separator с GPU)
-# ──────────────────────────────────────────────────────────────────────────────
 def separate_vocals(mp3_path: str) -> tuple[str, str]:
     import time
     t_start = time.time()
-    log.info("Запуск сепарации аудио...")
-
-    # Автоустановка ROCM если AMD
-    _ensure_amd_onnx()
+    gpu_type = _check_gpu_availability()
+    log.info("Запуск сепарации аудио: %s", gpu_type)
 
     basedir  = os.path.dirname(mp3_path)
     basename = os.path.splitext(os.path.basename(mp3_path))[0]
 
     vocals_final       = os.path.join(basedir, f"{basename}_(Vocals).mp3")
     instrumental_final = os.path.join(basedir, f"{basename}_(Instrumental).mp3")
-
-    # Определяем провайдеры ONNX
-    providers = []
-    try:
-        import onnxruntime as ort
-        available = ort.get_available_providers()
-
-        if "ROCMExecutionProvider" in available:
-            providers = ["ROCMExecutionProvider"]
-            log.info("   🟢 GPU: AMD ROCM (ONNX)")
-        elif "CUDAExecutionProvider" in available:
-            providers = ["CUDAExecutionProvider"]
-            log.info("   🟢 GPU: NVIDIA CUDA (ONNX)")
-        elif "DmlExecutionProvider" in available:
-            providers = ["DmlExecutionProvider"]
-            log.info("   🟢 GPU: DirectML")
-        else:
-            log.info("   ⚪ CPU (без GPU-ускорения)")
-    except Exception:
-        log.info("   ⚪ CPU (без GPU-ускорения)")
 
     t_model = time.time()
     separator = Separator(
