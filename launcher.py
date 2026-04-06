@@ -307,7 +307,6 @@ def main():
 
     try:
         # На Linux пробуем GTK (не зависит от интернета), fallback на Qt
-        import sys
         gui_backend = "gtk" if sys.platform.startswith("linux") else "qt"
         log.info("WebView backend: %s", gui_backend)
 
