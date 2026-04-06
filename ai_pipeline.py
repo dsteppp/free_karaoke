@@ -201,26 +201,12 @@ def compress_stem_mp3(file_path: str) -> None:
     os.replace(temp, file_path)
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Сепарация вокала (audio-separator)
+# Сепарация вокала (audio-separator, CPU)
 # ──────────────────────────────────────────────────────────────────────────────
-def _check_gpu_availability():
-    """Проверяет доступность GPU через ONNX."""
-    try:
-        import onnxruntime as ort
-        providers = ort.get_available_providers()
-        if "ROCMExecutionProvider" in providers:
-            return "AMD ROCM"
-        if "CUDAExecutionProvider" in providers:
-            return "NVIDIA CUDA"
-    except Exception:
-        pass
-    return "CPU"
-
 def separate_vocals(mp3_path: str) -> tuple[str, str]:
     import time
     t_start = time.time()
-    gpu_type = _check_gpu_availability()
-    log.info("Запуск сепарации аудио: %s", gpu_type)
+    log.info("Запуск сепарации аудио (CPU)...")
 
     basedir  = os.path.dirname(mp3_path)
     basename = os.path.splitext(os.path.basename(mp3_path))[0]
@@ -244,8 +230,6 @@ def separate_vocals(mp3_path: str) -> tuple[str, str]:
 
     del separator
     gc.collect()
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
 
     found_vocals = None
     found_instrumental = None
