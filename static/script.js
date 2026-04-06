@@ -74,6 +74,41 @@ els.vInst.addEventListener("input",      updateVolumes);
 els.vVoc.addEventListener("input",       updateVolumes);
 els.fsBtn.addEventListener("click",      toggleFS);
 
+// ── Нативный диалог выбора файлов (обходит песочницу Qt) ───────────────────
+// Заменяем стандартный <input type="file"> на системный диалог через pywebview
+const uploadLabel = document.querySelector('label[for="audio-files"]');
+if (uploadLabel) {
+    uploadLabel.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        openNativeFileDialog();
+    });
+}
+
+async function openNativeFileDialog() {
+    try {
+        // Пытаемся использовать нативный диалог pywebview
+        const files = await window.pywebview.api.open_file_dialog(true);
+        if (files && files.length > 0) {
+            console.log("[upload] Выбранные файлы:", files);
+            // Отправляем пути на сервер — сервер сам прочитает файлы
+            const res = await fetch("/api/upload-from-paths", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ paths: files }),
+            });
+            if (res.ok) {
+                await loadTracks();
+                startPolling();
+            }
+        }
+    } catch (e) {
+        console.warn("Нативный диалог недоступен, используем стандартный:", e);
+        // Fallback: показываем стандартный диалог
+        els.fileInput.click();
+    }
+}
+
 // ГОРЯЧИЕ КЛАВИШИ (Плей/Пауза, Перемотка, Fullscreen)
 document.addEventListener("keydown", (e) => {
     // Игнорируем нажатия, если пользователь вводит текст (поиск или редактор слов)

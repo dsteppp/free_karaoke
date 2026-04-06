@@ -294,6 +294,20 @@ def main():
 
     log.info("Сервер готов. Запуск графического интерфейса...")
 
+    # ── Нативный диалог выбора файлов (обходит песочницу Qt) ──────────────
+    class FileDialogAPI:
+        def open_file_dialog(self, multiple=True):
+            """Открывает системный диалог выбора файлов через pywebview."""
+            import webview
+            dialog_type = webview.OPEN_DIALOG if multiple else webview.OPEN_DIALOG
+            result = self._window.create_file_dialog(
+                dialog_type,
+                allow_multiple=multiple,
+            )
+            return list(result) if result else []
+
+    file_api = FileDialogAPI()
+
     window = webview.create_window(
         title="AI-Karaoke Pro",
         url=server_url,
@@ -303,7 +317,11 @@ def main():
         background_color='#09090b',
         confirm_close=True,
         text_select=True,
+        js_api=file_api,
     )
+
+    # Передаём ссылку на окно для диалогов
+    file_api._window = window
 
     try:
         # На Linux пробуем GTK (не зависит от интернета), fallback на Qt

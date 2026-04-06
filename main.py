@@ -189,6 +189,74 @@ async def upload_tracks(
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# POST /api/upload-from-paths — загрузка по путям (нативный диалог)
+# ──────────────────────────────────────────────────────────────────────────────
+class UploadFromPaths(BaseModel):
+    paths: List[str]
+
+
+@app.post("/api/upload-from-paths")
+async def upload_from_paths(req: UploadFromPaths, db: Session = Depends(get_db)):
+    """Копирует файлы по абсолютным путям в library и ставит в очередь."""
+    if not req.paths:
+        raise HTTPException(status_code=400, detail="Нет файлов для загрузки")
+
+    log.info("Upload from paths: %d файлов", len(req.paths))
+    responses = []
+
+    for file_path in req.paths:
+        if not os.path.exists(file_path):
+            log.warning("Файл не найден: %s", file_path)
+            continue
+
+        safe_filename = os.path.basename(file_path).replace(" ", "_")
+        upload_path = os.path.join(LIBRARY_DIR, safe_filename)
+
+        # Копируем файл в library
+        try:
+            import shutil
+            shutil.copy2(file_path, upload_path)
+        except Exception as e:
+            log.error("Ошибка копирования %s: %s", file_path, e)
+            continue
+
+        original_name = os.path.basename(file_path)
+
+        existing = db.query(Track).filter(
+            (Track.original_name == original_name) | (Track.filename == safe_filename)
+        ).first()
+
+        if existing:
+            existing.filename = safe_filename
+            existing.original_name = original_name
+            existing.original_path = upload_path
+            existing.status = "pending"
+            existing.error_message = None
+            db.commit()
+            db.refresh(existing)
+            if existing.id in LYRICS_CACHE:
+                del LYRICS_CACHE[existing.id]
+            process_audio_task(existing.id)
+            log.info("Re-queued: %s (id=%s)", original_name, existing.id)
+            responses.append({"filename": original_name, "status": "re-queued"})
+        else:
+            new_track = Track(
+                filename=safe_filename,
+                original_name=original_name,
+                original_path=upload_path,
+                status="pending",
+            )
+            db.add(new_track)
+            db.commit()
+            db.refresh(new_track)
+            process_audio_task(new_track.id)
+            log.info("Queued: %s (id=%s)", original_name, new_track.id)
+            responses.append({"filename": original_name, "status": "queued"})
+
+    return {"status": "ok", "details": responses}
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # POST /api/scan  — сканирование папки library и восстановление БД
 # ──────────────────────────────────────────────────────────────────────────────
 @app.post("/api/scan")
