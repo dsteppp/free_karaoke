@@ -300,7 +300,7 @@ def main():
     try:
         webview.start(
             gui="qt",
-            private_mode=True,
+            private_mode=False,
             debug=False,
         )
     except Exception as e:
