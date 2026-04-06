@@ -294,38 +294,54 @@ def main():
 
     log.info("Сервер готов. Запуск графического интерфейса...")
 
-    # ── Нативный диалог выбора файлов через kdialog (KDE) ─────────────────
+    # ── Нативный диалог выбора файлов (zenity/kdialog) ────────────────────
     class FileDialogAPI:
         def open_file_dialog(self, multiple=True):
-            """Открывает системный KDE-диалог выбора файлов."""
+            """Открывает системный диалог выбора файлов.
+            zenity — не сканирует NFS, работает без интернета.
+            """
             import subprocess
             if multiple:
                 cmd = [
-                    "kdialog",
-                    "--title", "Выберите аудиофайлы",
-                    "--getopenfilename",
-                    os.path.expanduser("~"),
-                    "Audio (*.mp3 *.flac *.m4a *.wav *.ogg *.aac *.alac *.wma)\n"
-                    "All Files (*)",
+                    "zenity",
+                    "--file-selection",
                     "--multiple",
-                    "--separate-output"
+                    "--separator=\n",
+                    "--title=Выберите аудиофайлы",
+                    "--filename=" + os.path.expanduser("~"),
                 ]
             else:
                 cmd = [
-                    "kdialog",
-                    "--title", "Выберите аудиофайл",
-                    "--getopenfilename",
-                    os.path.expanduser("~"),
-                    "Audio (*.mp3 *.flac *.m4a *.wav *.ogg *.aac *.alac *.wma)\n"
-                    "All Files (*)",
+                    "zenity",
+                    "--file-selection",
+                    "--title=Выберите аудиофайл",
+                    "--filename=" + os.path.expanduser("~"),
                 ]
+
+            # Фильтры для zenity
+            cmd.append("--file-filter=Audio: *.mp3 *.flac *.m4a *.wav *.ogg *.aac *.alac *.wma")
+
             try:
                 result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
                 if result.returncode == 0 and result.stdout.strip():
                     paths = [p for p in result.stdout.strip().split("\n") if p]
                     return paths
+            except subprocess.TimeoutExpired:
+                log.warning("zenity timeout")
             except Exception as e:
-                log.warning("kdialog ошибка: %s", e)
+                log.warning("zenity ошибка: %s, пробуем kdialog", e)
+                # Fallback: kdialog
+                try:
+                    sep = "\n"
+                    kcmd = ["kdialog", "--title", "Выберите аудиофайлы",
+                            "--getopenfilename", os.path.expanduser("~"),
+                            "Audio (*.mp3 *.flac *.m4a *.wav *.ogg *.aac *.alac *.wma)\nAll Files (*)",
+                            "--multiple", "--separate-output"]
+                    result = subprocess.run(kcmd, capture_output=True, text=True, timeout=60)
+                    if result.returncode == 0 and result.stdout.strip():
+                        return [p for p in result.stdout.strip().split(sep) if p]
+                except Exception as e2:
+                    log.warning("kdialog тоже не сработал: %s", e2)
             return []
 
     file_api = FileDialogAPI()
