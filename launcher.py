@@ -244,6 +244,13 @@ def main():
     log.info("Запуск фоновых сервисов AI-Karaoke Pro...")
     free_port(8000)
 
+    # ── Встраиваем обложки из URL в base64 ─────────────────────────────────
+    log.info("Сканирование библиотеки на наличие URL-обложек...")
+    from ai_pipeline import download_and_embed_covers
+    download_and_embed_covers(os.path.join(BASE_DIR, "library"))
+    log.info("Обложки обработаны.")
+    log.info("")
+
     # Запуск Huey worker
     huey_proc = subprocess.Popen(
         [

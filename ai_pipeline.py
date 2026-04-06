@@ -9,6 +9,8 @@ import traceback
 import gc
 import unicodedata
 import base64
+import io
+import requests
 import torch
 
 import lyricsgenius
@@ -26,6 +28,91 @@ from karaoke_aligner import KaraokeAligner
 from app_logger import get_logger, dump_debug_text
 
 log = get_logger("pipeline")
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Утилиты: URL → base64 обложек
+# ──────────────────────────────────────────────────────────────────────────────
+def url_to_base64(url: str, max_size: int = 5 * 1024 * 1024) -> str | None:
+    """Скачивает изображение по URL и возвращает data:image/...;base64,..."""
+    if not url or not url.startswith("http"):
+        return None
+    try:
+        resp = requests.get(url, timeout=15, stream=True)
+        resp.raise_for_status()
+        # Проверяем размер
+        total = int(resp.headers.get("content-length", 0))
+        if total > max_size:
+            log.warning("Изображение слишком большое: %d байт", total)
+            return None
+        data = resp.content
+        # Определяем MIME по Content-Type или первым байтам
+        content_type = resp.headers.get("content-type", "")
+        if "png" in content_type:
+            mime = "png"
+        elif "gif" in content_type:
+            mime = "gif"
+        elif "webp" in content_type:
+            mime = "webp"
+        elif data[:4] == b'\x89PNG':
+            mime = "png"
+        elif data[:3] == b'GIF':
+            mime = "gif"
+        else:
+            mime = "jpeg"
+        return f"data:image/{mime};base64,{base64.b64encode(data).decode()}"
+    except Exception as e:
+        log.warning("Не удалось скачать обложку %s: %s", url[:80], e)
+        return None
+
+
+def download_and_embed_covers(library_dir: str):
+    """
+    При запуске: находит все _meta.json, скачивает URL-обложки → вшивает в base64.
+    """
+    if not os.path.exists(library_dir):
+        return
+
+    count = 0
+    for fname in os.listdir(library_dir):
+        if not fname.endswith("_meta.json"):
+            continue
+
+        meta_path = os.path.join(library_dir, fname)
+        try:
+            with open(meta_path, "r", encoding="utf-8") as f:
+                meta = json.load(f)
+
+            updated = False
+
+            # Обложка трека
+            cover = meta.get("cover", "")
+            if cover and cover.startswith("http") and not cover.startswith("data:"):
+                b64 = url_to_base64(cover)
+                if b64:
+                    meta["cover"] = b64
+                    meta["cover_genius"] = b64
+                    updated = True
+                    log.info("   🖼️ Вшита обложка: %s", fname)
+
+            # Фон плеера
+            bg = meta.get("bg", "")
+            if bg and bg.startswith("http") and not bg.startswith("data:"):
+                b64 = url_to_base64(bg)
+                if b64:
+                    meta["bg"] = b64
+                    meta["bg_genius"] = b64
+                    updated = True
+                    log.info("   🖼️ Вшит фон: %s", fname)
+
+            if updated:
+                with open(meta_path, "w", encoding="utf-8") as f:
+                    json.dump(meta, f, ensure_ascii=False)
+                count += 1
+        except Exception as e:
+            log.warning("Ошибка обработки %s: %s", fname, e)
+
+    if count > 0:
+        log.info("✅ Встроено обложек: %d", count)
 
 BASE_DIR    = os.path.dirname(os.path.abspath(__file__))
 MODELS_DIR  = os.path.join(BASE_DIR, "models")
@@ -377,11 +464,17 @@ def fetch_lyrics(artist: str, title: str, base_path: str) -> tuple[str | None, s
                 g_artist = clean_metadata_string(song.artist)
                 g_title  = clean_metadata_string(song.title)
 
+                # Скачиваем обложку сразу как base64
+                cover_url = getattr(song, "song_art_image_url", "") or ""
+                bg_url    = getattr(song, "header_image_url",   "") or ""
+                cover_b64 = url_to_base64(cover_url) if cover_url else ""
+                bg_b64    = url_to_base64(bg_url) if bg_url else cover_b64
+
                 meta = {
-                    "cover":        getattr(song, "song_art_image_url", "") or "",
-                    "bg":           getattr(song, "header_image_url",   "") or "",
-                    "cover_genius": getattr(song, "song_art_image_url", "") or "",
-                    "bg_genius":    getattr(song, "header_image_url",   "") or "",
+                    "cover":        cover_b64 or cover_url,
+                    "bg":           bg_b64 or bg_url,
+                    "cover_genius": cover_b64 or cover_url,
+                    "bg_genius":    bg_b64 or bg_url,
                 }
                 with open(meta_file, "w", encoding="utf-8") as f:
                     json.dump(meta, f, ensure_ascii=False)
@@ -395,7 +488,8 @@ def fetch_lyrics(artist: str, title: str, base_path: str) -> tuple[str | None, s
                 with open(lyrics_file, "w", encoding="utf-8") as f:
                     f.write(cleaned_lyrics)
 
-                log.info("Genius: текст найден для %s - %s", g_artist, g_title)
+                log.info("Genius: текст найден для %s - %s (обложка вшита: %s)",
+                         g_artist, g_title, "✓" if cover_b64 else "URL")
                 return lyrics_file, g_artist, g_title
             else:
                 log.info("Genius: текст не найден для %s - %s, пробуем теги", artist, title)

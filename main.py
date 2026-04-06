@@ -15,7 +15,7 @@ import torch
 from database import get_db, Track
 from tasks import process_audio_task
 from huey_config import huey
-from ai_pipeline import get_audio_metadata
+from ai_pipeline import get_audio_metadata, url_to_base64
 from app_logger import get_logger
 
 # --- ВРЕЗКА РЕДАКТОРА ---
@@ -605,24 +605,25 @@ async def edit_track_metadata(
             except Exception:
                 meta = {}
 
-        # Обложка трека: последний источник побеждает
+        # Обложка трека: скачиваем URL → base64
         if req.cover_base64:
             meta["cover"] = req.cover_base64
         elif req.cover_url:
-            meta["cover"] = req.cover_url
+            b64 = url_to_base64(req.cover_url)
+            meta["cover"] = b64 or req.cover_url  # fallback на URL если не скачалось
         elif "cover_base64" in meta and meta.get("cover") == meta.get("cover_base64"):
-            # Если cover был base64 и пользователь его не менял — сохраняем
             pass
 
         # Сохраняем оригинальную обложку Genius (если ещё не сохранена)
         if "cover_genius" not in meta and meta.get("cover"):
             meta["cover_genius"] = meta["cover"]
 
-        # Фон плеера — ключ "bg" (единый с ai_pipeline.py)
+        # Фон плеера: скачиваем URL → base64
         if req.background_base64:
             meta["bg"] = req.background_base64
         elif req.background_url:
-            meta["bg"] = req.background_url
+            b64 = url_to_base64(req.background_url)
+            meta["bg"] = b64 or req.background_url
 
         # Сохраняем оригинальный фон Genius
         if "bg_genius" not in meta and meta.get("bg"):
