@@ -720,6 +720,7 @@ function scrollToActiveLine(idx, behavior = 'smooth') {
     const offset = lineNode.offsetTop - (playerHeight * offsetRatio) + (lineNode.clientHeight / 2);
     container.scrollTo({ top: Math.max(0, offset), behavior: behavior });
 }
+window.scrollToActiveLine = scrollToActiveLine; // Доступен из editor.js
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ПЛЕЕР И АНИМАЦИЯ

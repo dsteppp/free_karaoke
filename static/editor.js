@@ -138,6 +138,15 @@
             popover.classList.remove("visible");
             currentWordIndex = -1;
             activeTargetSpan = null;
+
+            // Восстанавливаем скролл на активную строку
+            setTimeout(() => {
+                const activeLine = document.querySelector(".lyric-line.active-line");
+                if (activeLine && window.scrollToActiveLine && window.playerLines) {
+                    const idx = window.playerLines.findIndex(p => p.domNode === activeLine);
+                    if (idx !== -1) window.scrollToActiveLine(idx, "auto");
+                }
+            }, 50);
         }
     }
 
