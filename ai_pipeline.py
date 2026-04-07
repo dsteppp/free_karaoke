@@ -198,11 +198,13 @@ def save_library_meta(base_path: str, original_file_path: str = ""):
             with open(lib_path, "r", encoding="utf-8") as f:
                 existing = json.load(f)
 
-        # 3. Merge: теги имеют приоритет, Genius/существующие данные дополняют
+        # 3. Merge: НЕ перезаписываем заполненные поля из existing
+        # artist/title — берём из тегов или existing (не принудительно)
         artist = file_artist or existing.get("artist", "")
         title = file_title or existing.get("title", "")
-        lyrics = file_lyrics or genius_lyrics or existing.get("lyrics", "")
-        cover = file_cover or existing.get("cover", "")
+        # lyrics/cover/bg — только если пусты
+        lyrics = existing.get("lyrics", "") or file_lyrics or genius_lyrics
+        cover = existing.get("cover", "") or file_cover
         bg = existing.get("bg", "") or cover
 
         library_meta = {
@@ -404,8 +406,8 @@ def repair_all_library_meta(library_dir: str, db_path: str = ""):
                 pass
 
         # Читаем Genius-пути из _meta.json
-        genius_cover = existing.get("cover_genius", "")
-        genius_bg = existing.get("bg_genius", "")
+        genius_cover = ""
+        genius_bg = ""
         if os.path.exists(meta_path):
             try:
                 with open(meta_path, "r", encoding="utf-8") as f:
@@ -416,7 +418,7 @@ def repair_all_library_meta(library_dir: str, db_path: str = ""):
                 pass
 
         # Читаем текст
-        lyrics = existing.get("lyrics", "")
+        lyrics = ""
         if os.path.exists(lyrics_path):
             try:
                 with open(lyrics_path, "r", encoding="utf-8") as f:
@@ -425,14 +427,15 @@ def repair_all_library_meta(library_dir: str, db_path: str = ""):
                 pass
 
         # Формируем обновлённый _library.json
+        # ВАЖНО: перезаписываем ТОЛЬКО пустые поля (кроме artist/title — они принудительно)
         library_meta = {
             "artist": db_info["artist"],
             "title": db_info["title"],
-            "lyrics": lyrics,
+            "lyrics": existing.get("lyrics", "") or lyrics,
             "cover": existing.get("cover", ""),
             "bg": existing.get("bg", ""),
-            "cover_genius": genius_cover,
-            "bg_genius": genius_bg,
+            "cover_genius": existing.get("cover_genius", "") or genius_cover,
+            "bg_genius": existing.get("bg_genius", "") or genius_bg,
         }
 
         with open(lib_path, "w", encoding="utf-8") as f:
@@ -791,24 +794,26 @@ def fetch_lyrics(artist: str, title: str, base_path: str) -> tuple[str | None, s
                     except Exception:
                         pass
 
-                # Теги файла имеют приоритет
+                # Очищаем текст заранее
+                track_stem = os.path.basename(base_path)
+                dump_debug_text("0_GeniusRaw", song.lyrics, track_stem)
+                cleaned_lyrics = clean_genius_lyrics(song.lyrics)
+                dump_debug_text("0_GeniusCleaned", cleaned_lyrics, track_stem)
+
+                # Принудительно обновляем lyrics и Genius-ссылки
+                # artist/title — сохраняем существующие (не перезаписываем из Genius)
+                # cover/bg — заполняем только если пусты
                 meta = {
                     "artist":       existing.get("artist", ""),
                     "title":        existing.get("title", ""),
-                    "lyrics":       existing.get("lyrics", ""),
+                    "lyrics":       cleaned_lyrics,  # Принудительно из Genius
                     "cover":        existing.get("cover", "") or cover_b64 or cover_url,
                     "bg":           existing.get("bg", "") or bg_b64 or bg_url,
-                    "cover_genius": cover_b64 or cover_url,
-                    "bg_genius":    bg_b64 or bg_url,
+                    "cover_genius": cover_b64 or cover_url,  # Принудительно из Genius
+                    "bg_genius":    bg_b64 or bg_url,         # Принудительно из Genius
                 }
                 with open(lib_file, "w", encoding="utf-8") as f:
                     json.dump(meta, f, ensure_ascii=False)
-
-                track_stem = os.path.basename(base_path)
-                dump_debug_text("0_GeniusRaw", song.lyrics, track_stem)
-
-                cleaned_lyrics = clean_genius_lyrics(song.lyrics)
-                dump_debug_text("0_GeniusCleaned", cleaned_lyrics, track_stem)
 
                 with open(lyrics_file, "w", encoding="utf-8") as f:
                     f.write(cleaned_lyrics)
