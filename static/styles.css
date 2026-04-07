@@ -417,9 +417,6 @@ html, body {
     overflow: hidden;
     background: #000;
     border: 1px solid var(--border);
-    /* Изоляция слоя UI от скроллящегося текста */
-    isolation: isolate;
-    transform: translateZ(0);
 }
 
 .bg-slide {
@@ -698,20 +695,18 @@ html, body {
 /* ─── Текст Karaoke ──────────────────────────────────────────────────────── */
 lyrics-display {
     position: absolute;
-    inset: 0;
-    bottom: 7rem; /* Фиксированный отступ под панель управления */
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 7rem;
     z-index: 25;
     overflow-y: auto;
     overflow-x: hidden;
     text-align: center;
     display: block;
-    /* Жёсткие отступы: ~40% сверху, ~25% снизу. Не зависят от режима. */
     padding: 40vh 1rem 25vh 1rem !important;
     scrollbar-width: none;
     -ms-overflow-style: none;
-    /* Аппаратное ускорение для плавного скролла без влияния на UI */
-    transform: translateZ(0);
-    will-change: scroll-position;
 
     -webkit-mask-image: linear-gradient(
         to bottom,
@@ -835,7 +830,7 @@ body.fs-mode #karaoke-container {
 }
 
 body.fs-mode .floating-control-panel        { bottom: 2rem; max-width: 55rem; }
-body.fs-mode lyrics-display                 { bottom: 9rem !important; padding: 45vh 1rem 30vh 1rem !important; }
+body.fs-mode lyrics-display                 { bottom: 9rem; padding: 45vh 1rem 30vh 1rem; }
 body.fs-mode .fcp-meta-text,
 body.fs-mode .fcp-vol-col                   { height: 3.5rem; }
 body.fs-mode .fcp-title                     { font-size: 1.1rem; }
@@ -857,7 +852,7 @@ body.fs-mode .lyric-line                    { font-size: clamp(2rem, 5vw, 4rem);
     .player-panel   { order: -1; flex: 55 1 0; min-height: 0; } /* 55% высоты */
     .library-panel  { order: 1;  flex: 45 1 0; min-height: 0; } /* 45% высоты */
     .lyric-line     { font-size: clamp(1.1rem, 4.5vw, 1.6rem); margin: 0.8vh auto; width: 95%; }
-    lyrics-display  { bottom: 5.5rem !important; padding: 35vh 1rem 20vh 1rem !important; }
+    lyrics-display  { bottom: 5.5rem; padding: 35vh 1rem 20vh 1rem; }
 }
 
 @media (max-width: 48rem) {

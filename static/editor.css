@@ -2,15 +2,14 @@
    РЕЖИМ РЕДАКТОРА (body.edit-mode)
    ───────────────────────────────────────────────────────────────────────────── */
 
-/* Отключаем маску-затухание по краям, оставляем фиксированные отступы */
+/* Отключаем маску-затухание по краям, отступы синхронизированы с обычным режимом */
 body.edit-mode lyrics-display {
     display: block !important;
     text-align: center !important;
     -webkit-mask-image: none !important;
     mask-image: none !important;
     overflow-y: auto !important;
-    /* Отступы синхронизированы с обычным режимом — UI не сдвигается */
-    padding: 40vh 1rem 25vh 1rem !important;
+    padding: 40vh 1rem 25vh 1rem;
     scrollbar-width: thin !important;
     scrollbar-color: var(--accent) transparent !important;
 }
@@ -277,15 +276,15 @@ body.edit-mode.popover-open lyrics-display {
 /* ─── Адаптив редактора: портрет (плеер 55%) ─── */
 @media (max-width: 64rem) and (orientation: portrait) {
     body.edit-mode lyrics-display {
-        bottom: 5.5rem !important;
-        padding: 35vh 1rem 20vh 1rem !important;
+        bottom: 5.5rem;
+        padding: 35vh 1rem 20vh 1rem;
     }
 }
 
 /* ─── Адаптив редактора: маленький портрет ─── */
 @media (max-height: 36rem) and (orientation: portrait) {
     body.edit-mode lyrics-display {
-        bottom: 5rem !important;
-        padding: 30vh 1rem 15vh 1rem !important;
+        bottom: 5rem;
+        padding: 30vh 1rem 15vh 1rem;
     }
 }

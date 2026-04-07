@@ -139,13 +139,8 @@
             currentWordIndex = -1;
             activeTargetSpan = null;
 
-            // Сброс скролла и принудительный рефлоу для фиксации UI
+            // Сброс скролла при выходе из редактора
             lyricsDisp.scrollTop = 0;
-            requestAnimationFrame(() => {
-                lyricsDisp.style.display = "none";
-                lyricsDisp.offsetHeight;
-                lyricsDisp.style.display = "";
-            });
 
             // Восстанавливаем скролл на активную строку
             setTimeout(() => {
