@@ -14,7 +14,7 @@ import torch
 from datetime import datetime
 
 from database import get_db, Track
-from tasks import process_audio_task
+from tasks import process_audio_task, partial_rescan_task
 from huey_config import huey
 from ai_pipeline import get_audio_metadata, url_to_base64
 from app_status import read_status
@@ -870,6 +870,75 @@ async def edit_track_metadata(
         log.error("❌ Ошибка при редактировании метаданных: %s", e)
         log.error("Traceback:\n%s", traceback.format_exc())
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# POST /api/tracks/{track_id}/partial_rescan — частичный перескан таймингов
+# ──────────────────────────────────────────────────────────────────────────────
+class PartialRescanRequest(BaseModel):
+    start_word_index: int  # Индекс слова, с которого начинать рескан (0-based)
+
+
+@app.post("/api/tracks/{track_id}/partial_rescan")
+async def partial_rescan_endpoint(
+    track_id: str,
+    req: PartialRescanRequest,
+    db: Session = Depends(get_db),
+):
+    """
+    Частичный перескан таймингов от указанного слова до конца песни.
+    Слова до start_word_index НЕ изменяются — их тайминги сохраняются как есть.
+    Запускается через Huey очередь (асинхронно).
+    """
+    log.info("🔄 [partial_rescan] track_id=%s, start_word_index=%d", track_id, req.start_word_index)
+
+    track = db.query(Track).filter(Track.id == track_id).first()
+    if not track:
+        log.error("   ❌ Трек не найден: %s", track_id)
+        raise HTTPException(status_code=404, detail="Трек не найден")
+    if track.status != "done":
+        log.error("   ❌ Трек не готов: %s (status=%s)", track_id, track.status)
+        raise HTTPException(status_code=400, detail="Трек не готов к рескану")
+
+    if req.start_word_index < 0:
+        log.error("   ❌ start_word_index=%d < 0", req.start_word_index)
+        raise HTTPException(status_code=400, detail="Индекс слова не может быть отрицательным")
+
+    # Загружаем JSON чтобы проверить диапазон
+    base_name = os.path.splitext(track.filename)[0]
+    karaoke_json_path = os.path.join("library", f"{base_name}_(Karaoke Lyrics).json")
+
+    if not os.path.exists(karaoke_json_path):
+        log.error("   ❌ Караоке JSON не найден: %s", karaoke_json_path)
+        raise HTTPException(status_code=404, detail="Караоке JSON не найден")
+
+    try:
+        with open(karaoke_json_path, "r", encoding="utf-8") as f:
+            karaoke_data = json.load(f)
+    except Exception as e:
+        log.error("   ❌ Ошибка чтения JSON: %s", e)
+        raise HTTPException(status_code=500, detail="Ошибка чтения караоке JSON")
+
+    if req.start_word_index >= len(karaoke_data):
+        log.error("   ❌ start_word_index=%d >= всего слов=%d", req.start_word_index, len(karaoke_data))
+        raise HTTPException(status_code=400, detail="Индекс слова вне диапазона")
+
+    # Запускаем задачу в Huey очередь
+    partial_rescan_task(track_id, req.start_word_index)
+
+    display_name = track.title or track.original_name or track.filename
+    if track.artist:
+        display_name = f"{track.artist} — {display_name}"
+
+    log.info("✅ Partial rescan запущен для трека %s (от слова %d из %d)",
+             track_id, req.start_word_index + 1, len(karaoke_data))
+
+    return {
+        "status": "ok",
+        "message": f"Рескан таймингов запущен для «{display_name}» от слова {req.start_word_index + 1}",
+        "start_word_index": req.start_word_index,
+        "total_words": len(karaoke_data),
+    }
 
 
 # ──────────────────────────────────────────────────────────────────────────────

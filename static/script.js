@@ -365,6 +365,9 @@ async function updateAppStatus() {
             els.statusBar.style.display = "";
             els.statusText.textContent = d.message;
 
+            // Добавляем класс processing — блокируем редакторы
+            document.body.classList.add("processing");
+
             if (d.progress !== null && d.progress !== undefined) {
                 // Прогресс-бар
                 els.statusSpinner.style.display = "none";
@@ -381,6 +384,9 @@ async function updateAppStatus() {
             els.statusSpinner.style.display = "none";
             els.statusProgress.style.display = "none";
             els.statusProgressFill.style.width = "0%";
+
+            // Убираем класс processing — разблокируем редакторы
+            document.body.classList.remove("processing");
         }
     } catch (e) {
         // Сеть недоступна — не показываем ошибку в строке состояния

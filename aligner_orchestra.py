@@ -7,14 +7,21 @@ from app_logger import get_logger
 
 log = get_logger("aligner_orchestra")
 
-def execute_sequence_matching(canon_words: list, heard_words: list, vad_intervals: list, audio_duration: float) -> list:
+def execute_sequence_matching(canon_words: list, heard_words: list, vad_intervals: list, audio_duration: float, start_word_index: int = 0) -> list:
     """
     V8.4 Elastic Cluster Alignment.
     Математика кластеров + Эластичная заливка VAD.
     Оптимизировано: бинарный поиск по времени для DP-цикла.
+
+    Параметры:
+        start_word_index: индекс слова, с которого начинать matching.
+                          Слова до этого индекса НЕ обрабатываются — их тайминги сохраняются.
     """
     log.info("=" * 50)
     log.info("🧠 [Orchestra] Старт Elastic Sequence Matching...")
+    if start_word_index > 0:
+        log.info("   📍 Partial rescan: обрабатываем слова с индекса %d из %d", start_word_index, len(canon_words))
+        log.info("   🔒 Слова [0:%d] заблокированы — тайминги не изменятся", start_word_index)
 
     n_canon = len(canon_words)
     n_heard = len(heard_words)
@@ -22,6 +29,19 @@ def execute_sequence_matching(canon_words: list, heard_words: list, vad_interval
     if n_heard == 0:
         log.warning("   ⚠️ Транскрипт пуст. Sequence Matching отменен.")
         return canon_words
+
+    # Если start_word_index > 0 — это partial rescan
+    if start_word_index > 0 and start_word_index < n_canon:
+        return _partial_sequence_matching(canon_words, heard_words, vad_intervals, audio_duration, start_word_index)
+
+    # Стандартный полный matching (start_word_index == 0)
+    return _full_sequence_matching(canon_words, heard_words, vad_intervals, audio_duration)
+
+
+def _full_sequence_matching(canon_words: list, heard_words: list, vad_intervals: list, audio_duration: float) -> list:
+    """Полное сопоставление всех слов (стандартный режим)."""
+    n_canon = len(canon_words)
+    n_heard = len(heard_words)
 
     # 1. Формируем пул кандидатов (совпадения > 60%)
     candidates = []
@@ -50,11 +70,7 @@ def execute_sequence_matching(canon_words: list, heard_words: list, vad_interval
     dp = [c["sim"] for c in candidates]
     parent = [-1] * num_cand
 
-    # Оптимизация: временное окно поиска.
-    # Кандидаты отсортированы по start, поэтому можно использовать бинарный поиск
-    # для нахождения нижней границы j_min. Слова дальше MAX_GAP секунд
-    # заведомо не могут быть связаны по времени.
-    MAX_GAP = 30.0  # Максимальный разрыв между словами в секундах
+    MAX_GAP = 30.0
     start_times = [c["start"] for c in candidates]
 
     for i in range(1, num_cand):
@@ -62,12 +78,9 @@ def execute_sequence_matching(canon_words: list, heard_words: list, vad_interval
         best_p = -1
         curr = candidates[i]
 
-        # Находим границу: кандидаты с start < curr["start"] - MAX_GAP
-        # заведомо слишком старые, их end тоже будет слишком старым.
         min_start = curr["start"] - MAX_GAP
         j_min = bisect_right(start_times, min_start)
 
-        # Итерируем только в пределах временного окна [j_min, i)
         for j in range(i - 1, j_min - 1, -1):
             prev = candidates[j]
 
@@ -78,7 +91,6 @@ def execute_sequence_matching(canon_words: list, heard_words: list, vad_interval
             if dur < -0.1:
                 continue
 
-            # Дополнительная отсечка: если разрыв слишком большой, SDR всё равно отвергнет
             if dur > MAX_GAP:
                 continue
 
@@ -101,26 +113,21 @@ def execute_sequence_matching(canon_words: list, heard_words: list, vad_interval
 
         dp[i] = best_score
         parent[i] = best_p
-        
-    if not candidates:
-        log.warning("   ⚠️ Нет ни одного валидного совпадения текста.")
-        return canon_words
-        
+
     max_idx = dp.index(max(dp))
     curr_idx = max_idx
     raw_sequence = []
-    
+
     while curr_idx != -1:
         raw_sequence.append(candidates[curr_idx])
         curr_idx = parent[curr_idx]
-        
+
     raw_sequence.reverse()
-    
-    # 3. V8.4 Cluster Filter (Убийца галлюцинаций в интро/аутро)
-    # Группируем якоря, которые стоят близко друг к другу (меньше 5 секунд между ними)
+
+    # 3. V8.4 Cluster Filter
     clusters = []
     current_cluster = []
-    
+
     for i, match in enumerate(raw_sequence):
         if not current_cluster:
             current_cluster.append(match)
@@ -132,11 +139,10 @@ def execute_sequence_matching(canon_words: list, heard_words: list, vad_interval
             else:
                 clusters.append(current_cluster)
                 current_cluster = [match]
-                
+
     if current_cluster:
         clusters.append(current_cluster)
-        
-    # Удаляем "сиротские" кластеры (1-2 слова), так как это гарантированно музыкальный шум/эхо
+
     valid_sequence = []
     orphans_removed = 0
     for cluster in clusters:
@@ -144,23 +150,160 @@ def execute_sequence_matching(canon_words: list, heard_words: list, vad_interval
             valid_sequence.extend(cluster)
         else:
             orphans_removed += len(cluster)
-            
+
     if orphans_removed > 0:
         log.info(f"   🗑️ [Cluster Filter] Убито сиротских якорей (галлюцинаций): {orphans_removed}")
-        
+
     log.info(f"   🔗 Утверждено жестких якорей: {len(valid_sequence)}")
-    
+
     for match in valid_sequence:
         cw = canon_words[match["c_idx"]]
         cw["start"] = match["start"]
         cw["end"] = match["end"]
-        
-    # 4. Elastic VAD Assembly (Резиновая заливка слепых зон)
+
+    # 4. Elastic VAD Assembly
     _elastic_vad_assembly(canon_words, vad_intervals, audio_duration)
-    
+
     log.info("🧠 [Orchestra] Sequence Matching завершен.")
     log.info("=" * 50)
     return canon_words
+
+
+def _partial_sequence_matching(canon_words: list, heard_words: list, vad_intervals: list, audio_duration: float, start_word_index: int) -> list:
+    """Частичное сопоставление только для слов [start_word_index:]."""
+    n_canon = len(canon_words)
+    n_heard = len(heard_words)
+    partial_canon = canon_words[start_word_index:]
+    n_canon_partial = len(partial_canon)
+
+    log.info("   📝 Partial matching: %d слов из %d", n_canon_partial, n_canon)
+
+    # 1. Формируем пул кандидатов (совпадения > 60%)
+    candidates = []
+    for c_idx in range(n_canon_partial):
+        for h_idx in range(n_heard):
+            c_text = partial_canon[c_idx]["clean_text"]
+            h_text = heard_words[h_idx]["clean"]
+            sim = rapidfuzz.fuzz.ratio(c_text, h_text)
+            if sim >= 60:
+                candidates.append({
+                    "c_idx": c_idx,  # индекс в partial_canon
+                    "h_idx": h_idx,
+                    "sim": sim,
+                    "start": heard_words[h_idx]["start"],
+                    "end": heard_words[h_idx]["end"]
+                })
+
+    candidates.sort(key=lambda x: x["start"])
+
+    # 2. SDR-Guard v2: Динамическое программирование пути
+    num_cand = len(candidates)
+    if num_cand == 0:
+        log.warning("   ⚠️ Нет ни одного валидного совпадения текста.")
+        return canon_words
+
+    dp = [c["sim"] for c in candidates]
+    parent = [-1] * num_cand
+
+    MAX_GAP = 30.0
+    start_times = [c["start"] for c in candidates]
+
+    for i in range(1, num_cand):
+        best_score = dp[i]
+        best_p = -1
+        curr = candidates[i]
+
+        min_start = curr["start"] - MAX_GAP
+        j_min = bisect_right(start_times, min_start)
+
+        for j in range(i - 1, j_min - 1, -1):
+            prev = candidates[j]
+
+            if curr["c_idx"] <= prev["c_idx"]:
+                continue
+
+            dur = curr["start"] - prev["end"]
+            if dur < -0.1:
+                continue
+
+            if dur > MAX_GAP:
+                continue
+
+            is_sane = False
+
+            if curr["c_idx"] == prev["c_idx"] + 1:
+                is_same_line = not partial_canon[prev["c_idx"]]["line_break"]
+                if is_same_line and dur > 2.5:
+                    is_sane = False
+                else:
+                    is_sane = True
+            else:
+                is_sane, _ = check_sdr_sanity(partial_canon, prev["c_idx"] + 1, curr["c_idx"] - 1, dur, False)
+
+            if is_sane:
+                score = dp[j] + curr["sim"]
+                if score > best_score:
+                    best_score = score
+                    best_p = j
+
+        dp[i] = best_score
+        parent[i] = best_p
+
+    max_idx = dp.index(max(dp))
+    curr_idx = max_idx
+    raw_sequence = []
+
+    while curr_idx != -1:
+        raw_sequence.append(candidates[curr_idx])
+        curr_idx = parent[curr_idx]
+
+    raw_sequence.reverse()
+
+    # 3. V8.4 Cluster Filter
+    clusters = []
+    current_cluster = []
+
+    for i, match in enumerate(raw_sequence):
+        if not current_cluster:
+            current_cluster.append(match)
+        else:
+            prev_match = current_cluster[-1]
+            time_diff = match["start"] - prev_match["end"]
+            if time_diff <= 5.0:
+                current_cluster.append(match)
+            else:
+                clusters.append(current_cluster)
+                current_cluster = [match]
+
+    if current_cluster:
+        clusters.append(current_cluster)
+
+    valid_sequence = []
+    orphans_removed = 0
+    for cluster in clusters:
+        if len(cluster) >= 3:
+            valid_sequence.extend(cluster)
+        else:
+            orphans_removed += len(cluster)
+
+    if orphans_removed > 0:
+        log.info(f"   🗑️ [Cluster Filter] Убито сиротских якорей (галлюцинаций): {orphans_removed}")
+
+    log.info(f"   🔗 Утверждено жестких якорей: {len(valid_sequence)}")
+
+    # Применяем тайминги к partial_canon (с учётом сдвига индексов)
+    for match in valid_sequence:
+        cw = partial_canon[match["c_idx"]]
+        cw["start"] = match["start"]
+        cw["end"] = match["end"]
+
+    # 4. Elastic VAD Assembly — только для partial_canon
+    _elastic_vad_assembly(partial_canon, vad_intervals, audio_duration)
+
+    log.info("🧠 [Orchestra] Partial Sequence Matching завершен.")
+    log.info("=" * 50)
+    return canon_words  # Возвращаем полный массив (старые + новые тайминги)
+
 
 def _elastic_vad_assembly(words: list, vad_intervals: list, audio_duration: float):
     """
@@ -168,22 +311,22 @@ def _elastic_vad_assembly(words: list, vad_intervals: list, audio_duration: floa
     Ищет голос внутри слепых зон и растягивает слова ровно по контуру этого голоса.
     """
     log.info("   🧲 [Elastic Assembly] Старт эластичной заливки слепых зон...")
-    
+
     n = len(words)
     i = 0
     healed_count = 0
     zones_processed = 0
-    
+
     while i < n:
         if words[i]["start"] == -1.0:
             j = i
             while j < n and words[j]["start"] == -1.0:
                 j += 1
-                
+
             gap_size = j - i
             anchor_prev_end = words[i-1]["end"] if i > 0 and words[i-1]["start"] != -1.0 else 0.0
             anchor_next_start = words[j]["start"] if j < n and words[j]["start"] != -1.0 else audio_duration
-            
+
             # Собираем VAD-острова, которые находятся ВНУТРИ этой дыры
             available_vads = []
             for vs, ve in vad_intervals:
@@ -193,20 +336,20 @@ def _elastic_vad_assembly(words: list, vad_intervals: list, audio_duration: floa
                     o_e = min(anchor_next_start - 0.05, ve)
                     if o_e - o_s > 0.1: # Игнорируем микро-шумы
                         available_vads.append((o_s, o_e))
-                        
+
             # СЦЕНАРИЙ 1: ИНТРО (До первого якоря)
             if i == 0 and available_vads:
                 # В интро текст прижимается к первому якорю (вправо)
                 # Берем только последний VAD-остров перед якорем, чтобы избежать шума зала на 0-й секунде
                 target_vad = available_vads[-1]
                 t_start, t_end = target_vad[0], target_vad[1]
-                
+
             # СЦЕНАРИЙ 2: АУТРО (После последнего якоря)
             elif j == n and available_vads:
                 # В аутро текст должен лечь на первый вокальный остров после якоря (Island Hopping)
                 target_vad = available_vads[0]
                 t_start, t_end = target_vad[0], target_vad[1]
-                
+
             # СЦЕНАРИЙ 3: ДЫРА В СЕРЕДИНЕ (Между якорями)
             else:
                 if available_vads:
@@ -221,36 +364,36 @@ def _elastic_vad_assembly(words: list, vad_intervals: list, audio_duration: floa
 
             if t_start >= t_end:
                 t_start = max(anchor_prev_end + 0.01, t_end - 0.1)
-                
+
             # ELASTIC PACKING (Резиновое распределение по весу гласных)
             # Это решает проблему "недокрашивания" Доры
             weights = [get_vowel_weight(words[k]["clean_text"], words[k]["line_break"]) for k in range(i, j)]
             total_weight = sum(weights)
             total_time = t_end - t_start
-            
+
             current_time = t_start
             micro_gap = 0.05 # 50мс пауза между словами для дыхания плеера
-            
+
             for k in range(i, j):
                 w = words[k]
                 # Доля времени для этого слова (пропорционально количеству гласных)
                 word_share = (weights[k-i] / total_weight) * total_time
-                
+
                 # Защита от бесконечного растягивания одного слова
                 min_p, max_p = get_phonetic_bounds(w["clean_text"], w["line_break"])
                 actual_dur = min(max(word_share, min_p), max_p * 1.5) # Позволяем растянуть до 1.5 от максимума
-                
+
                 w["start"] = current_time
                 w["end"] = min(current_time + actual_dur, t_end)
-                
+
                 # Сдвигаем курсор времени
                 current_time = w["end"] + micro_gap
                 healed_count += 1
-                
+
             zones_processed += 1
             i = j
         else:
             i += 1
-            
+
     if healed_count > 0:
         log.info(f"   🧲 [Elastic Assembly] Заполнено {zones_processed} слепых зон ({healed_count} слов).")

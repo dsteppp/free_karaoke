@@ -26,6 +26,10 @@
         </div>
         <div class="ep-footer">
             <button class="ep-reset-btn" id="ep-btn-reset">Сбросить якорь</button>
+            <button class="ep-rescan-btn" id="ep-btn-rescan" disabled>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><path d="M1 4v6h6"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>
+                Рескан далее
+            </button>
         </div>
     `;
     document.body.appendChild(popover);
@@ -36,6 +40,7 @@
     const epValStart = document.getElementById("ep-val-start");
     const epValEnd = document.getElementById("ep-val-end");
     const epBtnReset = document.getElementById("ep-btn-reset");
+    const epBtnRescan = document.getElementById("ep-btn-rescan");
 
     // ── Состояние редактора ──────────────────────────────────────────────────
     let isEditMode = false;
@@ -341,6 +346,112 @@
     });
 
     popover.addEventListener("click", e => e.stopPropagation());
+
+    // ── Кнопка "Рескан далее" ────────────────────────────────────────────────
+    epBtnRescan.addEventListener("click", async () => {
+        if (currentWordIndex === -1 || !window.currentTrack) return;
+
+        const trackId = window.currentTrack.id;
+        const startIndex = currentWordIndex;
+
+        // Подтверждение от пользователя
+        const confirmed = confirm(
+            `Рескан таймингов от слова №${startIndex + 1} до конца песни?\n\n` +
+            `Все тайминги до этого слова будут сохранены.\n` +
+            `Редактор будет закрыт, изменения применены.\n\n` +
+            `Продолжить?`
+        );
+
+        if (!confirmed) return;
+
+        // Шаг 1: Применяем изменения из редактора
+        btnApply.innerHTML = "⏳ Сохранение...";
+        btnApply.style.pointerEvents = "none";
+
+        try {
+            const applyRes = await fetch(`/api/tracks/${trackId}/edit_lyrics`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ words: window.lyricsData })
+            });
+
+            if (!applyRes.ok) {
+                const err = await applyRes.json();
+                throw new Error(err.detail || "Ошибка при сохранении изменений");
+            }
+
+            // Шаг 2: Закрываем редактор
+            toggleEditMode(false);
+
+            // Шаг 3: Запускаем partial rescan
+            epBtnRescan.disabled = true;
+            epBtnRescan.innerHTML = "⏳ Рескан...";
+
+            const rescanRes = await fetch(`/api/tracks/${trackId}/partial_rescan`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ start_word_index: startIndex })
+            });
+
+            if (!rescanRes.ok) {
+                const err = await rescanRes.json();
+                throw new Error(err.detail || "Ошибка сервера при запуске рескана");
+            }
+
+            const result = await rescanRes.json();
+            console.log("✅ Partial rescan запущен:", result.message);
+
+            // Шаг 4: Перезагружаем трек (ждем завершения рескана)
+            // Polling: ждем пока app_status.active === false
+            await waitForRescanComplete();
+
+            // Шаг 5: Восстанавливаем отображение
+            await reloadTrackAndRestoreTime();
+
+        } catch (e) {
+            alert("Ошибка при рескане: " + e.message);
+            console.error("Partial rescan error:", e);
+        } finally {
+            // Восстанавливаем кнопку
+            epBtnRescan.disabled = false;
+            epBtnRescan.innerHTML = `
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><path d="M1 4v6h6"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>
+                Рескан далее
+            `;
+            btnApply.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"></polyline></svg>Применить`;
+            btnApply.style.pointerEvents = "auto";
+        }
+    });
+
+    // Функция ожидания завершения рескана (polling app_status)
+    async function waitForRescanComplete() {
+        const maxWait = 300; // Максимум 5 минут (300 * 1с)
+        let waited = 0;
+
+        return new Promise((resolve, reject) => {
+            const interval = setInterval(async () => {
+                try {
+                    const res = await fetch("/api/app-status");
+                    const status = await res.json();
+
+                    if (!status.active) {
+                        clearInterval(interval);
+                        resolve();
+                        return;
+                    }
+
+                    waited++;
+                    if (waited > maxWait) {
+                        clearInterval(interval);
+                        reject(new Error("Таймаут ожидания рескана (5 минут)"));
+                    }
+                } catch (e) {
+                    clearInterval(interval);
+                    reject(e);
+                }
+            }, 1000);
+        });
+    }
 
     // ── Кнопки основной панели ───────────────────────────────────────────────
     

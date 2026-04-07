@@ -221,6 +221,40 @@ body.edit-mode .word:active {
     background: rgba(239, 68, 68, 0.1);
 }
 
+/* ── Кнопка "Рескан далее" ─────────────────────────────────────────────────── */
+.ep-rescan-btn {
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+    background: rgba(59, 130, 246, 0.15);
+    border: 1px solid rgba(59, 130, 246, 0.4);
+    color: #60a5fa;
+    font-size: 0.7rem;
+    font-weight: 600;
+    cursor: pointer;
+    padding: 0.3rem 0.5rem;
+    border-radius: var(--radius-sm);
+    transition: all 0.2s;
+}
+.ep-rescan-btn:hover:not(:disabled) {
+    background: rgba(59, 130, 246, 0.3);
+    border-color: var(--accent);
+    color: #93c5fd;
+}
+.ep-rescan-btn:active:not(:disabled) {
+    transform: scale(0.95);
+}
+.ep-rescan-btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+    background: rgba(59, 130, 246, 0.05);
+    border-color: rgba(59, 130, 246, 0.15);
+    color: var(--text-muted);
+}
+.ep-rescan-btn svg {
+    flex-shrink: 0;
+}
+
 /* ─────────────────────────────────────────────────────────────────────────────
    КНОПКИ УПРАВЛЕНИЯ В ПЛЕЕРЕ (Справа сверху)
    ───────────────────────────────────────────────────────────────────────────── */

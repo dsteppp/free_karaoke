@@ -1400,3 +1400,30 @@ body.io-busy .lyrics-wrapper {
     border: 5px solid transparent;
     border-right-color: rgba(15, 15, 20, 0.95);
 }
+
+/* ── Блокировка интерфейса во время рескана (processing) ─────────────────── */
+/* Блокируем кнопку "Редактировать" и popover редактора */
+body.processing .editor-btn.edit-start {
+    pointer-events: none !important;
+    opacity: 0.4 !important;
+    cursor: not-allowed !important;
+}
+
+/* Блокируем редактирование метаданных (кнопка карандаша в списке треков) */
+body.processing .meta-btn {
+    pointer-events: none !important;
+    opacity: 0.4 !important;
+    cursor: not-allowed !important;
+}
+
+/* Если редактор открыт — блокируем его кнопки */
+body.processing.edit-mode .editor-btn {
+    pointer-events: none !important;
+    opacity: 0.4 !important;
+}
+
+/* Блокируем popover редактора */
+body.processing #editor-popover {
+    pointer-events: none !important;
+    opacity: 0.5 !important;
+}

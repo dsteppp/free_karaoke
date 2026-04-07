@@ -16,6 +16,9 @@ import traceback
 import threading
 import gc
 import torch
+import json
+import librosa
+import numpy as np
 
 log = get_logger("worker")
 
@@ -255,3 +258,210 @@ def _process_track(track_id: str):
             torch.cuda.ipc_collect()
 
         log.info("GPU память сброшена.")
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Partial Rescan Task: перескан таймингов от указанного слова до конца песни
+# ──────────────────────────────────────────────────────────────────────────────
+@huey.task()
+def partial_rescan_task(track_id: str, start_word_index: int):
+    """
+    Частичный перескан таймингов: обрабатывает только слова [start_word_index:] до конца песни.
+    Слова до start_word_index НЕ изменяются — их тайминги сохраняются как есть.
+    """
+    db = SessionLocal()
+
+    try:
+        track = db.query(Track).filter(Track.id == track_id).first()
+        if not track:
+            log.warning("Трек %s не найден в БД — пропуск partial rescan.", track_id)
+            return
+
+        log.info("=" * 50)
+        log.info("PARTIAL RESCAN: трек %s, start_word_index=%d", track_id, start_word_index)
+
+        # Формируем читаемое имя трека
+        display_name = track.title or track.original_name or track.filename
+        if track.artist:
+            display_name = f"{track.artist} — {display_name}"
+
+        base_name = os.path.splitext(track.filename)[0]
+        base_path = os.path.join("library", base_name)
+        vocals_path = f"{base_path}_(Vocals).mp3"
+        lyrics_path = f"{base_path}_(Genius Lyrics).txt"
+        karaoke_json_path = f"{base_path}_(Karaoke Lyrics).json"
+        vad_path = f"{base_path}_(VAD).json"
+
+        # Устанавливаем статус (блокировка UI)
+        set_status(f"🔄 {display_name} | Рескан таймингов от слова {start_word_index + 1}…", progress=None)
+
+        # Загружаем текст песни
+        if not lyrics_path or not os.path.exists(lyrics_path):
+            raise FileNotFoundError(f"Файл текста не найден: {lyrics_path}")
+
+        with open(lyrics_path, "r", encoding="utf-8") as f:
+            lyrics_text = f.read()
+
+        # Загружаем существующие тайминги (старые)
+        if not karaoke_json_path or not os.path.exists(karaoke_json_path):
+            raise FileNotFoundError(f"Файл караоке JSON не найден: {karaoke_json_path}")
+
+        with open(karaoke_json_path, "r", encoding="utf-8") as f:
+            old_karaoke_data = json.load(f)
+
+        log.info("Загружено %d слов из существующего JSON", len(old_karaoke_data))
+
+        if start_word_index >= len(old_karaoke_data):
+            log.warning("start_word_index=%d >= всего слов=%d — рескан невозможен", start_word_index, len(old_karaoke_data))
+            set_status(f"❌ {display_name} | Ошибка: индекс слова вне диапазона")
+            return
+
+        # Загружаем VAD из кэша
+        vad_intervals = None
+        audio_duration = None
+        if os.path.exists(vad_path):
+            try:
+                with open(vad_path, "r", encoding="utf-8") as f:
+                    vad_data = json.load(f)
+                vad_intervals = vad_data.get("intervals", [])
+                audio_duration = vad_data.get("duration", 0)
+                log.info("VAD загружен из кэша: %d интервалов, длительность=%.2fс", len(vad_intervals), audio_duration)
+            except Exception as e:
+                log.warning("Не удалось загрузить VAD из кэша: %s", e)
+
+        # Если VAD нет — сканируем
+        if not vad_intervals:
+            log.info("VAD не найден в кэше — сканирование вокального стема…")
+            audio_data, sr = librosa.load(vocals_path, sr=16000, mono=True)
+            audio_duration = len(audio_data) / sr
+
+            from aligner_acoustics import get_vocal_intervals
+            vad_intervals = get_vocal_intervals(audio_data, sr, top_db=35.0)
+            if not vad_intervals:
+                vad_intervals = [(0.0, audio_duration)]
+
+            # Сохраняем VAD в кэш
+            try:
+                with open(vad_path, "w", encoding="utf-8") as f:
+                    json.dump({"duration": audio_duration, "intervals": vad_intervals}, f)
+            except Exception:
+                pass
+
+        # Загружаем аудио (если ещё не загружено)
+        if 'audio_data' not in locals() or audio_data is None:
+            audio_data, sr = librosa.load(vocals_path, sr=16000, mono=True)
+            audio_duration = len(audio_data) / sr
+
+        # Транскрипция через Whisper (весь аудио)
+        log.info("Запуск Whisper-транскрипции (весь аудио)…")
+        from stable_whisper import load_model
+        from aligner_utils import detect_language, prepare_text, clean_word
+        from karaoke_aligner import KaraokeAligner
+
+        lang = detect_language(lyrics_text)
+        aligner = KaraokeAligner()
+        model = load_model("medium", download_root=aligner.whisper_model_dir, device=aligner.device)
+
+        result = model.transcribe(
+            audio_data,
+            language=lang,
+            word_timestamps=True,
+            vad=True,
+        )
+
+        log.info("Транскрипция завершена")
+
+        # Формируем raw_heard_words
+        raw_heard_words = []
+        for segment in result.segments:
+            for w in segment.words:
+                cw = clean_word(w.word)
+                if cw:
+                    raw_heard_words.append({
+                        "word": w.word,
+                        "clean": cw,
+                        "start": w.start,
+                        "end": w.end,
+                        "probability": w.probability,
+                    })
+
+        # Фильтрация галлюцинаций
+        from aligner_acoustics import filter_whisper_hallucinations
+        heard_words = filter_whisper_hallucinations(raw_heard_words, vad_intervals)
+
+        log.info("После фильтрации галлюцинаций: %d слов", len(heard_words))
+
+        # Sequence Matching — с partial rescan
+        log.info("Сопоставление текста с аудио (partial rescan от слова %d)…", start_word_index)
+
+        from aligner_orchestra import execute_sequence_matching
+        canon_words = prepare_text(lyrics_text)
+
+        # ВАЖНО: canon_words — это полный массив, включая старые тайминги
+        # execute_sequence_matching с start_word_index > 0 обработает только часть
+        canon_words = execute_sequence_matching(canon_words, heard_words, vad_intervals, audio_duration, start_word_index)
+
+        # Физический контроль (VAD-Magnet) — только для новых слов
+        from aligner_acoustics import constrain_to_vad
+        for idx, w in enumerate(canon_words):
+            if idx >= start_word_index and w["start"] >= 0:
+                w["start"], w["end"], _ = constrain_to_vad(w["start"], w["end"], vad_intervals, max_shift_sec=1.5)
+                if w["end"] - w["start"] < 0.05:
+                    w["end"] = w["start"] + 0.1
+
+        # Устранение нахлёстов — только для новых слов
+        from karaoke_aligner import KaraokeAligner
+        temp_aligner = KaraokeAligner()
+        temp_aligner._resolve_overlaps(canon_words[start_word_index:])
+
+        # Формируем JSON
+        log.info("Сохранение результатов…")
+
+        final_json = []
+        for w in canon_words:
+            final_json.append({
+                "word": w["word"],
+                "start": round(w["start"], 3),
+                "end": round(w["end"], 3),
+                "line_break": w["line_break"],
+                "letters": [],
+            })
+
+        with open(karaoke_json_path, "w", encoding="utf-8") as f:
+            json.dump(final_json, f, ensure_ascii=False, indent=2)
+
+        log.info("Partial rescan завершён для трека %s: %d слов обработано (из %d)",
+                 track_id, len(canon_words) - start_word_index, len(canon_words))
+
+        # Освобождение памяти
+        if 'model' in locals() and model:
+            del model
+        if 'audio_data' in locals():
+            del audio_data
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.ipc_collect()
+
+        log.info("GPU память сброшена после partial rescan.")
+        log.info("=" * 50)
+
+    except InterruptedError as e:
+        db.rollback()
+        log.warning("PARTIAL RESCAN ОСТАНОВЛЕН: %s", e)
+
+    except Exception as e:
+        db.rollback()
+        log.error("PARTIAL RESCAN ОШИБКА: %s", e)
+        log.debug("Traceback:\n%s", traceback.format_exc())
+
+    finally:
+        db.close()
+        clear_status()
+
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.ipc_collect()
+
+        log.info("GPU память сброшена (finally partial rescan).")
