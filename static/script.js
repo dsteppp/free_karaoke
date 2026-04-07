@@ -26,9 +26,53 @@ const LINE_PRE_ACTIVATION = 0.35;
 
 const fallbackCover = `data:image/svg+xml;charset=UTF-8,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='%2394a3b8' viewBox='0 0 24 24'%3E%3Cpath d='M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z'/%3E%3C/svg%3E`;
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Ссылки на DOM-элементы
-// ─────────────────────────────────────────────────────────────────────────────
+// ─── Диагностика UI ─────────────────────────────────────────────────────
+const UI_DIAG_LOG = [];
+function uiLog(msg) {
+    const ts = new Date().toISOString().substr(11, 12);
+    UI_DIAG_LOG.push(`[${ts}] ${msg}`);
+}
+
+function dumpUiLayout(context = "") {
+    const ld = els.lDisp;
+    const lw = document.getElementById("lyrics-wrapper");
+    if (!ld || !lw) return;
+
+    const cs = getComputedStyle(ld);
+    const rect = ld.getBoundingClientRect();
+    const wRect = lw.getBoundingClientRect();
+
+    const info = {
+        context,
+        wrapper: { h: wRect.height.toFixed(1), pb: cs.getPropertyValue("padding-bottom").trim() },
+        display: {
+            pos: cs.position,
+            top: cs.top, bottom: cs.bottom,
+            padding: cs.padding,
+            mask: cs.webkitMaskImage?.substring(0, 30) || cs.maskImage?.substring(0, 30),
+            scrollH: ld.scrollHeight,
+            clientH: ld.clientHeight,
+            scrollTop: ld.scrollTop,
+            rect: `x:${rect.x.toFixed(1)} y:${rect.y.toFixed(1)} h:${rect.height.toFixed(1)}`
+        }
+    };
+    uiLog(JSON.stringify(info));
+}
+
+async function flushUiLog() {
+    if (!UI_DIAG_LOG.length) return;
+    try {
+        await fetch("/api/diagnostic-log", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ log: UI_DIAG_LOG.join("\n") })
+        });
+    } catch (e) { console.error("UI log flush error", e); }
+}
+
+window.addEventListener("beforeunload", flushUiLog);
+
+// ─── Ссылки на DOM-элементы
 const els = {
     fileInput:   document.getElementById("audio-files"),
     progBox:     document.getElementById("upload-progress-box"),
@@ -596,6 +640,7 @@ async function loadKar(t, cvr) {
     syncSliders();
     // Сброс скролла при загрузке трека — первая строка корректно позиционируется
     els.lDisp.scrollTop = 0;
+    dumpUiLayout("loadKar_start");
 
     if (window.innerWidth <= 1024 && !document.body.classList.contains("fs-mode"))
         els.kCont.scrollIntoView({ behavior: "smooth" });

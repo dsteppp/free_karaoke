@@ -117,20 +117,22 @@
     function logEditor(msg) {
         const ts = new Date().toISOString().substr(11, 12);
         console.log(`[editor ${ts}] ${msg}`);
+        if (typeof uiLog === "function") uiLog(`[editor] ${msg}`);
     }
 
     function toggleEditMode(enable) {
         if (!window.currentTrack || !window.lyricsData) return;
         isEditMode = enable;
 
-        // Запоминаем геометрию ДО переключения
+        dumpUiLayout(enable ? "before_edit_mode" : "before_exit_mode");
+        logEditor(`Переключение ${enable ? "→ редактор" : "← плеер"}`);
+
         const before = {
             scrollTop: lyricsDisp.scrollTop,
             scrollHeight: lyricsDisp.scrollHeight,
             clientHeight: lyricsDisp.clientHeight,
             rect: lyricsDisp.getBoundingClientRect()
         };
-        logEditor(`Вход в ${enable ? "редактор" : "плеер"}: scrollTop=${before.scrollTop} scrollH=${before.scrollHeight} clientH=${before.clientHeight}`);
 
         if (enable) {
             document.body.classList.add("edit-mode");
@@ -138,23 +140,19 @@
             window.vocAudio.pause();
             backupLyricsData = JSON.parse(JSON.stringify(window.lyricsData));
 
-            // Принудительный рефлоу для применения CSS
             requestAnimationFrame(() => {
                 lyricsDisp.offsetHeight;
-                // Восстанавливаем скролл
                 lyricsDisp.scrollTop = before.scrollTop;
 
                 const after = lyricsDisp.getBoundingClientRect();
-                logEditor(`После входа: top=${after.top.toFixed(1)} bottom=${after.bottom.toFixed(1)} height=${after.height.toFixed(1)} дельта=${(after.height - before.rect.height).toFixed(1)}`);
+                logEditor(`После входа: h=${after.height.toFixed(1)} дельта=${(after.height - before.rect.height).toFixed(1)}`);
+                dumpUiLayout("after_enter_mode");
 
-                // Центрируем активную строку
                 setTimeout(() => {
                     const activeLine = document.querySelector(".lyric-line.active-line");
-                    if (activeLine) {
-                        activeLine.scrollIntoView({ block: "center", behavior: "smooth" });
-                    } else if (lyricsDisp.firstElementChild) {
-                        lyricsDisp.firstElementChild.scrollIntoView({ block: "center", behavior: "smooth" });
-                    }
+                    if (activeLine) activeLine.scrollIntoView({ block: "center", behavior: "smooth" });
+                    else if (lyricsDisp.firstElementChild) lyricsDisp.firstElementChild.scrollIntoView({ block: "center", behavior: "smooth" });
+                    dumpUiLayout("after_scroll_center");
                 }, 50);
             });
 
@@ -164,13 +162,13 @@
             currentWordIndex = -1;
             activeTargetSpan = null;
 
-            // Принудительный рефлоу
             requestAnimationFrame(() => {
                 lyricsDisp.offsetHeight;
                 lyricsDisp.scrollTop = 0;
 
                 const after = lyricsDisp.getBoundingClientRect();
-                logEditor(`После выхода: top=${after.top.toFixed(1)} bottom=${after.bottom.toFixed(1)} height=${after.height.toFixed(1)} дельта=${(after.height - before.rect.height).toFixed(1)}`);
+                logEditor(`После выхода: h=${after.height.toFixed(1)} дельта=${(after.height - before.rect.height).toFixed(1)}`);
+                dumpUiLayout("after_exit_mode");
 
                 setTimeout(() => {
                     const activeLine = document.querySelector(".lyric-line.active-line");
@@ -182,6 +180,23 @@
             });
         }
     }
+
+    // Стресс-тест: быстрое переключение режимов
+    window._stressTestEditor = function() {
+        uiLog("=== НАЧАЛО СТРЕСС-ТЕСТА ===");
+        let i = 0;
+        const interval = setInterval(() => {
+            const isEdit = document.body.classList.contains("edit-mode");
+            toggleEditMode(!isEdit);
+            dumpUiLayout(`stress_step_${i}`);
+            i++;
+            if (i >= 10) {
+                clearInterval(interval);
+                uiLog("=== КОНЕЦ СТРЕСС-ТЕСТА ===");
+                if (typeof flushUiLog === "function") flushUiLog();
+            }
+        }, 300);
+    };
 
     // ── Логика Popover (Меню) ────────────────────────────────────────────────
 

@@ -946,6 +946,23 @@ async def import_library_from_path(
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# POST /api/diagnostic-log  — сохранение логов диагностики UI
+# ──────────────────────────────────────────────────────────────────────────────
+@app.post("/api/diagnostic-log")
+async def save_diagnostic_log(req: dict):
+    try:
+        log_path = os.path.join(BASE_DIR, "debug_logs", "ui_layout.log")
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(f"\n--- {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ---\n")
+            f.write(req.get("log", ""))
+            f.write("\n")
+        return {"status": "ok"}
+    except Exception as e:
+        log.error("Ошибка сохранения UI лога: %s", e)
+        return {"status": "error", "detail": str(e)}
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # GET /api/import-log  — получить лог последнего импорта
 # ──────────────────────────────────────────────────────────────────────────────
 @app.get("/api/import-log")
