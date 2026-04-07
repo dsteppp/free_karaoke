@@ -31,6 +31,7 @@ const UI_DIAG_LOG = [];
 function uiLog(msg) {
     const ts = new Date().toISOString().substr(11, 12);
     UI_DIAG_LOG.push(`[${ts}] ${msg}`);
+    if (UI_DIAG_LOG.length > 500) UI_DIAG_LOG.splice(0, 100); // буфер
 }
 
 function dumpUiLayout(context = "") {
@@ -44,32 +45,36 @@ function dumpUiLayout(context = "") {
 
     const info = {
         context,
-        wrapper: { h: wRect.height.toFixed(1), pb: cs.getPropertyValue("padding-bottom").trim() },
+        wrapper: { h: wRect.height.toFixed(1) },
         display: {
             pos: cs.position,
-            top: cs.top, bottom: cs.bottom,
+            top: cs.top, bottom: cs.bottom, right: cs.right, left: cs.left,
             padding: cs.padding,
-            mask: cs.webkitMaskImage?.substring(0, 30) || cs.maskImage?.substring(0, 30),
+            mask: (cs.webkitMaskImage || cs.maskImage || "").substring(0, 40),
             scrollH: ld.scrollHeight,
             clientH: ld.clientHeight,
             scrollTop: ld.scrollTop,
             rect: `x:${rect.x.toFixed(1)} y:${rect.y.toFixed(1)} h:${rect.height.toFixed(1)}`
-        }
+        },
+        bodyEdit: document.body.classList.contains("edit-mode")
     };
     uiLog(JSON.stringify(info));
 }
 
 async function flushUiLog() {
     if (!UI_DIAG_LOG.length) return;
+    const logCopy = UI_DIAG_LOG.splice(0);
     try {
         await fetch("/api/diagnostic-log", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ log: UI_DIAG_LOG.join("\n") })
+            body: JSON.stringify({ log: logCopy.join("\n") })
         });
-    } catch (e) { console.error("UI log flush error", e); }
+    } catch (e) { /* silently ignore */ }
 }
 
+// Автосброс каждые 10 сек
+setInterval(flushUiLog, 10000);
 window.addEventListener("beforeunload", flushUiLog);
 
 // ─── Ссылки на DOM-элементы

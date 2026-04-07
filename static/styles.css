@@ -409,10 +409,10 @@ html, body {
 }
 
 /* ─── Плеер ──────────────────────────────────────────────────────────────── */
+/* lyrics-wrapper НЕ участвует в flex — absolute fill предотвращает пересчёт */
 .lyrics-wrapper {
-    position: relative;
-    flex: 1;
-    min-height: 0;
+    position: absolute;
+    inset: 0;
     border-radius: var(--radius-md);
     overflow: hidden;
     background: #000;
