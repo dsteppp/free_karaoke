@@ -25,14 +25,16 @@
                     <h2>Медиатека</h2>
 
                     <div class="lh-group">
-                        <label class="btn btn-surface btn-icon lh-element" for="audio-files" title="Загрузить треки">
+                        <label class="btn btn-surface btn-icon lh-element" for="audio-files"
+                               data-tooltip="Загрузить треки" data-tooltip-pos="bottom">
                             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                 <path d="M12 5v14M5 12h14"/>
                             </svg>
                         </label>
                         <input type="file" id="audio-files" accept="audio/*" multiple style="display:none;">
 
-                        <button id="cancel-btn" class="btn btn-danger-soft btn-icon lh-element" title="Отменить обработку">
+                        <button id="cancel-btn" class="btn btn-danger-soft btn-icon lh-element"
+                                data-tooltip="Отменить обработку" data-tooltip-pos="bottom">
                             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                 <line x1="18" y1="6" x2="6" y2="18"/>
                                 <line x1="6" y1="6" x2="18" y2="18"/>
@@ -59,12 +61,14 @@
                     </div>
 
                     <div class="lh-group actions">
-                        <button id="scan-btn" class="btn btn-icon btn-surface lh-element" title="Сканировать библиотеку">
+                        <button id="scan-btn" class="btn btn-icon btn-surface lh-element"
+                                data-tooltip="Сканировать библиотеку" data-tooltip-pos="bottom">
                             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                 <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>
                             </svg>
                         </button>
-                        <button id="clear-btn" class="btn btn-icon btn-danger-soft lh-element" title="Очистить всё">
+                        <button id="clear-btn" class="btn btn-icon btn-danger-soft lh-element"
+                                data-tooltip="Очистить всё" data-tooltip-pos="bottom">
                             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                 <polyline points="3 6 5 6 21 6"/>
                                 <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
@@ -88,15 +92,37 @@
                     </div>
                 </div>
 
-                <!-- Строка 2: поиск + сортировка -->
+                <!-- Строка 2: импорт/экспорт + поиск + сортировка -->
                 <div class="lh-row filters">
+
+                    <div class="io-group">
+                        <button id="import-btn" class="btn btn-surface btn-icon lh-element"
+                                data-tooltip="Импорт библиотеки" data-tooltip-pos="bottom">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                                <polyline points="7 10 12 15 17 10"/>
+                                <line x1="12" y1="15" x2="12" y2="3"/>
+                            </svg>
+                        </button>
+                        <button id="export-btn" class="btn btn-surface btn-icon lh-element"
+                                data-tooltip="Экспорт библиотеки" data-tooltip-pos="bottom">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                                <polyline points="17 8 12 3 7 8"/>
+                                <line x1="12" y1="3" x2="12" y2="15"/>
+                            </svg>
+                        </button>
+                    </div>
+
                     <div class="search-box">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="search-icon">
                             <circle cx="11" cy="11" r="8"/>
                             <line x1="21" y1="21" x2="16.65" y2="16.65"/>
                         </svg>
-                        <input type="text" id="search-input" placeholder="Поиск (трек, артист, текст)...">
-                        <button id="search-clear-btn" class="clear-search" style="display:none;" title="Очистить">
+                        <input type="text" id="search-input" placeholder="Поиск (трек, артист, текст)..."
+                               data-tooltip="Поиск по трекам" data-tooltip-pos="bottom">
+                        <button id="search-clear-btn" class="clear-search" style="display:none;"
+                                data-tooltip="Очистить поиск" data-tooltip-pos="bottom">
                             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                 <line x1="18" y1="6" x2="6" y2="18"/>
                                 <line x1="6" y1="6" x2="18" y2="18"/>
@@ -105,7 +131,8 @@
                     </div>
 
                     <div class="sort-box">
-                        <button id="sort-by-btn" class="sort-toggle" data-sort="artist" title="Сменить сортировку">
+                        <button id="sort-by-btn" class="sort-toggle" data-sort="artist"
+                                data-tooltip="Сменить поле сортировки" data-tooltip-pos="bottom">
                             <svg id="icon-artist" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                 <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
                                 <circle cx="12" cy="7" r="4"/>
@@ -123,7 +150,8 @@
                                 <path d="M21 13v2a4 4 0 0 1-4 4H3"/>
                             </svg>
                         </button>
-                        <button id="sort-dir-btn" class="sort-dir" data-dir="asc" title="Направление сортировки">
+                        <button id="sort-dir-btn" class="sort-dir" data-dir="asc"
+                                data-tooltip="Направление сортировки" data-tooltip-pos="bottom">
                             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                 <path d="M12 5v14M19 12l-7 7-7-7"/>
                             </svg>
@@ -147,21 +175,28 @@
 
                 <!-- ВРЕЗКА РЕДАКТОРА: Кнопки управления -->
                 <div class="editor-controls-wrapper">
-                    <button class="editor-btn edit-start" id="edit-start-btn" title="Режим редактора">
+                    <button class="editor-btn edit-start" id="edit-start-btn"
+                            data-tooltip="Режим редактора" data-tooltip-pos="top"
+                            data-shortcut="R">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path></svg>
                         Редактировать
                     </button>
-                    <button class="editor-btn edit-apply" id="edit-apply-btn" title="Применить и пересчитать">
+                    <button class="editor-btn edit-apply" id="edit-apply-btn"
+                            data-tooltip="Применить и пересчитать" data-tooltip-pos="top">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"></polyline></svg>
                         Применить
                     </button>
-                    <button class="editor-btn edit-cancel" id="edit-cancel-btn" title="Отменить изменения">
+                    <button class="editor-btn edit-cancel" id="edit-cancel-btn"
+                            data-tooltip="Отменить изменения" data-tooltip-pos="top"
+                            data-shortcut="Escape">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
                     </button>
                 </div>
 
                 <!-- Кнопка полноэкранного режима -->
-                <button class="fs-btn" id="fs-btn" title="На весь экран">
+                <button class="fs-btn" id="fs-btn"
+                        data-tooltip="Полный экран" data-tooltip-pos="top"
+                        data-shortcut="F">
                     <svg viewBox="0 0 24 24" fill="currentColor">
                         <path d="M5 5h5v2H7v3H5V5zm9 0h5v5h-2V7h-3V5zm5 14h-5v-2h3v-3h2v5zm-14 0v-5h2v3h3v2H5z"/>
                     </svg>
@@ -180,16 +215,21 @@
                     <!-- Строка 1: play/stop + таймлайн -->
                     <div class="fcp-row-top">
                         <div class="fcp-buttons">
-                            <button id="play-btn" class="seek-btn" title="Play / Pause">
+                            <button id="play-btn" class="seek-btn"
+                                    data-tooltip="Play / Pause" data-tooltip-pos="top"
+                                    data-shortcut="Пробел">
                                 <svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
                             </button>
-                            <button id="stop-btn" class="seek-btn" title="Stop">
+                            <button id="stop-btn" class="seek-btn"
+                                    data-tooltip="Стоп" data-tooltip-pos="top">
                                 <svg viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h12v12H6z"/></svg>
                             </button>
                         </div>
                         <div class="fcp-timeline">
                             <span id="time-current" class="time-label">0:00</span>
-                            <input type="range" id="seek-bar" class="seek-bar-range" min="0" value="0" step="0.1">
+                            <input type="range" id="seek-bar" class="seek-bar-range" min="0" value="0" step="0.1"
+                                   data-tooltip="Перемотка" data-tooltip-pos="top"
+                                   data-shortcut="← → ±5 сек">
                             <span id="time-total" class="time-label">0:00</span>
                         </div>
                     </div>
@@ -202,7 +242,9 @@
                         </div>
 
                         <div class="fcp-vol-col">
-                            <div class="control-item" title="Громкость музыки (двойной клик — сброс)">
+                            <div class="control-item"
+                                 data-tooltip="Громкость музыки" data-tooltip-pos="top"
+                                 data-shortcut="Двойной клик — сброс">
                                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                     <path d="M9 18V5l12-2v13"/>
                                     <circle cx="6" cy="18" r="3"/>
@@ -213,7 +255,9 @@
                                     <div class="range-thumb-val" id="lbl-inst">100%</div>
                                 </div>
                             </div>
-                            <div class="control-item" title="Громкость вокала (двойной клик — сброс)">
+                            <div class="control-item"
+                                 data-tooltip="Громкость вокала" data-tooltip-pos="top"
+                                 data-shortcut="Двойной клик — сброс">
                                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                     <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
                                     <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>

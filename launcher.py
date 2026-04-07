@@ -242,17 +242,20 @@ def _get_start_dir() -> str:
 
 
 # ── Файловый диалог через yad (работает 100% офлайн) ─────────────────────────
-def _open_file_dialog_yad(multiple: bool = True) -> list[str]:
+def _open_file_dialog_yad(multiple: bool = True, file_filter: str = None) -> list[str]:
     """Открывает yad --file диалог. Работает офлайн, не зависит от Qt."""
     start_dir = _get_start_dir()
     cmd = [
         "yad", "--file",
-        "--title=Выберите аудиофайлы",
+        "--title=Выберите файлы",
         f"--filename={start_dir}/",
-        "--file-filter=Audio | *.mp3 *.flac *.m4a *.wav *.ogg *.aac *.alac *.wma",
-        "--file-filter=All Files | *",
         "--add-preview",
     ]
+    if file_filter:
+        cmd.append(f"--file-filter={file_filter}")
+    else:
+        cmd.append("--file-filter=Audio | *.mp3 *.flac *.m4a *.wav *.ogg *.aac *.alac *.wma")
+        cmd.append("--file-filter=All Files | *")
     if multiple:
         cmd.append("--multiple")
         cmd.append("--separator=|")
@@ -279,28 +282,99 @@ except Exception:
 
 
 class FileDialogAPI:
-    """API для pywebview: открывает файловый диалог."""
+    """API для pywebview: файловые диалоги и работа с файлами."""
 
-    def open_file_dialog(self, multiple=True):
+    def open_file_dialog(self, multiple=True, file_filter=None):
         """Открывает диалог выбора файлов. yad → fallback на kdialog."""
         if _YAD_AVAILABLE:
-            return _open_file_dialog_yad(multiple)
+            result = _open_file_dialog_yad(multiple, file_filter)
+            if multiple:
+                return result
+            return result[0] if result else None
 
         # Fallback: kdialog
         start_dir = _get_start_dir()
-        cmd = ["kdialog", "--title", "Выберите аудиофайлы",
+        if file_filter:
+            filter_str = file_filter
+        else:
+            filter_str = "Audio (*.mp3 *.flac *.m4a *.wav *.ogg *.aac *.alac *.wma)\nAll Files (*)"
+        cmd = ["kdialog", "--title", "Выберите файлы",
                "--getopenfilename", start_dir,
-               "Audio (*.mp3 *.flac *.m4a *.wav *.ogg *.aac *.alac *.wma)\nAll Files (*)"]
+               filter_str]
         if multiple:
             cmd += ["--multiple", "--separate-output"]
 
         try:
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
             if result.returncode == 0 and result.stdout.strip():
-                return [p for p in result.stdout.strip().split("\n") if p]
+                paths = [p for p in result.stdout.strip().split("\n") if p]
+                if multiple:
+                    return paths
+                return paths[0] if paths else None
         except Exception as e:
             log.warning("kdialog ошибка: %s", e)
-        return []
+        return [] if multiple else None
+
+    def save_file_dialog(self, title="Сохранить файл", default_filename=""):
+        """Открывает диалог сохранения файла. Возвращает путь или None."""
+        start_dir = _get_start_dir()
+
+        if _YAD_AVAILABLE:
+            cmd = [
+                "yad", "--file", "--save",
+                f"--title={title}",
+                f"--filename={os.path.join(start_dir, default_filename)}",
+                "--file-filter=ZIP Files | *.zip",
+                "--file-filter=All Files | *",
+            ]
+            try:
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+                # yad при OK возвращает 0, при Cancel — 1
+                if result.returncode == 0:
+                    path = result.stdout.strip()
+                    if path:
+                        return path
+                # yad отработал (OK или Cancel) — не показываем fallback
+                return None
+            except subprocess.TimeoutExpired:
+                log.warning("yad save диалог: timeout")
+            except Exception as e:
+                log.warning("yad save диалог ошибка: %s", e)
+            return None
+
+        # Fallback: kdialog (только если yad недоступен)
+        try:
+            cmd = ["kdialog", "--title", title,
+                   "--getsavefilename", os.path.join(start_dir, default_filename)]
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+            if result.returncode == 0 and result.stdout.strip():
+                return result.stdout.strip()
+        except Exception as e:
+            log.warning("kdialog save диалог ошибка: %s", e)
+        return None
+
+    def read_file(self, path):
+        """Прочитать файл и вернуть его содержимое как base64 строку."""
+        import base64
+        try:
+            with open(path, "rb") as f:
+                data = f.read()
+            return base64.b64encode(data).decode('ascii')
+        except Exception as e:
+            log.error("read_file ошибка %s: %s", path, e)
+            return None
+
+    def save_binary(self, path, b64_data):
+        """Сохранить base64-данные в файл."""
+        import base64
+        try:
+            data = base64.b64decode(b64_data)
+            with open(path, "wb") as f:
+                f.write(data)
+            return True
+        except Exception as e:
+            log.error("save_binary ошибка %s: %s", path, e)
+            return False
 
 
 def main():

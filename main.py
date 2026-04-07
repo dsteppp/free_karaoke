@@ -11,6 +11,7 @@ import json
 import traceback
 import gc
 import torch
+from datetime import datetime
 
 from database import get_db, Track
 from tasks import process_audio_task
@@ -18,6 +19,7 @@ from huey_config import huey
 from ai_pipeline import get_audio_metadata, url_to_base64
 from app_status import read_status
 from app_logger import get_logger
+from library_io import export_library, import_library, IMPORT_LOG_PATH
 
 # --- ВРЕЗКА РЕДАКТОРА ---
 from editor_backend import router as editor_router
@@ -868,6 +870,94 @@ async def edit_track_metadata(
         log.error("❌ Ошибка при редактировании метаданных: %s", e)
         log.error("Traceback:\n%s", traceback.format_exc())
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# POST /api/library/export  — экспорт библиотеки в ZIP
+# ──────────────────────────────────────────────────────────────────────────────
+@app.post("/api/library/export")
+async def export_library_endpoint():
+    """Экспорт всей библиотеки в ZIP-архив."""
+    try:
+        zip_bytes = export_library(LIBRARY_DIR)
+        return Response(
+            content=zip_bytes,
+            media_type="application/zip",
+            headers={
+                "Content-Disposition": f'attachment; filename="karaoke_library_{datetime.now().strftime("%Y%m%d_%H%M")}.zip"',
+            },
+        )
+    except Exception as e:
+        log.error("Ошибка экспорта: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# POST /api/library/import  — импорт библиотеки из ZIP
+# ──────────────────────────────────────────────────────────────────────────────
+@app.post("/api/library/import")
+async def import_library_endpoint(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+):
+    """Импорт библиотеки из ZIP-архива."""
+    if not file.filename or not file.filename.endswith('.zip'):
+        raise HTTPException(status_code=400, detail="Требуется ZIP-файл")
+
+    try:
+        zip_bytes = await file.read()
+        result = import_library(zip_bytes, LIBRARY_DIR, db, Track)
+        return result
+    except RuntimeError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except Exception as e:
+        log.error("Ошибка импорта: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# POST /api/library/import-from-path  — импорт по пути к файлу (без передачи bytes через JS)
+# ──────────────────────────────────────────────────────────────────────────────
+class ImportFromPathRequest(BaseModel):
+    path: str
+
+
+@app.post("/api/library/import-from-path")
+async def import_library_from_path(
+    req: ImportFromPathRequest,
+    db: Session = Depends(get_db),
+):
+    """Импорт библиотеки из ZIP по пути к файлу. Python сам читает файл."""
+    if not os.path.exists(req.path):
+        raise HTTPException(status_code=404, detail="Файл не найден")
+    if not req.path.endswith('.zip'):
+        raise HTTPException(status_code=400, detail="Требуется ZIP-файл")
+
+    try:
+        with open(req.path, 'rb') as f:
+            zip_bytes = f.read()
+        result = import_library(zip_bytes, LIBRARY_DIR, db, Track)
+        return result
+    except RuntimeError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except Exception as e:
+        log.error("Ошибка импорта: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# GET /api/import-log  — получить лог последнего импорта
+# ──────────────────────────────────────────────────────────────────────────────
+@app.get("/api/import-log")
+async def get_import_log():
+    """Вернуть содержимое лога импорта."""
+    try:
+        if os.path.exists(IMPORT_LOG_PATH):
+            with open(IMPORT_LOG_PATH, 'r', encoding='utf-8') as f:
+                return {"log": f.read()}
+        return {"log": ""}
+    except Exception as e:
+        return {"log": f"Ошибка чтения лога: {e}"}
 
 
 # ──────────────────────────────────────────────────────────────────────────────

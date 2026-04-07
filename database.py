@@ -1,5 +1,5 @@
 import uuid
-from sqlalchemy import create_engine, Column, String, Float
+from sqlalchemy import create_engine, Column, String, Float, Integer
 from sqlalchemy.orm import sessionmaker, declarative_base
 
 # Создаст локальный файл базы данных karaoke.db прямо в папке проекта
@@ -38,6 +38,7 @@ class Track(Base):
     # Метаданные
     artist = Column(String, nullable=True)
     title = Column(String, nullable=True)
+    duration_sec = Column(Integer, nullable=True)
     
     # Синхронизация для плеера
     offset = Column(Float, default=0.0)
@@ -48,6 +49,22 @@ class Track(Base):
 
 # Автоматически создаем таблицы, если их нет
 Base.metadata.create_all(bind=engine)
+
+# ── Миграция: добавляем колонку duration_sec если её нет ────────────────────
+def _ensure_duration_sec_column():
+    """SQLite create_all не добавляет колонки к существующим таблицам."""
+    from sqlalchemy import text
+    with engine.connect() as conn:
+        # Проверяем есть ли колонка
+        columns = conn.execute(
+            text("PRAGMA table_info(tracks)")
+        ).fetchall()
+        col_names = [row[1] for row in columns]
+        if "duration_sec" not in col_names:
+            conn.execute(text("ALTER TABLE tracks ADD COLUMN duration_sec INTEGER"))
+            conn.commit()
+
+_ensure_duration_sec_column()
 
 def get_db():
     """

@@ -481,21 +481,23 @@ function renderList() {
         if (t.status === "done") {
             const pB = document.createElement("button");
             pB.className = "btn btn-primary btn-icon";
-            pB.title = "Воспроизвести";
+            pB.setAttribute("data-tooltip", "Воспроизвести");
+            pB.setAttribute("data-tooltip-pos", "right");
             pB.innerHTML = `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>`;
             pB.onclick = () => loadKar(t, img.src);
 
             const rB = document.createElement("button");
             rB.className = "btn btn-surface btn-icon";
-            rB.title = "Пересинхронизировать текст";
+            rB.setAttribute("data-tooltip", "Пересинхронизировать текст");
+            rB.setAttribute("data-tooltip-pos", "right");
             rB.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.3"/></svg>`;
             rB.onclick = () => apiReq(t.id, "reset_text");
 
-            // ✏️ Кнопка редактирования метаданных
             const eB = document.createElement("button");
             eB.className = "edit-meta-btn";
             eB.setAttribute("data-meta-track", t.id);
-            eB.title = "Редактировать метаданные";
+            eB.setAttribute("data-tooltip", "Редактировать метаданные");
+            eB.setAttribute("data-tooltip-pos", "right");
             eB.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>`;
             eB.onclick = () => openMetaEditor(t.id);
 
@@ -504,7 +506,8 @@ function renderList() {
 
         const dB = document.createElement("button");
         dB.className = "btn btn-danger-soft btn-icon";
-        dB.title = "Удалить трек";
+        dB.setAttribute("data-tooltip", "Удалить трек");
+        dB.setAttribute("data-tooltip-pos", "right");
         dB.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>`;
         dB.onclick = () => apiReq(t.id, "del");
         acts.appendChild(dB);
@@ -1304,3 +1307,317 @@ if (textareaWrapper && textareaEl) {
         isResizing = false;
     });
 }
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ГЛОБАЛЬНЫЙ ТУЛТИП
+// ══════════════════════════════════════════════════════════════════════════════
+(function() {
+    const tooltip = document.createElement("div");
+    tooltip.id = "global-tooltip";
+    document.body.appendChild(tooltip);
+
+    let currentTarget = null;
+    let showTimeout = null;
+    let hideTimeout = null;
+
+    function showTooltip(el) {
+        const text = el.getAttribute("data-tooltip");
+        const shortcut = el.getAttribute("data-shortcut");
+        if (!text) return;
+
+        tooltip.innerHTML = esc(text);
+        if (shortcut) {
+            tooltip.innerHTML += ' <span class="tooltip-shortcut">' + esc(shortcut) + '</span>';
+        }
+
+        const rect = el.getBoundingClientRect();
+        const pos = el.getAttribute("data-tooltip-pos") || "bottom";
+
+        // Сброс классов позиции
+        tooltip.classList.remove("pos-right");
+
+        requestAnimationFrame(() => {
+            const tw = tooltip.offsetWidth;
+            const th = tooltip.offsetHeight;
+            let left, top;
+
+            if (pos === "top") {
+                left = rect.left + rect.width / 2 - tw / 2;
+                top = rect.top - th - 8;
+            } else if (pos === "right") {
+                left = rect.right + 8;
+                top = rect.top + rect.height / 2 - th / 2;
+                tooltip.classList.add("pos-right");
+            } else {
+                // bottom
+                left = rect.left + rect.width / 2 - tw / 2;
+                top = rect.bottom + 8;
+            }
+
+            left = Math.max(4, Math.min(left, window.innerWidth - tw - 4));
+            top = Math.max(4, Math.min(top, window.innerHeight - th - 4));
+            tooltip.style.left = left + "px";
+            tooltip.style.top = top + "px";
+        });
+
+        tooltip.classList.remove("hiding");
+        tooltip.classList.add("visible");
+    }
+
+    function hideTooltip() {
+        tooltip.classList.remove("visible");
+        tooltip.classList.add("hiding");
+    }
+
+    function scheduleShow(el) {
+        clearTimeout(hideTimeout);
+        showTimeout = setTimeout(() => showTooltip(el), 500);
+    }
+
+    function scheduleHide() {
+        clearTimeout(showTimeout);
+        hideTimeout = setTimeout(hideTooltip, 500);
+    }
+
+    document.addEventListener("mouseover", (e) => {
+        const el = e.target.closest("[data-tooltip]");
+        if (el && el !== currentTarget) {
+            currentTarget = el;
+            scheduleShow(el);
+        }
+    });
+
+    document.addEventListener("mouseout", (e) => {
+        const el = e.target.closest("[data-tooltip]");
+        if (el) {
+            const related = e.relatedTarget;
+            if (!el.contains(related)) {
+                currentTarget = null;
+                scheduleHide();
+            }
+        }
+    });
+
+    document.addEventListener("scroll", () => {
+        if (currentTarget && tooltip.classList.contains("visible")) {
+            showTooltip(currentTarget);
+        }
+    }, true);
+})();
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ЭКСПОРТ / ИМПОРТ БИБЛИОТЕКИ
+// ══════════════════════════════════════════════════════════════════════════════
+(function() {
+    const importBtn = document.getElementById("import-btn");
+    const exportBtn = document.getElementById("export-btn");
+    let isBusy = false; // Блокировка одновременных операций
+
+    // Блокировка интерфейса во время операции
+    function setBusy(busy, operation) {
+        isBusy = busy;
+        document.body.classList.toggle("io-busy", busy);
+        const statusText = document.getElementById("app-status-text");
+        const statusSpinner = document.getElementById("app-status-spinner");
+        const statusProgress = document.getElementById("app-status-progress");
+        if (busy) {
+            if (statusText) statusText.textContent = operation;
+            if (statusSpinner) statusSpinner.style.display = "";
+            if (statusProgress) statusProgress.style.display = "none";
+        } else {
+            if (statusText) statusText.textContent = "";
+            if (statusSpinner) statusSpinner.style.display = "none";
+            if (statusProgress) statusProgress.style.display = "none";
+        }
+    }
+
+    function showCompletionSummary(title, message) {
+        const html = '<div style="text-align:center; max-width:400px;">' +
+            '<h2 style="margin-bottom:1rem;">' + title + '</h2>' +
+            '<p style="color:var(--text-muted);">' + message + '</p>' +
+            '<button onclick="this.closest(\'.io-summary-overlay\').remove()" style="margin-top:1rem; padding:0.5rem 2rem; background:var(--accent); color:#fff; border:none; border-radius:var(--radius-sm); font-weight:600; cursor:pointer; font-family:inherit;">OK</button>' +
+            '</div>';
+        const overlay = document.createElement("div");
+        overlay.className = "io-summary-overlay";
+        overlay.style.cssText = 'position:fixed;inset:0;z-index:9999999;background:rgba(0,0,0,0.7);backdrop-filter:blur(4px);display:flex;align-items:center;justify-content:center;';
+        overlay.innerHTML = '<div style="background:var(--bg-panel);border:1px solid var(--border);border-radius:var(--radius-lg);padding:1.5rem;max-width:90vw;color:var(--text-main);">' + html + '</div>';
+        document.body.appendChild(overlay);
+        overlay.addEventListener("click", (e) => { if (e.target === overlay) overlay.remove(); });
+    }
+
+    if (exportBtn) {
+        exportBtn.addEventListener("click", async () => {
+            if (isBusy) return;
+            try {
+                setBusy(true, "💾 Подготовка экспорта...");
+                if (window.pywebview && window.pywebview.api) {
+                    const path = await window.pywebview.api.save_file_dialog(
+                        "Экспорт библиотеки",
+                        "karaoke_library_" + new Date().toISOString().slice(0, 16).replace(/[T:]/g, "-") + ".zip"
+                    );
+                    if (!path) { setBusy(false); return; }
+
+                    setBusy(true, "💾 Создание архива...");
+                    const res = await fetch("/api/library/export", { method: "POST" });
+                    if (!res.ok) throw new Error("Ошибка экспорта");
+                    const blob = await res.blob();
+
+                    setBusy(true, "💾 Сохранение файла...");
+                    const b64 = await new Promise((resolve, reject) => {
+                        const reader = new FileReader();
+                        reader.onload = () => resolve(reader.result.split(',')[1]);
+                        reader.onerror = reject;
+                        reader.readAsDataURL(blob);
+                    });
+                    const ok = await window.pywebview.api.save_binary(path, b64);
+                    if (!ok) throw new Error("Не удалось сохранить файл");
+
+                    setBusy(false);
+                    showCompletionSummary("📦 Экспорт завершён", "Библиотека успешно сохранена.");
+                } else {
+                    const res = await fetch("/api/library/export", { method: "POST" });
+                    if (!res.ok) throw new Error("Ошибка экспорта");
+                    const blob = await res.blob();
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement("a");
+                    a.href = url;
+                    a.download = "karaoke_library_" + new Date().toISOString().slice(0, 16).replace(/[T:]/g, "-") + ".zip";
+                    a.click();
+                    URL.revokeObjectURL(url);
+                    setBusy(false);
+                    showCompletionSummary("📦 Экспорт завершён", "Файл скачан.");
+                }
+            } catch (e) {
+                setBusy(false);
+                console.error("Ошибка экспорта:", e);
+                showCompletionSummary("❌ Ошибка экспорта", e.message);
+            }
+        });
+    }
+
+    if (importBtn) {
+        importBtn.addEventListener("click", async () => {
+            if (isBusy) return;
+            try {
+                if (window.pywebview && window.pywebview.api) {
+                    const filePath = await window.pywebview.api.open_file_dialog(false, "ZIP Files | *.zip");
+                    if (!filePath) return;
+                    setBusy(true, "📦 Импорт библиотеки...");
+                    // Python сам читает файл — без передачи base64
+                    const res = await fetch("/api/library/import-from-path", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ path: filePath }),
+                    });
+                    if (!res.ok) {
+                        const err = await res.json().catch(() => ({}));
+                        setBusy(false);
+                        throw new Error(err.detail || "Ошибка сервера");
+                    }
+                    const result = await res.json();
+                    await loadTracks();
+                    setBusy(false);
+                    showImportSummary(result);
+                } else {
+                    // Fallback: HTML input + FormData
+                    const input = document.createElement("input");
+                    input.type = "file";
+                    input.accept = ".zip";
+                    input.onchange = async () => {
+                        if (input.files.length) await doImport(input.files[0]);
+                    };
+                    input.click();
+                }
+            } catch (e) {
+                setBusy(false);
+                console.error("Ошибка импорта:", e);
+                showCompletionSummary("❌ Ошибка импорта", e.message);
+            }
+        });
+    }
+
+    async function doImport(blob, fileName) {
+        setBusy(true, "📦 Импорт библиотеки...");
+        const fd = new FormData();
+        fd.append("file", blob, fileName || "import.zip");
+
+        const res = await fetch("/api/library/import", { method: "POST", body: fd });
+        if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            setBusy(false);
+            throw new Error(err.detail || "Ошибка сервера");
+        }
+
+        const result = await res.json();
+        await loadTracks();
+        setBusy(false);
+        showImportSummary(result);
+    }
+
+    function showImportSummary(result) {
+        const { added, skipped, errors, artists, tracks } = result;
+        const noteIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:1.2em;height:1.2em;vertical-align:-0.15em;display:inline-block;"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>';
+
+        let html = '<div style="text-align:center; max-width:500px; display:flex; flex-direction:column; align-items:center;">';
+        html += '<h2 style="margin-bottom:1rem;">📦 Импорт завершён</h2>';
+
+        // Основной контент (без списка треков)
+        let mainContent = '';
+        if (added > 0) {
+            mainContent += '<p style="color:var(--success); font-weight:600; margin:0 0 0.25rem 0;">' + noteIcon + ' Добавлено треков: ' + added + '</p>';
+            mainContent += '<p style="font-size:0.85rem; color:var(--text-muted); margin:0 0 0.5rem 0;">Артистов: ' + artists.length + '</p>';
+        } else {
+            mainContent += '<p style="color:var(--text-muted);">Новых треков не найдено</p>';
+        }
+        if (skipped > 0) {
+            mainContent += '<p style="color:var(--warning); margin:0 0 0.5rem 0;">⏭ Пропущено дубликатов: ' + skipped + '</p>';
+        }
+        if (errors.length > 0) {
+            mainContent += '<details style="margin-top:0.5rem;"><summary style="cursor:pointer; color:var(--danger);">❌ Ошибки (' + errors.length + ')</summary>';
+            mainContent += '<ul style="text-align:left; font-size:0.75rem; color:var(--text-muted); padding-left:1.5rem; max-height:100px; overflow-y:auto;">';
+            errors.forEach(e => { mainContent += '<li>' + esc(e) + '</li>'; });
+            mainContent += '</ul></details>';
+        }
+
+        // Список треков — всегда, с прокруткой
+        let trackListHtml = '';
+        if (tracks.length > 0) {
+            trackListHtml = '<ul style="text-align:left; font-size:0.8rem; color:var(--text-muted); padding-left:1.5rem; margin:0.5rem 0 0 0; max-height:180px; overflow-y:auto; width:100%; scrollbar-width:none; -ms-overflow-style:none;">';
+            trackListHtml += '<style>.io-summary-overlay .track-scroll::-webkit-scrollbar { display: none !important; width: 0; height: 0; }</style>';
+            trackListHtml = trackListHtml.replace('<ul ', '<ul class="track-scroll" ');
+            tracks.forEach(t => { trackListHtml += '<li style="margin-bottom:0.15rem;">' + esc(t) + '</li>'; });
+            trackListHtml += '</ul>';
+        }
+
+        html += '<div style="display:flex; flex-direction:column; align-items:center; max-height:calc(80vh - 120px); overflow:hidden;">';
+        html += mainContent;
+        html += trackListHtml;
+        html += '</div>';
+        html += '<button onclick="this.closest(\'.io-summary-overlay\').remove()" style="margin-top:1rem; padding:0.5rem 2rem; background:var(--accent); color:#fff; border:none; border-radius:var(--radius-sm); font-weight:600; cursor:pointer; font-family:inherit;">OK</button>';
+        html += '</div>';
+
+        const overlay = document.createElement("div");
+        overlay.className = "io-summary-overlay";
+        overlay.style.cssText = 'position:fixed;inset:0;z-index:9999999;background:rgba(0,0,0,0.7);backdrop-filter:blur(4px);display:flex;align-items:center;justify-content:center;';
+        overlay.innerHTML = '<div style="background:var(--bg-panel);border:1px solid var(--border);border-radius:var(--radius-lg);padding:1.5rem;max-width:90vw;max-height:80vh;overflow:hidden;color:var(--text-main);">' + html + '</div>';
+        document.body.appendChild(overlay);
+        overlay.addEventListener("click", (e) => { if (e.target === overlay) overlay.remove(); });
+    }
+
+    // Блокировка клавиатуры и кликов во время операции
+    document.addEventListener("keydown", (e) => {
+        if (!isBusy) return;
+        // Разрешаем только Escape для отмены (если будет реализовано)
+        if (e.key === "Escape") return;
+        e.preventDefault();
+        e.stopPropagation();
+    }, true);
+
+    document.addEventListener("click", (e) => {
+        if (!isBusy) return;
+        // Разрешаем клик только по overlay завершения
+        if (e.target.closest(".io-summary-overlay")) return;
+        e.preventDefault();
+        e.stopPropagation();
+    }, true);
+})();
