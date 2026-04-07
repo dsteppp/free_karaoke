@@ -80,9 +80,56 @@ els.vInst.addEventListener("input",      updateVolumes);
 els.vVoc.addEventListener("input",       updateVolumes);
 els.fsBtn.addEventListener("click",      toggleFS);
 
-// ── Файловый диалог: Qt QWebEngineView сам открывает нативный QFileDialog ──
-// При клике на <label for="audio-files"> браузер открывает стандартный диалог.
-// Никаких pywebview/kdialog — работает офлайн стабильно.
+// ── Файловый диалог: вызываем кастомный PyQt диалог через QWebChannel ──────
+// Работает офлайн: не зависит от QFileDialog, использует os.scandir()
+const uploadLabel = document.querySelector('label[for="audio-files"]');
+if (uploadLabel) {
+    uploadLabel.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        openNativeFileDialog();
+    });
+}
+
+async function openNativeFileDialog() {
+    try {
+        // QWebChannel: qt.fileApi доступен через setWebChannel
+        if (typeof qt !== 'undefined' && qt.webChannelTransport) {
+            // Ждём инициализации канала
+            const api = await new Promise((resolve, reject) => {
+                new QWebChannel(qt.webChannelTransport, function(channel) {
+                    if (channel.objects.fileApi) {
+                        resolve(channel.objects.fileApi);
+                    } else {
+                        reject(new Error("fileApi not found"));
+                    }
+                });
+            });
+
+            // Вызываем openFileDialog — возвращает JSON-строку
+            const jsonStr = api.openFileDialog();
+            const files = JSON.parse(jsonStr);
+
+            if (files && files.length > 0) {
+                const res = await fetch("/api/upload-from-paths", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ paths: files }),
+                });
+                if (res.ok) {
+                    await loadTracks();
+                    startPolling();
+                }
+            }
+            return;
+        }
+    } catch (e) {
+        console.warn("QWebChannel файл-диалог не сработал:", e);
+    }
+    // Fallback на стандартный HTML диалог
+    console.log("[upload] Fallback на HTML input");
+    els.fileInput.click();
+}
 
 // ГОРЯЧИЕ КЛАВИШИ (Плей/Пауза, Перемотка, Fullscreen)
 document.addEventListener("keydown", (e) => {

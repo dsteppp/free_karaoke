@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-AI-Karaoke Pro Launcher — чистый PyQt6, без pywebview.
-Работает стабильно офлайн и онлайн.
+AI-Karaoke Pro Launcher — чистый PyQt6, кастомный файловый диалог.
+Работает стабильно офлайн и онлайн на Linux, Windows, macOS.
 """
 import os
 import sys
@@ -11,6 +11,7 @@ import atexit
 import threading
 import time
 import subprocess
+import json
 
 # ── Изоляция кэшей ───────────────────────────────────────────────────────────
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -47,11 +48,12 @@ os.makedirs(chromium_cache, exist_ok=True)
 os.environ["QTWEBENGINE_DICTIONARIES_PATH"] = chromium_cache
 
 # ── Импорты PyQt6 ────────────────────────────────────────────────────────────
-from PyQt6.QtWidgets import QApplication, QFileDialog, QMessageBox
-from PyQt6.QtCore import Qt, QUrl, QSettings, QTimer
+from PyQt6.QtWidgets import QApplication, QMessageBox
+from PyQt6.QtCore import Qt, QUrl, QTimer, QObject, pyqtSlot, pyqtSignal, QSettings
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtWebEngineCore import QWebEnginePage, QWebEngineProfile, QWebEngineSettings
 from PyQt6.QtWebEngineCore import QWebEngineSettings as _QWS
+from PyQt6.QtWebChannel import QWebChannel
 
 # ── Monkey-patch: совместимость с PyQt6.7+ ───────────────────────────────────
 try:
@@ -109,7 +111,7 @@ def clear_python_cache(base_dir):
 
 
 def clear_chromium_cache():
-    """Удаляем Chromium-кэш при каждом запуске."""
+    """Удаляем Chromium-кэш при каждом запуске — гарантия свежего UI."""
     cache_dir = os.path.join(BASE_DIR, "cache", "chromium")
     if os.path.isdir(cache_dir):
         log.info("Очистка Chromium-кэша: %s", cache_dir)
@@ -216,42 +218,46 @@ def _signal_handler(signum, frame):
     sys.exit(0)
 
 
-def _is_network_mount(path: str) -> bool:
-    """Проверяет, является ли путь сетевым монтированием. Быстро, с таймаутом."""
-    try:
-        result = subprocess.run(
-            ["df", "-T", path],
-            capture_output=True, text=True, timeout=3
-        )
-        if result.returncode == 0:
-            lines = result.stdout.strip().split("\n")
-            if len(lines) > 1:
-                fs_type = lines[-1].split()[-2]
-                return fs_type in ("nfs", "nfs4", "cifs", "smbfs", "fuse.sshfs")
-    except Exception:
-        pass
-    return False
+# ── Кастомный файловый диалог (не QFileDialog — не виснет на сетевых шарах) ──
+from file_dialog import open_file_dialog
 
 
-def _get_start_dir() -> str:
-    """Возвращает стартовую папку для диалога — только локальную, без NFS."""
-    start = os.path.expanduser("~")
-    for local_dir in ["~/Music", "~/Музыка", "~/Downloads", "~/Загрузки"]:
-        p = os.path.expanduser(local_dir)
-        if os.path.isdir(p) and not _is_network_mount(p):
-            return p
-    return start
+class FileApi(QObject):
+    """API для JS: открывает кастомный файловый диалог."""
+    fileSelected = pyqtSignal(str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+
+    @pyqtSlot(result=str)
+    def openFileDialog(self):
+        """Открывает кастомный файловый диалог. Возвращает JSON-массив путей."""
+        # Определяем стартовую папку — только локальную, без NFS
+        start_dir = os.path.expanduser("~")
+        for local_dir in ["~/Music", "~/Музыка", "~/Downloads", "~/Загрузки"]:
+            p = os.path.expanduser(local_dir)
+            if os.path.isdir(p):
+                from file_dialog import _is_network_mount
+                if not _is_network_mount(p):
+                    start_dir = p
+                    break
+
+        files = open_file_dialog(parent=self.parent(), multiple=True, start_dir=start_dir)
+        return json.dumps(files)
 
 
 class KaraokeWebPage(QWebEnginePage):
-    """Кастомная страница с перехватом файловых диалогов."""
+    """Кастомная страница с настройками."""
 
     def __init__(self, profile, parent=None):
         super().__init__(profile, parent)
-        # Разрешаем выбор текста
         settings = self.settings()
         settings.setAttribute(QWebEngineSettings.WebAttribute.LocalContentCanAccessFileUrls, True)
         settings.setAttribute(QWebEngineSettings.WebAttribute.LocalContentCanAccessRemoteUrls, True)
+        settings.setAttribute(QWebEngineSettings.WebAttribute.JavascriptEnabled, True)
+        settings.setAttribute(QWebEngineSettings.WebAttribute.LocalStorageEnabled, True)
+        # Разрешаем выбор текста
+        settings.setAttribute(QWebEngineSettings.WebAttribute.FocusOnNavigationEnabled, False)
 
 
 class KaraokeWindow(QWebEngineView):
@@ -273,8 +279,28 @@ class KaraokeWindow(QWebEngineView):
         page = KaraokeWebPage(profile, self)
         self.setPage(page)
 
+        # QWebChannel: связываем Python с JS
+        self.channel = QWebChannel(self)
+        self.file_api = FileApi(self)
+        self.channel.registerObject("fileApi", self.file_api)
+        page.setWebChannel(self.channel)
+
+        # Инъекция qwebchannel.js в каждую загружаемую страницу
+        page.loadFinished.connect(self._inject_webchannel)
+
         # Загружаем URL
         self.load(QUrl(url))
+
+    def _inject_webchannel(self, ok):
+        """Инъекция QWebChannel JS API после загрузки страницы."""
+        if ok:
+            self.page().runJavaScript("""
+                // QWebChannel уже подключён через setWebChannel
+                // Проверяем что объект доступен
+                if (typeof qt !== 'undefined' && qt.webChannelTransport) {
+                    console.log('[launcher] QWebChannel подключён');
+                }
+            """)
 
     def closeEvent(self, event):
         """Confirm close dialog."""
