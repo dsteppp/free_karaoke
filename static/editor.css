@@ -2,16 +2,15 @@
    РЕЖИМ РЕДАКТОРА (body.edit-mode)
    ───────────────────────────────────────────────────────────────────────────── */
 
-/* Отключаем маску-затухание по краям, отступы синхронизированы с обычным режимом */
+/* Отключаем маску-затухание, показываем скроллбар. Отступы наследуются. */
 body.edit-mode lyrics-display {
-    display: block !important;
-    text-align: center !important;
-    -webkit-mask-image: none !important;
-    mask-image: none !important;
-    overflow-y: auto !important;
-    padding: 40vh 1rem 25vh 1rem;
-    scrollbar-width: thin !important;
-    scrollbar-color: var(--accent) transparent !important;
+    display: block;
+    text-align: center;
+    -webkit-mask-image: none;
+    mask-image: none;
+    overflow-y: auto;
+    scrollbar-width: thin;
+    scrollbar-color: var(--accent) transparent;
 }
 
 body.edit-mode lyrics-display::-webkit-scrollbar {
@@ -228,12 +227,12 @@ body.edit-mode .word:active {
    КНОПКИ УПРАВЛЕНИЯ В ПЛЕЕРЕ (Справа сверху)
    ───────────────────────────────────────────────────────────────────────────── */
 .editor-controls-wrapper {
-    position: absolute !important;
-    top: 1rem !important;
-    right: 3.5rem !important;
+    position: absolute;
+    top: 1rem;
+    right: 3.5rem;
     display: flex;
     gap: 0.5rem;
-    z-index: 55 !important;
+    z-index: 55;
     max-width: 50%;
     overflow: hidden;
 }
@@ -276,15 +275,13 @@ body.edit-mode.popover-open lyrics-display {
 /* ─── Адаптив редактора: портрет (плеер 55%) ─── */
 @media (max-width: 64rem) and (orientation: portrait) {
     body.edit-mode lyrics-display {
-        bottom: 5.5rem;
-        padding: 35vh 1rem 20vh 1rem;
+        padding: 30vh 1rem 15vh 1rem;
     }
 }
 
 /* ─── Адаптив редактора: маленький портрет ─── */
 @media (max-height: 36rem) and (orientation: portrait) {
     body.edit-mode lyrics-display {
-        bottom: 5rem;
-        padding: 30vh 1rem 15vh 1rem;
+        padding: 25vh 1rem 12vh 1rem;
     }
 }
