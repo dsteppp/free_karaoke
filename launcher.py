@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-AI-Karaoke Pro Launcher — чистый PyQt6, кастомный файловый диалог.
-Работает стабильно офлайн и онлайн на Linux, Windows, macOS.
+AI-Karaoke Pro Launcher — pywebview + yad для файлового диалога.
+yad работает офлайн, не зависит от Qt/NFS, кроссплатформенный Linux.
 """
 import os
 import sys
@@ -47,16 +47,10 @@ chromium_cache = os.path.join(BASE_DIR, "cache", "chromium")
 os.makedirs(chromium_cache, exist_ok=True)
 os.environ["QTWEBENGINE_DICTIONARIES_PATH"] = chromium_cache
 
-# ── Импорты PyQt6 ────────────────────────────────────────────────────────────
-from PyQt6.QtWidgets import QApplication, QMessageBox
-from PyQt6.QtCore import Qt, QUrl, QTimer, QObject, pyqtSlot, pyqtSignal, QSettings
-from PyQt6.QtWebEngineWidgets import QWebEngineView
-from PyQt6.QtWebEngineCore import QWebEnginePage, QWebEngineProfile, QWebEngineSettings
-from PyQt6.QtWebEngineCore import QWebEngineSettings as _QWS
-from PyQt6.QtWebChannel import QWebChannel
-
 # ── Monkey-patch: совместимость с PyQt6.7+ ───────────────────────────────────
 try:
+    from PyQt6.QtWebEngineCore import QWebEngineSettings
+    from PyQt6.QtWebEngineCore import QWebEngineSettings as _QWS
     _missing = {
         "LocalContentCanAccessFileUrls":   _QWS.WebAttribute.LocalContentCanAccessFileUrls,
         "LocalContentCanAccessRemoteUrls": _QWS.WebAttribute.LocalContentCanAccessRemoteUrls,
@@ -76,6 +70,14 @@ try:
 except Exception as e:
     print(f"⚠️  Monkey-patch не применён: {e}")
 
+# ── Инициализируем QApplication ДО webview ───────────────────────────────────
+from PyQt6.QtWidgets import QApplication
+from PyQt6.QtCore import Qt
+
+QApplication.setAttribute(Qt.ApplicationAttribute.AA_ShareOpenGLContexts, True)
+_qapp = QApplication(sys.argv)
+
+import webview
 import psutil
 import urllib.request
 
@@ -136,7 +138,6 @@ def free_port(port):
 def kill_child_processes():
     """Надёжная остановка: SIGTERM → 1.5с → SIGKILL → psutil recursive."""
     log.info("Остановка дочерних процессов...")
-
     for p in _child_procs:
         try:
             if p.poll() is None:
@@ -144,7 +145,6 @@ def kill_child_processes():
                 p.terminate()
         except Exception:
             pass
-
     deadline = time.time() + 1.5
     for p in _child_procs:
         try:
@@ -154,7 +154,6 @@ def kill_child_processes():
             pass
         except Exception:
             pass
-
     for p in _child_procs:
         try:
             if p.poll() is None:
@@ -163,7 +162,6 @@ def kill_child_processes():
                 p.wait(timeout=2)
         except Exception:
             pass
-
     try:
         current = psutil.Process(os.getpid())
         for child in current.children(recursive=True):
@@ -174,7 +172,6 @@ def kill_child_processes():
                 pass
     except psutil.NoSuchProcess:
         pass
-
     log.info("Все дочерние процессы остановлены.")
 
 
@@ -218,118 +215,92 @@ def _signal_handler(signum, frame):
     sys.exit(0)
 
 
-# ── Кастомный файловый диалог (не QFileDialog — не виснет на сетевых шарах) ──
-from file_dialog import open_file_dialog
-
-
-class FileApi(QObject):
-    """API для JS: открывает кастомный файловый диалог."""
-    fileSelected = pyqtSignal(str)
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-
-    @pyqtSlot(result=str)
-    def openFileDialog(self):
-        """Открывает кастомный файловый диалог. Возвращает JSON-массив путей."""
-        # Определяем стартовую папку — только локальную, без NFS
-        start_dir = os.path.expanduser("~")
-        for local_dir in ["~/Music", "~/Музыка", "~/Downloads", "~/Загрузки"]:
-            p = os.path.expanduser(local_dir)
-            if os.path.isdir(p):
-                from file_dialog import _is_network_mount
-                if not _is_network_mount(p):
-                    start_dir = p
-                    break
-
-        files = open_file_dialog(parent=self.parent(), multiple=True, start_dir=start_dir)
-        return json.dumps(files)
-
-
-class KaraokeWebPage(QWebEnginePage):
-    """Кастомная страница с настройками."""
-
-    def __init__(self, profile, parent=None):
-        super().__init__(profile, parent)
-        settings = self.settings()
-        settings.setAttribute(QWebEngineSettings.WebAttribute.LocalContentCanAccessFileUrls, True)
-        settings.setAttribute(QWebEngineSettings.WebAttribute.LocalContentCanAccessRemoteUrls, True)
-        settings.setAttribute(QWebEngineSettings.WebAttribute.JavascriptEnabled, True)
-        settings.setAttribute(QWebEngineSettings.WebAttribute.LocalStorageEnabled, True)
-        # Разрешаем выбор текста
-        settings.setAttribute(QWebEngineSettings.WebAttribute.FocusOnNavigationEnabled, False)
-
-
-class KaraokeWindow(QWebEngineView):
-    """Главное окно приложения."""
-
-    def __init__(self, url: str, parent=None):
-        super().__init__(parent)
-        self._close_confirmed = False
-        self.setWindowTitle("AI-Karaoke Pro")
-        self.resize(1280, 800)
-        self.setMinimumSize(900, 600)
-
-        # Профиль с отключённым кэшем
-        profile = QWebEngineProfile.defaultProfile()
-        profile.setHttpCacheType(QWebEngineProfile.HttpCacheType.MemoryHttpCache)
-        profile.setHttpCacheMaximumSize(0)
-
-        # Кастомная страница
-        page = KaraokeWebPage(profile, self)
-        self.setPage(page)
-
-        # QWebChannel: связываем Python с JS
-        self.channel = QWebChannel(self)
-        self.file_api = FileApi(self)
-        self.channel.registerObject("fileApi", self.file_api)
-        page.setWebChannel(self.channel)
-
-        # Инъекция qwebchannel.js + настройка после загрузки страницы
-        page.loadFinished.connect(self._on_load_finished)
-
-        # Загружаем URL
-        self.load(QUrl(url))
-
-    def _on_load_finished(self, ok):
-        """После загрузки страницы: настраиваем QWebChannel на JS стороне."""
-        if not ok:
-            return
-
-        # Qt автоматически инжектирует qwebchannel.js при setWebChannel()
-        # Просто настраиваем подключение
-        self.page().runJavaScript("""
-            if (typeof qt !== 'undefined' && qt.webChannelTransport && typeof QWebChannel !== 'undefined') {
-                new QWebChannel(qt.webChannelTransport, function(channel) {
-                    window.qtFileApi = channel.objects.fileApi;
-                    console.log('[launcher] QWebChannel подключён, fileApi доступен');
-                });
-            } else {
-                console.warn('[launcher] QWebChannel не доступен:',
-                    'qt=', typeof qt,
-                    'transport=', typeof (qt && qt.webChannelTransport),
-                    'QWebChannel=', typeof QWebChannel);
-            }
-        """)
-
-    def closeEvent(self, event):
-        """Confirm close dialog."""
-        if self._close_confirmed:
-            event.accept()
-            return
-
-        reply = QMessageBox.question(
-            self,
-            "Подтверждение",
-            "Вы действительно хотите закрыть приложение?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
+def _is_network_mount(path: str) -> bool:
+    """Быстрая проверка на сетевое монтирование. Не блокирует."""
+    try:
+        result = subprocess.run(
+            ["df", "-T", path], capture_output=True, text=True, timeout=3
         )
-        if reply == QMessageBox.StandardButton.Yes:
-            self._close_confirmed = True
-            event.accept()
-        else:
-            event.ignore()
+        if result.returncode == 0:
+            lines = result.stdout.strip().split("\n")
+            if len(lines) > 1:
+                fs_type = lines[-1].split()[-2]
+                return fs_type in ("nfs", "nfs4", "cifs", "smbfs", "fuse.sshfs")
+    except Exception:
+        pass
+    return False
+
+
+def _get_start_dir() -> str:
+    """Возвращает стартовую папку — только локальную, без NFS."""
+    start = os.path.expanduser("~")
+    for local_dir in ["~/Music", "~/Музыка", "~/Downloads", "~/Загрузки"]:
+        p = os.path.expanduser(local_dir)
+        if os.path.isdir(p) and not _is_network_mount(p):
+            return p
+    return start
+
+
+# ── Файловый диалог через yad (работает 100% офлайн) ─────────────────────────
+def _open_file_dialog_yad(multiple: bool = True) -> list[str]:
+    """Открывает yad --file диалог. Работает офлайн, не зависит от Qt."""
+    start_dir = _get_start_dir()
+    cmd = [
+        "yad", "--file",
+        "--title=Выберите аудиофайлы",
+        f"--filename={start_dir}/",
+        "--file-filter=Audio | *.mp3 *.flac *.m4a *.wav *.ogg *.aac *.alac *.wma",
+        "--file-filter=All Files | *",
+        "--add-preview",
+    ]
+    if multiple:
+        cmd.append("--multiple")
+        cmd.append("--separator=|")
+
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        if result.returncode == 0 and result.stdout.strip():
+            paths = [p.strip() for p in result.stdout.strip().split("|") if p.strip() and os.path.isfile(p.strip())]
+            return paths
+    except subprocess.TimeoutExpired:
+        log.warning("yad timeout")
+    except Exception as e:
+        log.warning("yad ошибка: %s", e)
+    return []
+
+
+# Проверяем доступность yad
+_YAD_AVAILABLE = False
+try:
+    subprocess.run(["yad", "--version"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2)
+    _YAD_AVAILABLE = True
+except Exception:
+    pass
+
+
+class FileDialogAPI:
+    """API для pywebview: открывает файловый диалог."""
+
+    def open_file_dialog(self, multiple=True):
+        """Открывает диалог выбора файлов. yad → fallback на kdialog."""
+        if _YAD_AVAILABLE:
+            return _open_file_dialog_yad(multiple)
+
+        # Fallback: kdialog
+        start_dir = _get_start_dir()
+        cmd = ["kdialog", "--title", "Выберите аудиофайлы",
+               "--getopenfilename", start_dir,
+               "Audio (*.mp3 *.flac *.m4a *.wav *.ogg *.aac *.alac *.wma)\nAll Files (*)"]
+        if multiple:
+            cmd += ["--multiple", "--separate-output"]
+
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+            if result.returncode == 0 and result.stdout.strip():
+                return [p for p in result.stdout.strip().split("\n") if p]
+        except Exception as e:
+            log.warning("kdialog ошибка: %s", e)
+        return []
 
 
 def main():
@@ -345,8 +316,6 @@ def main():
                 pass
 
     log_startup()
-
-    # Регистрируем обработчики завершения
     atexit.register(_cleanup)
     signal.signal(signal.SIGTERM, _signal_handler)
     signal.signal(signal.SIGINT, _signal_handler)
@@ -382,15 +351,9 @@ def main():
 
     # Запуск Huey worker
     huey_proc = subprocess.Popen(
-        [
-            sys.executable, "-m", "huey.bin.huey_consumer",
-            "huey_config.huey",
-            "-w", "1",
-            "--worker-type", "thread",
-        ],
-        cwd=BASE_DIR,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
+        [sys.executable, "-m", "huey.bin.huey_consumer", "huey_config.huey",
+         "-w", "1", "--worker-type", "thread"],
+        cwd=BASE_DIR, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
     )
     _child_procs.append(huey_proc)
     threading.Thread(target=_stream_output, args=(huey_proc.stdout, HUEY_LOG_PATH), daemon=True).start()
@@ -398,46 +361,49 @@ def main():
 
     # Запуск FastAPI / Uvicorn
     uvicorn_proc = subprocess.Popen(
-        [
-            sys.executable, "-m", "uvicorn",
-            "main:app",
-            "--host", "127.0.0.1",
-            "--port", "8000",
-            "--log-level", "warning",
-        ],
-        cwd=BASE_DIR,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
+        [sys.executable, "-m", "uvicorn", "main:app",
+         "--host", "127.0.0.1", "--port", "8000", "--log-level", "warning"],
+        cwd=BASE_DIR, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
     )
     _child_procs.append(uvicorn_proc)
     threading.Thread(target=_stream_output, args=(uvicorn_proc.stdout, UVICORN_LOG_PATH), daemon=True).start()
     log.info("Uvicorn запущен (PID: %d)", uvicorn_proc.pid)
 
     server_url = "http://127.0.0.1:8000"
-
     if not wait_for_server(server_url, timeout=30):
-        log.error("Сервер FastAPI не запустился за 30 с. Проверьте debug_logs/uvicorn.log")
+        log.error("Сервер FastAPI не запустился за 30 с.")
         _cleanup()
         sys.exit(1)
 
     log.info("Сервер готов. Запуск графического интерфейса...")
 
-    # Создаём QApplication
-    app = QApplication(sys.argv)
-    app.setApplicationName("AI-Karaoke Pro")
+    file_api = FileDialogAPI()
+    window = webview.create_window(
+        title="AI-Karaoke Pro",
+        url=server_url,
+        width=1280, height=800,
+        min_size=(900, 600),
+        background_color='#09090b',
+        confirm_close=True,
+        text_select=True,
+        js_api=file_api,
+    )
+    file_api._window = window
 
-    # Создаём и показываем окно
-    window = KaraokeWindow(server_url)
-    window.show()
+    gui_backend = "gtk" if sys.platform.startswith("linux") else "qt"
+    log.info("WebView backend: %s", gui_backend)
 
-    log.info("Окно показано.")
+    try:
+        webview.start(
+            gui=gui_backend,
+            private_mode=False,
+            debug=False,
+            storage_path=os.path.join(BASE_DIR, "cache", "webview"),
+        )
+    except Exception as e:
+        log.error("Ошибка при запуске окна: %s", e)
 
-    # Запускаем event loop
-    exit_code = app.exec()
-
-    log.info("Окно закрыто (exit code: %d).", exit_code)
-    _cleanup()
-    sys.exit(exit_code)
+    log.info("Окно закрыто.")
 
 
 if __name__ == '__main__':

@@ -80,8 +80,8 @@ els.vInst.addEventListener("input",      updateVolumes);
 els.vVoc.addEventListener("input",       updateVolumes);
 els.fsBtn.addEventListener("click",      toggleFS);
 
-// ── Файловый диалог: вызываем кастомный PyQt диалог через QWebChannel ──────
-// Работает офлайн: не зависит от QFileDialog, использует os.scandir()
+// ── Файловый диалог: вызываем yad через pywebview API ──────────────────────
+// yad работает 100% офлайн, не зависит от Qt/NFS
 const uploadLabel = document.querySelector('label[for="audio-files"]');
 if (uploadLabel) {
     uploadLabel.addEventListener("click", (e) => {
@@ -93,13 +93,13 @@ if (uploadLabel) {
 
 async function openNativeFileDialog() {
     try {
-        // window.qtFileApi устанавливается в _on_load_finished после инжекции qwebchannel.js
-        if (!window.qtFileApi) {
-            throw new Error("qtFileApi не доступен");
+        if (!window.pywebview || !window.pywebview.api) {
+            console.warn("pywebview API недоступен, fallback на HTML input");
+            els.fileInput.click();
+            return;
         }
-        const jsonStr = window.qtFileApi.openFileDialog();
-        const files = JSON.parse(jsonStr);
-
+        const files = await window.pywebview.api.open_file_dialog(true);
+        console.log("[upload] Выбранные файлы:", files);
         if (files && files.length > 0) {
             const res = await fetch("/api/upload-from-paths", {
                 method: "POST",
@@ -111,13 +111,10 @@ async function openNativeFileDialog() {
                 startPolling();
             }
         }
-        return;
     } catch (e) {
-        console.warn("QWebChannel файл-диалог не сработал:", e);
+        console.warn("Нативный диалог не сработал:", e);
+        els.fileInput.click();
     }
-    // Fallback на стандартный HTML диалог
-    console.log("[upload] Fallback на HTML input");
-    els.fileInput.click();
 }
 
 // ГОРЯЧИЕ КЛАВИШИ (Плей/Пауза, Перемотка, Fullscreen)
