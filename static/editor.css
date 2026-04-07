@@ -279,8 +279,8 @@ body.edit-mode.popover-open lyrics-display {
 @media (max-width: 64rem) and (orientation: portrait) {
     body.edit-mode lyrics-display {
         bottom: 5.5rem !important;
-        padding-top: clamp(8vh, 12vw, 14vh) !important;
-        padding-bottom: calc(clamp(8vh, 12vw, 14vh) + 2rem) !important;
+        padding-top: clamp(18vh, 25vw, 25vh) !important;
+        padding-bottom: calc(clamp(18vh, 25vw, 25vh) + 2rem) !important;
     }
 }
 
@@ -288,7 +288,7 @@ body.edit-mode.popover-open lyrics-display {
 @media (max-height: 36rem) and (orientation: portrait) {
     body.edit-mode lyrics-display {
         bottom: 5rem !important;
-        padding-top: clamp(5vh, 8vw, 10vh) !important;
-        padding-bottom: calc(clamp(5vh, 8vw, 10vh) + 2rem) !important;
+        padding-top: clamp(14vh, 20vw, 20vh) !important;
+        padding-bottom: calc(clamp(14vh, 20vw, 20vh) + 2rem) !important;
     }
 }
