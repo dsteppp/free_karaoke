@@ -80,63 +80,9 @@ els.vInst.addEventListener("input",      updateVolumes);
 els.vVoc.addEventListener("input",       updateVolumes);
 els.fsBtn.addEventListener("click",      toggleFS);
 
-// ── Нативный диалог выбора файлов (обходит песочницу Qt) ───────────────────
-// Заменяем стандартный <input type="file"> на системный диалог через pywebview
-const uploadLabel = document.querySelector('label[for="audio-files"]');
-if (uploadLabel) {
-    uploadLabel.addEventListener("click", (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        openNativeFileDialog();
-    });
-}
-
-async function openNativeFileDialog() {
-    // Проверяем что pywebview API доступен
-    if (!window.pywebview || !window.pywebview.api) {
-        console.warn("pywebview API недоступен, fallback на стандартный диалог");
-        els.fileInput.click();
-        return;
-    }
-
-    // Пытаемся использовать kdialog через pywebview js_api с таймаутом 3 сек
-    let files;
-    try {
-        const timeout = new Promise((_, reject) =>
-            setTimeout(() => reject(new Error("pywebview timeout")), 3000)
-        );
-        files = await Promise.race([
-            window.pywebview.api.open_file_dialog(true),
-            timeout
-        ]);
-    } catch (e) {
-        console.warn("pywebview API не ответил за 3с:", e);
-        els.fileInput.click();
-        return;
-    }
-
-    console.log("[upload] Выбранные файлы:", files);
-
-    // Если kdialog недоступен — используем стандартный HTML диалог
-    if (files && files.length === 1 && files[0] === "__FALLBACK__") {
-        console.log("[upload] kdialog недоступен, fallback на HTML input");
-        els.fileInput.click();
-        return;
-    }
-
-    if (files && files.length > 0) {
-        // Отправляем пути на сервер — сервер сам прочитает файлы
-        const res = await fetch("/api/upload-from-paths", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ paths: files }),
-        });
-        if (res.ok) {
-            await loadTracks();
-            startPolling();
-        }
-    }
-}
+// ── Файловый диалог: Qt QWebEngineView сам открывает нативный QFileDialog ──
+// При клике на <label for="audio-files"> браузер открывает стандартный диалог.
+// Никаких pywebview/kdialog — работает офлайн стабильно.
 
 // ГОРЯЧИЕ КЛАВИШИ (Плей/Пауза, Перемотка, Fullscreen)
 document.addEventListener("keydown", (e) => {

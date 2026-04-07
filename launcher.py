@@ -1,9 +1,16 @@
+#!/usr/bin/env python3
+"""
+AI-Karaoke Pro Launcher — чистый PyQt6, без pywebview.
+Работает стабильно офлайн и онлайн.
+"""
 import os
 import sys
 import shutil
 import signal
 import atexit
 import threading
+import time
+import subprocess
 
 # ── Изоляция кэшей ───────────────────────────────────────────────────────────
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -39,11 +46,15 @@ chromium_cache = os.path.join(BASE_DIR, "cache", "chromium")
 os.makedirs(chromium_cache, exist_ok=True)
 os.environ["QTWEBENGINE_DICTIONARIES_PATH"] = chromium_cache
 
-# ── Monkey-patch: совместимость pywebview с PyQt6.7+ ─────────────────────────
-try:
-    from PyQt6.QtWebEngineCore import QWebEngineSettings
-    from PyQt6.QtWebEngineCore import QWebEngineSettings as _QWS
+# ── Импорты PyQt6 ────────────────────────────────────────────────────────────
+from PyQt6.QtWidgets import QApplication, QFileDialog, QMessageBox
+from PyQt6.QtCore import Qt, QUrl, QSettings, QTimer
+from PyQt6.QtWebEngineWidgets import QWebEngineView
+from PyQt6.QtWebEngineCore import QWebEnginePage, QWebEngineProfile, QWebEngineSettings
+from PyQt6.QtWebEngineCore import QWebEngineSettings as _QWS
 
+# ── Monkey-patch: совместимость с PyQt6.7+ ───────────────────────────────────
+try:
     _missing = {
         "LocalContentCanAccessFileUrls":   _QWS.WebAttribute.LocalContentCanAccessFileUrls,
         "LocalContentCanAccessRemoteUrls": _QWS.WebAttribute.LocalContentCanAccessRemoteUrls,
@@ -59,42 +70,28 @@ try:
     for name, value in _missing.items():
         if not hasattr(QWebEngineSettings, name):
             setattr(QWebEngineSettings, name, value)
-
     print("✓ PyQt6 monkey-patch применён")
 except Exception as e:
     print(f"⚠️  Monkey-patch не применён: {e}")
 
-# ── Инициализируем QApplication ДО webview ───────────────────────────────────
-from PyQt6.QtWidgets import QApplication
-from PyQt6.QtCore import Qt
-
-QApplication.setAttribute(Qt.ApplicationAttribute.AA_ShareOpenGLContexts, True)
-_qapp = QApplication(sys.argv)
-
-import webview
-import subprocess
-import time
-import urllib.request
 import psutil
+import urllib.request
 
 from app_logger import get_logger, log_startup, log_shutdown, HUEY_LOG_PATH, UVICORN_LOG_PATH
 
 log = get_logger("launcher")
 
-# ── Глобальный список дочерних процессов для гарантированной очистки ──────────
+# ── Глобальный список дочерних процессов ──────────────────────────────────────
 _child_procs: list[subprocess.Popen] = []
 
 
 def _stream_output(pipe, filepath):
-    """Фоновый поток для чтения логов из subprocess и записи в консоль + файл."""
+    """Фоновый поток для чтения логов из subprocess."""
     with open(filepath, "a", encoding="utf-8") as f:
-        # Читаем построчно, пока процесс не завершится
         for line in iter(pipe.readline, b''):
             line_str = line.decode("utf-8", errors="replace")
-            # Выводим в терминал
             sys.stdout.write(line_str)
             sys.stdout.flush()
-            # Пишем в файл
             f.write(line_str)
             f.flush()
 
@@ -112,7 +109,7 @@ def clear_python_cache(base_dir):
 
 
 def clear_chromium_cache():
-    """Удаляем Chromium-кэш при каждом запуске — гарантия свежего UI."""
+    """Удаляем Chromium-кэш при каждом запуске."""
     cache_dir = os.path.join(BASE_DIR, "cache", "chromium")
     if os.path.isdir(cache_dir):
         log.info("Очистка Chromium-кэша: %s", cache_dir)
@@ -135,10 +132,9 @@ def free_port(port):
 
 
 def kill_child_processes():
-    """Надёжная остановка: SIGTERM → ждём 1.5 с → SIGKILL → psutil recursive."""
+    """Надёжная остановка: SIGTERM → 1.5с → SIGKILL → psutil recursive."""
     log.info("Остановка дочерних процессов...")
 
-    # Сначала мягко — SIGTERM
     for p in _child_procs:
         try:
             if p.poll() is None:
@@ -147,7 +143,6 @@ def kill_child_processes():
         except Exception:
             pass
 
-    # Ждём до 1.5 секунд (сокращено с 3с для быстрого закрытия)
     deadline = time.time() + 1.5
     for p in _child_procs:
         try:
@@ -158,7 +153,6 @@ def kill_child_processes():
         except Exception:
             pass
 
-    # Жёстко убиваем оставшихся через subprocess
     for p in _child_procs:
         try:
             if p.poll() is None:
@@ -168,7 +162,6 @@ def kill_child_processes():
         except Exception:
             pass
 
-    # Подчищаем через psutil (на случай внуков и зомби)
     try:
         current = psutil.Process(os.getpid())
         for child in current.children(recursive=True):
@@ -184,7 +177,7 @@ def kill_child_processes():
 
 
 def wait_for_server(url, timeout=30):
-    """Ждём готовности сервера. Используем urllib с коротким таймаутом."""
+    """Ждём готовности сервера."""
     start = time.time()
     log.info("Ожидание сервера %s (timeout=%dс)...", url, timeout)
     while time.time() - start < timeout:
@@ -201,7 +194,7 @@ def wait_for_server(url, timeout=30):
 
 
 def _cleanup():
-    """Вызывается при любом завершении (atexit, signal)."""
+    """Вызывается при любом завершении."""
     log.info("Финальная очистка...")
     try:
         import gc
@@ -213,7 +206,6 @@ def _cleanup():
             log.info("GPU память освобождена.")
     except Exception:
         pass
-
     kill_child_processes()
     log_shutdown()
 
@@ -224,8 +216,88 @@ def _signal_handler(signum, frame):
     sys.exit(0)
 
 
+def _is_network_mount(path: str) -> bool:
+    """Проверяет, является ли путь сетевым монтированием. Быстро, с таймаутом."""
+    try:
+        result = subprocess.run(
+            ["df", "-T", path],
+            capture_output=True, text=True, timeout=3
+        )
+        if result.returncode == 0:
+            lines = result.stdout.strip().split("\n")
+            if len(lines) > 1:
+                fs_type = lines[-1].split()[-2]
+                return fs_type in ("nfs", "nfs4", "cifs", "smbfs", "fuse.sshfs")
+    except Exception:
+        pass
+    return False
+
+
+def _get_start_dir() -> str:
+    """Возвращает стартовую папку для диалога — только локальную, без NFS."""
+    start = os.path.expanduser("~")
+    for local_dir in ["~/Music", "~/Музыка", "~/Downloads", "~/Загрузки"]:
+        p = os.path.expanduser(local_dir)
+        if os.path.isdir(p) and not _is_network_mount(p):
+            return p
+    return start
+
+
+class KaraokeWebPage(QWebEnginePage):
+    """Кастомная страница с перехватом файловых диалогов."""
+
+    def __init__(self, profile, parent=None):
+        super().__init__(profile, parent)
+        # Разрешаем выбор текста
+        settings = self.settings()
+        settings.setAttribute(QWebEngineSettings.WebAttribute.LocalContentCanAccessFileUrls, True)
+        settings.setAttribute(QWebEngineSettings.WebAttribute.LocalContentCanAccessRemoteUrls, True)
+
+
+class KaraokeWindow(QWebEngineView):
+    """Главное окно приложения."""
+
+    def __init__(self, url: str, parent=None):
+        super().__init__(parent)
+        self._close_confirmed = False
+        self.setWindowTitle("AI-Karaoke Pro")
+        self.resize(1280, 800)
+        self.setMinimumSize(900, 600)
+
+        # Профиль с отключённым кэшем
+        profile = QWebEngineProfile.defaultProfile()
+        profile.setHttpCacheType(QWebEngineProfile.HttpCacheType.MemoryHttpCache)
+        profile.setHttpCacheMaximumSize(0)
+
+        # Кастомная страница
+        page = KaraokeWebPage(profile, self)
+        self.setPage(page)
+
+        # Загружаем URL
+        self.load(QUrl(url))
+
+    def closeEvent(self, event):
+        """Confirm close dialog."""
+        if self._close_confirmed:
+            event.accept()
+            return
+
+        reply = QMessageBox.question(
+            self,
+            "Подтверждение",
+            "Вы действительно хотите закрыть приложение?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            self._close_confirmed = True
+            event.accept()
+        else:
+            event.ignore()
+
+
 def main():
-    # Очищаем старые логи при каждом запуске
+    # Очищаем старые логи
     debug_logs_dir = os.path.join(BASE_DIR, "debug_logs")
     if os.path.exists(debug_logs_dir):
         for fname in os.listdir(debug_logs_dir):
@@ -241,7 +313,7 @@ def main():
     # Регистрируем обработчики завершения
     atexit.register(_cleanup)
     signal.signal(signal.SIGTERM, _signal_handler)
-    signal.signal(signal.SIGINT,  _signal_handler)
+    signal.signal(signal.SIGINT, _signal_handler)
 
     clear_python_cache(BASE_DIR)
     clear_chromium_cache()
@@ -306,7 +378,6 @@ def main():
     log.info("Uvicorn запущен (PID: %d)", uvicorn_proc.pid)
 
     server_url = "http://127.0.0.1:8000"
-    log.info("Ожидаем запуска сервера (%s)...", server_url)
 
     if not wait_for_server(server_url, timeout=30):
         log.error("Сервер FastAPI не запустился за 30 с. Проверьте debug_logs/uvicorn.log")
@@ -315,104 +386,22 @@ def main():
 
     log.info("Сервер готов. Запуск графического интерфейса...")
 
-    # ── Нативный диалог выбора файлов (kdialog, без сканирования NFS) ─────
-    class FileDialogAPI:
-        def open_file_dialog(self, multiple=True):
-            """Открывает системный диалог выбора файлов.
-            Работает ПОЛНОСТЬЮ офлайн: kdialog → fallback на HTML input.
-            """
-            import subprocess as sp
-            # Проверяем, что kdialog доступен
-            try:
-                sp.run(["kdialog", "--version"], stdout=sp.DEVNULL, stderr=sp.DEVNULL, timeout=2)
-            except (sp.TimeoutExpired, FileNotFoundError, sp.SubprocessError):
-                log.debug("kdialog недоступen, returning __FALLBACK__")
-                return ["__FALLBACK__"]
+    # Создаём QApplication
+    app = QApplication(sys.argv)
+    app.setApplicationName("AI-Karaoke Pro")
 
-            # Определяем стартовую папку — только локальные, без NFS
-            start_dir = os.path.expanduser("~")
-            for local_dir in ["~/Music", "~/Музыка", "~/Downloads", "~/Загрузки"]:
-                p = os.path.expanduser(local_dir)
-                if os.path.isdir(p) and not self._is_network_mount(p):
-                    start_dir = p
-                    break
+    # Создаём и показываем окно
+    window = KaraokeWindow(server_url)
+    window.show()
 
-            if multiple:
-                cmd = [
-                    "kdialog",
-                    "--title", "Выберите аудиофайлы",
-                    "--getopenfilename", start_dir,
-                    "Audio (*.mp3 *.flac *.m4a *.wav *.ogg *.aac *.alac *.wma)\nAll Files (*)",
-                    "--multiple",
-                    "--separate-output",
-                ]
-            else:
-                cmd = [
-                    "kdialog",
-                    "--title", "Выберите аудиофайл",
-                    "--getopenfilename", start_dir,
-                    "Audio (*.mp3 *.flac *.m4a *.wav *.ogg *.aac *.alac *.wma)\nAll Files (*)",
-                ]
+    log.info("Окно показано.")
 
-            try:
-                result = sp.run(cmd, capture_output=True, text=True, timeout=60)
-                if result.returncode == 0 and result.stdout.strip():
-                    paths = [p for p in result.stdout.strip().split("\n") if p]
-                    return paths
-            except sp.TimeoutExpired:
-                log.warning("kdialog timeout")
-            except Exception as e:
-                log.warning("kdialog ошибка: %s", e)
-            return []
+    # Запускаем event loop
+    exit_code = app.exec()
 
-        def _is_network_mount(self, path: str) -> bool:
-            """Проверяет, является ли путь сетевым монтированием."""
-            try:
-                result = subprocess.run(["df", "-T", path], capture_output=True, text=True, timeout=3)
-                if result.returncode == 0:
-                    lines = result.stdout.strip().split("\n")
-                    if len(lines) > 1:
-                        fs_type = lines[-1].split()[-2]
-                        return fs_type in ("nfs", "nfs4", "cifs", "smbfs", "fuse.sshfs")
-            except Exception:
-                pass
-            return False
-
-    file_api = FileDialogAPI()
-
-    window = webview.create_window(
-        title="AI-Karaoke Pro",
-        url=server_url,
-        width=1280,
-        height=800,
-        min_size=(900, 600),
-        background_color='#09090b',
-        confirm_close=True,
-        text_select=True,
-        js_api=file_api,
-    )
-
-    # Передаём ссылку на окно для диалогов
-    file_api._window = window
-
-    # На Linux пробуем GTK (не зависит от интернета), fallback на Qt
-    gui_backend = "gtk" if sys.platform.startswith("linux") else "qt"
-    log.info("Запуск webview (gui=%s)...", gui_backend)
-
-    try:
-        webview.start(
-            gui=gui_backend,
-            private_mode=False,
-            debug=False,
-            storage_path=os.path.join(BASE_DIR, "cache", "webview"),
-        )
-    except Exception as e:
-        log.error("Ошибка при запуске окна: %s", e)
-        import traceback
-        log.debug("Traceback:\n%s", traceback.format_exc())
-
-    log.info("Окно закрыто.")
-    # _cleanup вызовется через atexit
+    log.info("Окно закрыто (exit code: %d).", exit_code)
+    _cleanup()
+    sys.exit(exit_code)
 
 
 if __name__ == '__main__':
