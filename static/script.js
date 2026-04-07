@@ -643,12 +643,13 @@ async function loadKar(t, cvr) {
     window.currentTrack = t;
     els.seek.value = 0;
     syncSliders();
-    // Сброс скролла при загрузке трека — первая строка корректно позиционируется
+    // Сброс скролла при загрузке трека
     els.lDisp.scrollTop = 0;
     dumpUiLayout("loadKar_start");
 
-    if (window.innerWidth <= 1024 && !document.body.classList.contains("fs-mode"))
-        els.kCont.scrollIntoView({ behavior: "smooth" });
+    // НЕ скроллим плеер в портретном режиме — это ломает позицию UI
+    // if (window.innerWidth <= 1024 && !document.body.classList.contains("fs-mode"))
+    //     els.kCont.scrollIntoView({ behavior: "smooth" });
 
     const nm = t.title || t.original_name.replace(/\.[^.]+$/, "");
     document.getElementById("cv-title").innerText  = nm;

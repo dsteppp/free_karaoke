@@ -148,12 +148,9 @@
                 logEditor(`После входа: h=${after.height.toFixed(1)} дельта=${(after.height - before.rect.height).toFixed(1)}`);
                 dumpUiLayout("after_enter_mode");
 
-                setTimeout(() => {
-                    const activeLine = document.querySelector(".lyric-line.active-line");
-                    if (activeLine) activeLine.scrollIntoView({ block: "center", behavior: "smooth" });
-                    else if (lyricsDisp.firstElementChild) lyricsDisp.firstElementChild.scrollIntoView({ block: "center", behavior: "smooth" });
-                    dumpUiLayout("after_scroll_center");
-                }, 50);
+                // НЕ скроллим при входе — сохраняем позицию, чтобы UI не сдвигался
+                // Пользователь сам проскроллит если нужно
+                dumpUiLayout("after_enter_no_scroll");
             });
 
         } else {
