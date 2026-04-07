@@ -319,12 +319,18 @@ def main():
     class FileDialogAPI:
         def open_file_dialog(self, multiple=True):
             """Открывает системный диалог выбора файлов.
-            kdialog (Qt) — не сканирует NFS, работает без интернета.
+            Работает ПОЛНОСТЬЮ офлайн: kdialog → fallback на HTML input.
             """
-            import subprocess
+            import subprocess as sp
+            # Проверяем, что kdialog доступен
+            try:
+                sp.run(["kdialog", "--version"], stdout=sp.DEVNULL, stderr=sp.DEVNULL, timeout=2)
+            except (sp.TimeoutExpired, FileNotFoundError, sp.SubprocessError):
+                log.debug("kdialog недоступen, returning __FALLBACK__")
+                return ["__FALLBACK__"]
+
             # Определяем стартовую папку — только локальные, без NFS
             start_dir = os.path.expanduser("~")
-            # Пробуем найти локальную папку с музыкой
             for local_dir in ["~/Music", "~/Музыка", "~/Downloads", "~/Загрузки"]:
                 p = os.path.expanduser(local_dir)
                 if os.path.isdir(p) and not self._is_network_mount(p):
@@ -349,12 +355,12 @@ def main():
                 ]
 
             try:
-                result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+                result = sp.run(cmd, capture_output=True, text=True, timeout=60)
                 if result.returncode == 0 and result.stdout.strip():
                     paths = [p for p in result.stdout.strip().split("\n") if p]
                     return paths
-            except subprocess.TimeoutExpired:
-                log.warning("kdialog timeout (возможно NFS)")
+            except sp.TimeoutExpired:
+                log.warning("kdialog timeout")
             except Exception as e:
                 log.warning("kdialog ошибка: %s", e)
             return []
@@ -362,8 +368,7 @@ def main():
         def _is_network_mount(self, path: str) -> bool:
             """Проверяет, является ли путь сетевым монтированием."""
             try:
-                import subprocess
-                result = subprocess.run(["df", "-T", path], capture_output=True, text=True)
+                result = subprocess.run(["df", "-T", path], capture_output=True, text=True, timeout=3)
                 if result.returncode == 0:
                     lines = result.stdout.strip().split("\n")
                     if len(lines) > 1:
