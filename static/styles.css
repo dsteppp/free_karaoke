@@ -413,8 +413,6 @@ html, body {
     position: relative;
     flex: 1;
     min-height: 0;
-    height: 100%;
-    box-sizing: border-box;
     border-radius: var(--radius-md);
     overflow: hidden;
     background: #000;
@@ -428,7 +426,6 @@ html, body {
 .bg-slide {
     position: absolute;
     inset: -2rem;
-    height: calc(100% + 4rem);
     background-size: cover;
     background-position: center;
     opacity: 0;
@@ -448,7 +445,6 @@ html, body {
 .lyrics-overlay {
     position: absolute;
     inset: 0;
-    height: 100%;
     background: linear-gradient(
         180deg,
         rgba(0,0,0,0.8) 0%,
@@ -704,13 +700,12 @@ html, body {
 lyrics-display {
     position: absolute;
     inset: 0;
-    height: 100%;
-    width: 100%;
     z-index: 25;
     overflow-y: scroll;
     overflow-x: hidden;
     text-align: center;
     display: block;
+    min-height: 0;
     padding: 45vh 1rem;
     scrollbar-width: none;
     -ms-overflow-style: none;
@@ -835,9 +830,6 @@ body.fs-mode #karaoke-container {
 #karaoke-container {
     position: relative;
     overflow: hidden;
-    height: 100%;
-    display: flex;
-    flex-direction: column;
 }
 
 body.fs-mode .floating-control-panel        { bottom: 2rem; max-width: 55rem; }

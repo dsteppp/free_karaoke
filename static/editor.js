@@ -139,6 +139,9 @@
             currentWordIndex = -1;
             activeTargetSpan = null;
 
+            // Сбрасываем скролл lyrics-display чтобы избежать сдвига элементов
+            lyricsDisp.scrollTop = 0;
+
             // Восстанавливаем скролл на активную строку
             setTimeout(() => {
                 const activeLine = document.querySelector(".lyric-line.active-line");
