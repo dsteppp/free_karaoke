@@ -114,25 +114,9 @@
     }
 
     // ── Логика Режима ────────────────────────────────────────────────────────
-    function logEditor(msg) {
-        const ts = new Date().toISOString().substr(11, 12);
-        console.log(`[editor ${ts}] ${msg}`);
-        if (typeof uiLog === "function") uiLog(`[editor] ${msg}`);
-    }
-
     function toggleEditMode(enable) {
         if (!window.currentTrack || !window.lyricsData) return;
         isEditMode = enable;
-
-        dumpUiLayout(enable ? "before_edit_mode" : "before_exit_mode");
-        logEditor(`Переключение ${enable ? "→ редактор" : "← плеер"}`);
-
-        const before = {
-            scrollTop: lyricsDisp.scrollTop,
-            scrollHeight: lyricsDisp.scrollHeight,
-            clientHeight: lyricsDisp.clientHeight,
-            rect: lyricsDisp.getBoundingClientRect()
-        };
 
         if (enable) {
             document.body.classList.add("edit-mode");
@@ -142,15 +126,7 @@
 
             requestAnimationFrame(() => {
                 lyricsDisp.offsetHeight;
-                lyricsDisp.scrollTop = before.scrollTop;
-
-                const after = lyricsDisp.getBoundingClientRect();
-                logEditor(`После входа: h=${after.height.toFixed(1)} дельта=${(after.height - before.rect.height).toFixed(1)}`);
-                dumpUiLayout("after_enter_mode");
-
-                // НЕ скроллим при входе — сохраняем позицию, чтобы UI не сдвигался
-                // Пользователь сам проскроллит если нужно
-                dumpUiLayout("after_enter_no_scroll");
+                lyricsDisp.scrollTop = lyricsDisp.scrollTop;
             });
 
         } else {
@@ -162,38 +138,9 @@
             requestAnimationFrame(() => {
                 lyricsDisp.offsetHeight;
                 lyricsDisp.scrollTop = 0;
-
-                const after = lyricsDisp.getBoundingClientRect();
-                logEditor(`После выхода: h=${after.height.toFixed(1)} дельта=${(after.height - before.rect.height).toFixed(1)}`);
-                dumpUiLayout("after_exit_mode");
-
-                setTimeout(() => {
-                    const activeLine = document.querySelector(".lyric-line.active-line");
-                    if (activeLine && window.scrollToActiveLine && window.playerLines) {
-                        const idx = window.playerLines.findIndex(p => p.domNode === activeLine);
-                        if (idx !== -1) window.scrollToActiveLine(idx, "auto");
-                    }
-                }, 50);
             });
         }
     }
-
-    // Стресс-тест: быстрое переключение режимов
-    window._stressTestEditor = function() {
-        uiLog("=== НАЧАЛО СТРЕСС-ТЕСТА ===");
-        let i = 0;
-        const interval = setInterval(() => {
-            const isEdit = document.body.classList.contains("edit-mode");
-            toggleEditMode(!isEdit);
-            dumpUiLayout(`stress_step_${i}`);
-            i++;
-            if (i >= 10) {
-                clearInterval(interval);
-                uiLog("=== КОНЕЦ СТРЕСС-ТЕСТА ===");
-                if (typeof flushUiLog === "function") flushUiLog();
-            }
-        }, 300);
-    };
 
     // ── Логика Popover (Меню) ────────────────────────────────────────────────
 

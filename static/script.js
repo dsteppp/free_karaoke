@@ -26,57 +26,6 @@ const LINE_PRE_ACTIVATION = 0.35;
 
 const fallbackCover = `data:image/svg+xml;charset=UTF-8,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='%2394a3b8' viewBox='0 0 24 24'%3E%3Cpath d='M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z'/%3E%3C/svg%3E`;
 
-// ─── Диагностика UI ─────────────────────────────────────────────────────
-const UI_DIAG_LOG = [];
-function uiLog(msg) {
-    const ts = new Date().toISOString().substr(11, 12);
-    UI_DIAG_LOG.push(`[${ts}] ${msg}`);
-    if (UI_DIAG_LOG.length > 500) UI_DIAG_LOG.splice(0, 100); // буфер
-}
-
-function dumpUiLayout(context = "") {
-    const ld = els.lDisp;
-    const lw = document.getElementById("lyrics-wrapper");
-    if (!ld || !lw) return;
-
-    const cs = getComputedStyle(ld);
-    const rect = ld.getBoundingClientRect();
-    const wRect = lw.getBoundingClientRect();
-
-    const info = {
-        context,
-        wrapper: { h: wRect.height.toFixed(1) },
-        display: {
-            pos: cs.position,
-            top: cs.top, bottom: cs.bottom, right: cs.right, left: cs.left,
-            padding: cs.padding,
-            mask: (cs.webkitMaskImage || cs.maskImage || "").substring(0, 40),
-            scrollH: ld.scrollHeight,
-            clientH: ld.clientHeight,
-            scrollTop: ld.scrollTop,
-            rect: `x:${rect.x.toFixed(1)} y:${rect.y.toFixed(1)} h:${rect.height.toFixed(1)}`
-        },
-        bodyEdit: document.body.classList.contains("edit-mode")
-    };
-    uiLog(JSON.stringify(info));
-}
-
-async function flushUiLog() {
-    if (!UI_DIAG_LOG.length) return;
-    const logCopy = UI_DIAG_LOG.splice(0);
-    try {
-        await fetch("/api/diagnostic-log", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ log: logCopy.join("\n") })
-        });
-    } catch (e) { /* silently ignore */ }
-}
-
-// Автосброс каждые 10 сек
-setInterval(flushUiLog, 10000);
-window.addEventListener("beforeunload", flushUiLog);
-
 // ─── Ссылки на DOM-элементы
 const els = {
     fileInput:   document.getElementById("audio-files"),
@@ -645,11 +594,6 @@ async function loadKar(t, cvr) {
     syncSliders();
     // Сброс скролла при загрузке трека
     els.lDisp.scrollTop = 0;
-    dumpUiLayout("loadKar_start");
-
-    // НЕ скроллим плеер в портретном режиме — это ломает позицию UI
-    // if (window.innerWidth <= 1024 && !document.body.classList.contains("fs-mode"))
-    //     els.kCont.scrollIntoView({ behavior: "smooth" });
 
     const nm = t.title || t.original_name.replace(/\.[^.]+$/, "");
     document.getElementById("cv-title").innerText  = nm;

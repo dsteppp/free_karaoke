@@ -703,8 +703,8 @@ lyrics-display {
     overflow-x: hidden;
     text-align: center;
     display: block;
-    /* Симметричные отступы: активная строка всегда в центре видимой области */
-    padding: 45vh 1rem 45vh 1rem;
+    /* Отступы: первая/последняя строка примерно в центре видимой области */
+    padding: 35vh 1rem 35vh 1rem;
     scrollbar-width: none;
     -ms-overflow-style: none;
     z-index: 3;
@@ -831,7 +831,7 @@ body.fs-mode #karaoke-container {
 }
 
 body.fs-mode .floating-control-panel        { bottom: 2rem; max-width: 55rem; }
-body.fs-mode lyrics-display                 { bottom: 9rem; padding: 50vh 1rem 50vh 1rem; }
+body.fs-mode lyrics-display                 { bottom: 9rem; padding: 40vh 1rem 40vh 1rem; }
 body.fs-mode .fcp-meta-text,
 body.fs-mode .fcp-vol-col                   { height: 3.5rem; }
 body.fs-mode .fcp-title                     { font-size: 1.1rem; }
@@ -853,7 +853,7 @@ body.fs-mode .lyric-line                    { font-size: clamp(2rem, 5vw, 4rem);
     .player-panel   { order: -1; flex: 55 1 0; min-height: 0; } /* 55% высоты */
     .library-panel  { order: 1;  flex: 45 1 0; min-height: 0; } /* 45% высоты */
     .lyric-line     { font-size: clamp(1.1rem, 4.5vw, 1.6rem); margin: 0.8vh auto; width: 95%; }
-    lyrics-display  { bottom: 5.5rem; padding: 40vh 1rem 40vh 1rem; }
+    lyrics-display  { bottom: 5.5rem; padding: 25vh 1rem 25vh 1rem; }
 }
 
 @media (max-width: 48rem) {

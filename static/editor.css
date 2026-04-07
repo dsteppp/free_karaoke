@@ -272,10 +272,10 @@ body.edit-mode.popover-open lyrics-display {
 
 /* ─── Адаптив редактора: портрет (плеер 55%) ─── */
 @media (max-width: 64rem) and (orientation: portrait) {
-    lyrics-display { padding: 35vh 1rem 35vh 1rem; }
+    lyrics-display { padding: 25vh 1rem 25vh 1rem; }
 }
 
 /* ─── Адаптив редактора: маленький портрет ─── */
 @media (max-height: 36rem) and (orientation: portrait) {
-    lyrics-display { padding: 30vh 1rem 30vh 1rem; }
+    lyrics-display { padding: 22vh 1rem 22vh 1rem; }
 }
