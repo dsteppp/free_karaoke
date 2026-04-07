@@ -390,12 +390,11 @@ def main():
     # Передаём ссылку на окно для диалогов
     file_api._window = window
 
+    # На Linux пробуем GTK (не зависит от интернета), fallback на Qt
+    gui_backend = "gtk" if sys.platform.startswith("linux") else "qt"
     log.info("Запуск webview (gui=%s)...", gui_backend)
-    try:
-        # На Linux пробуем GTK (не зависит от интернета), fallback на Qt
-        gui_backend = "gtk" if sys.platform.startswith("linux") else "qt"
-        log.info("WebView backend: %s (GTK может быть недоступен — это нормально)", gui_backend)
 
+    try:
         webview.start(
             gui=gui_backend,
             private_mode=False,
