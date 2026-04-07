@@ -186,14 +186,17 @@ def kill_child_processes():
 def wait_for_server(url, timeout=30):
     """Ждём готовности сервера. Используем urllib с коротким таймаутом."""
     start = time.time()
+    log.info("Ожидание сервера %s (timeout=%dс)...", url, timeout)
     while time.time() - start < timeout:
         try:
             resp = urllib.request.urlopen(url, timeout=2)
             if resp.status == 200:
+                log.info("Сервер готов за %.1fс", time.time() - start)
                 return True
-        except Exception:
-            pass
+        except Exception as e:
+            log.debug("Сервер ещё не готов: %s", e)
         time.sleep(0.5)
+    log.error("Сервер не ответил за %dс", timeout)
     return False
 
 
@@ -387,6 +390,7 @@ def main():
     # Передаём ссылку на окно для диалогов
     file_api._window = window
 
+    log.info("Запуск webview (gui=%s)...", gui_backend)
     try:
         # На Linux пробуем GTK (не зависит от интернета), fallback на Qt
         gui_backend = "gtk" if sys.platform.startswith("linux") else "qt"
@@ -400,6 +404,8 @@ def main():
         )
     except Exception as e:
         log.error("Ошибка при запуске окна: %s", e)
+        import traceback
+        log.debug("Traceback:\n%s", traceback.format_exc())
 
     log.info("Окно закрыто.")
     # _cleanup вызовется через atexit
