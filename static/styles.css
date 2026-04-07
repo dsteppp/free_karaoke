@@ -411,6 +411,8 @@ html, body {
     border: 1px solid var(--border);
     display: flex;
     flex-direction: column;
+    /* Отступ снизу — текст не заходит под панель управления (~6rem высота + отступ) */
+    padding-bottom: 7rem;
 }
 
 .bg-slide {
@@ -445,27 +447,29 @@ html, body {
     pointer-events: none;
 }
 
-/* Обложка — левый верхний угол */
+/* Обложка — левый верхний угол. Видна всегда, не мешает кликам */
 .top-left-cover {
     position: absolute;
     top: 1rem;
     left: 1rem;
-    width: 15%;
+    width: clamp(3.75rem, 18%, 15rem); /* ×2 от предыдущего, но не более 15% ширины блока */
+    max-width: min(15%, 360px); /* Никогда не больше 15% ширины родителя */
     aspect-ratio: 1;
     object-fit: cover;
     border-radius: var(--radius-md);
-    z-index: 30;
+    z-index: 30; /* Выше текста (25) — всегда видна */
     background: var(--surface);
     transition: all 0.4s cubic-bezier(0.25, 1, 0.5, 1);
-    box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+    box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+    pointer-events: none; /* Не перехватывает клики */
 }
 
-/* Кнопка fullscreen */
+/* Кнопка fullscreen — всегда видна в правом верхнем углу */
 .fs-btn {
     position: absolute;
     top: 1rem;
     right: 1rem;
-    z-index: 30;
+    z-index: 55; /* Выше текста (25) и обложки (30), кликабельна */
     background: rgba(0,0,0,0.5);
     padding: 0.5rem;
     border-radius: var(--radius-sm);
@@ -476,6 +480,8 @@ html, body {
     display: flex;
     flex-shrink: 0;
     transition: all 0.3s cubic-bezier(0.25, 1, 0.5, 1);
+    max-width: 10%;
+    max-height: 10%;
 }
 .fs-btn:hover { background: rgba(255,255,255,0.15); transform: scale(1.05); }
 .fs-btn:active { transform: scale(0.95); }
@@ -686,13 +692,13 @@ html, body {
 lyrics-display {
     position: absolute;
     inset: 0;
-    z-index: 20;
+    z-index: 25; /* Выше обложки (10) и кнопок (15), НИЖЕ панели (50) — текст видим, панель кликабельна */
     overflow-y: scroll;
     overflow-x: hidden;
     text-align: center;
     display: block;
-    padding: 45vh 1rem; 
-    scrollbar-width: none; 
+    padding: 45vh 1rem;
+    scrollbar-width: none;
     -ms-overflow-style: none;
     
     /* Сохраняем плавное затухание (маску) по краям контейнера */
@@ -836,9 +842,11 @@ body.fs-mode .lyric-line                    { font-size: clamp(2rem, 5vw, 4rem);
     .app-container  { height: 100dvh; min-height: 0; padding: 0.5rem; gap: 0.5rem; }
     .main-layout    { flex-direction: column; }
     .panel          { padding: 0.75rem; border-radius: var(--radius-md); }
-    .player-panel   { order: -1; flex: 40 1 0; min-height: 18rem; }
-    .library-panel  { order: 1;  flex: 60 1 0; min-height: 0; }
+    .player-panel   { order: -1; flex: 55 1 0; min-height: 0; } /* 55% высоты */
+    .library-panel  { order: 1;  flex: 45 1 0; min-height: 0; } /* 45% высоты */
     .lyric-line     { font-size: clamp(1.1rem, 4.5vw, 1.6rem); margin: 0.8vh auto; width: 95%; }
+    /* В портрете: отступ под панель + место под обложку сверху */
+    .lyrics-wrapper { padding-bottom: 5.5rem; padding-top: clamp(5rem, 15%, 8rem); }
 }
 
 @media (max-width: 48rem) {

@@ -4,13 +4,13 @@
 
 /* Отключаем маску-затухание по краям, меняем flex на block для правильного скролла */
 body.edit-mode lyrics-display {
-    display: block !important; 
+    display: block !important;
     text-align: center !important;
     -webkit-mask-image: none !important;
     mask-image: none !important;
     overflow-y: auto !important;
-    /* 45vh сверху и снизу позволяют прокрутить ЛЮБУЮ строку в абсолютный центр экрана */
-    padding: 45vh 1rem 45vh 1rem !important; 
+    /* Резиновый padding: верх меньше, низ — с запасом под панель */
+    padding: clamp(12vh, 18vw, 25vh) 1rem calc(clamp(12vh, 18vw, 25vh) + 6rem) 1rem !important;
     scrollbar-width: thin !important;
     scrollbar-color: var(--accent) transparent !important;
 }
@@ -107,7 +107,7 @@ body.edit-mode .word:active {
    ───────────────────────────────────────────────────────────────────────────── */
 #editor-popover {
     position: fixed;
-    z-index: 100000; /* Гарантированно выше всего */
+    z-index: 999999; /* Выше fs-mode (99999) — popover виден в полноэкранном режиме */
     background: rgba(20, 20, 25, 0.95);
     backdrop-filter: blur(12px);
     border: 1px solid var(--border);
@@ -118,7 +118,12 @@ body.edit-mode .word:active {
     flex-direction: column;
     gap: 0.5rem;
     min-width: 240px;
-    
+    max-width: min(300px, 85vw);
+    max-height: min(350px, 50vh);
+    overflow-y: auto;
+    overflow-x: hidden;
+    box-sizing: border-box;
+
     /* Анимация появления */
     opacity: 0;
     pointer-events: none;
@@ -229,7 +234,9 @@ body.edit-mode .word:active {
     right: 3.5rem;
     display: flex;
     gap: 0.5rem;
-    z-index: 100;
+    z-index: 55; /* Выше текста (25), кликабельна */
+    max-width: 50%;
+    overflow: hidden;
 }
 
 .editor-btn {
@@ -265,4 +272,20 @@ body.edit-mode .editor-btn.edit-cancel { display: flex; }
 /* Блокируем плеер от кликов, если меню открыто */
 body.edit-mode.popover-open lyrics-display {
     pointer-events: none !important;
+}
+
+/* ─── Адаптив редактора: портрет (плеер 55%) ─── */
+@media (max-width: 64rem) and (orientation: portrait) {
+    body.edit-mode lyrics-display {
+        padding-top: clamp(8vh, 12vw, 14vh) !important;
+        padding-bottom: calc(clamp(8vh, 12vw, 14vh) + 5.5rem) !important;
+    }
+}
+
+/* ─── Адаптив редактора: маленький портрет ─── */
+@media (max-height: 36rem) and (orientation: portrait) {
+    body.edit-mode lyrics-display {
+        padding-top: clamp(5vh, 8vw, 10vh) !important;
+        padding-bottom: calc(clamp(5vh, 8vw, 10vh) + 5rem) !important;
+    }
 }

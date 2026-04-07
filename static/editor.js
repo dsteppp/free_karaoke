@@ -142,14 +142,42 @@
     }
 
     // ── Логика Popover (Меню) ────────────────────────────────────────────────
-    
-    // Динамический пересчет позиции меню
+
+    // Динамический пересчет позиции меню — с защитой от выхода за края и перекрытия панели
     function updatePopoverPosition() {
         if (!activeTargetSpan || !popover.classList.contains("visible")) return;
         const rect = activeTargetSpan.getBoundingClientRect();
-        
-        let top = rect.top - 10;
+
+        const popoverW = popover.offsetWidth || 240;
+        const popoverH = popover.offsetHeight || 160;
+        const margin = 8;
+        const panelBottomZone = 100;
+
+        // По умолчанию: popover НАД словом (transform: translate(-50%, -120%))
+        let top = rect.top;
         let left = rect.left + (rect.width / 2);
+
+        // Если уходит за верхний край — показываем ПОД словом
+        if (top - popoverH * 1.2 < margin) {
+            top = rect.bottom + margin;
+            popover.style.transform = `translate(-50%, 10px)`;
+        } else {
+            popover.style.transform = `translate(-50%, -120%)`;
+        }
+
+        // Если уходит за нижний край (перекрывает панель) — поднимаем
+        if (top + popoverH > window.innerHeight - panelBottomZone) {
+            top = rect.top - popoverH - margin;
+            if (top < margin) {
+                top = rect.bottom + margin;
+                popover.style.transform = `translate(-50%, 10px)`;
+            } else {
+                popover.style.transform = `translate(-50%, -120%)`;
+            }
+        }
+
+        // Горизонтальное центрирование с защитой от выхода за края
+        left = Math.max(margin + popoverW / 2, Math.min(left, window.innerWidth - margin - popoverW / 2));
 
         popover.style.top = `${top}px`;
         popover.style.left = `${left}px`;
@@ -321,6 +349,18 @@
         window.lyricsData = backupLyricsData;
         toggleEditMode(false);
         await reloadTrackAndRestoreTime();
+    });
+
+    // Escape: закрывает popover или выходит из редактора
+    document.addEventListener("keydown", (e) => {
+        if (e.key === "Escape") {
+            if (popover.classList.contains("visible")) {
+                closePopover();
+            } else if (isEditMode) {
+                window.lyricsData = backupLyricsData;
+                toggleEditMode(false);
+            }
+        }
     });
 
     btnApply.addEventListener("click", async () => {

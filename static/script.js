@@ -117,12 +117,27 @@ async function openNativeFileDialog() {
     }
 }
 
-// ГОРЯЧИЕ КЛАВИШИ (Плей/Пауза, Перемотка, Fullscreen)
+// ГОРЯЧИЕ КЛАВИШИ (Плей/Пауза, Перемотка, Fullscreen, Редактор)
 document.addEventListener("keydown", (e) => {
     // Игнорируем нажатия, если пользователь вводит текст (поиск или редактор слов)
     if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA") return;
 
     if (e.key === "Escape" && document.body.classList.contains("fs-mode")) {
+        toggleFS();
+        return;
+    }
+
+    // R — вкл/выкл редактор (любая раскладка,物理ческая клавиша R)
+    if (e.code === "KeyR") {
+        e.preventDefault();
+        const editorStartBtn = document.getElementById("edit-start-btn");
+        if (editorStartBtn) editorStartBtn.click();
+        return;
+    }
+
+    // F — вкл/выкл фуллскрин (любая раскладка, физическая клавиша F)
+    if (e.code === "KeyF") {
+        e.preventDefault();
         toggleFS();
         return;
     }
@@ -698,10 +713,11 @@ function scrollToActiveLine(idx, behavior = 'smooth') {
     const container = els.lDisp;
     const lineNode = playerLines[idx].domNode;
     
-    const isPortrait = window.innerHeight > window.innerWidth;
-    const offsetRatio = isPortrait ? 0.35 : 0.5;
-    
-    const offset = lineNode.offsetTop - (container.clientHeight * offsetRatio) + (lineNode.clientHeight / 2);
+    // Адаптивный offset: 40% от верха блока плеера в любом режиме
+    const playerPanel = els.kCont;
+    const playerHeight = playerPanel ? playerPanel.clientHeight : container.clientHeight;
+    const offsetRatio = 0.40;
+    const offset = lineNode.offsetTop - (playerHeight * offsetRatio) + (lineNode.clientHeight / 2);
     container.scrollTo({ top: Math.max(0, offset), behavior: behavior });
 }
 
