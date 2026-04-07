@@ -114,9 +114,23 @@
     }
 
     // ── Логика Режима ────────────────────────────────────────────────────────
+    function logEditor(msg) {
+        const ts = new Date().toISOString().substr(11, 12);
+        console.log(`[editor ${ts}] ${msg}`);
+    }
+
     function toggleEditMode(enable) {
         if (!window.currentTrack || !window.lyricsData) return;
         isEditMode = enable;
+
+        // Запоминаем геометрию ДО переключения
+        const before = {
+            scrollTop: lyricsDisp.scrollTop,
+            scrollHeight: lyricsDisp.scrollHeight,
+            clientHeight: lyricsDisp.clientHeight,
+            rect: lyricsDisp.getBoundingClientRect()
+        };
+        logEditor(`Вход в ${enable ? "редактор" : "плеер"}: scrollTop=${before.scrollTop} scrollH=${before.scrollHeight} clientH=${before.clientHeight}`);
 
         if (enable) {
             document.body.classList.add("edit-mode");
@@ -124,14 +138,25 @@
             window.vocAudio.pause();
             backupLyricsData = JSON.parse(JSON.stringify(window.lyricsData));
 
-            setTimeout(() => {
-                const activeLine = document.querySelector(".lyric-line.active-line");
-                if (activeLine) {
-                    activeLine.scrollIntoView({ block: "center", behavior: "smooth" });
-                } else if (lyricsDisp.firstElementChild) {
-                    lyricsDisp.firstElementChild.scrollIntoView({ block: "center", behavior: "smooth" });
-                }
-            }, 50);
+            // Принудительный рефлоу для применения CSS
+            requestAnimationFrame(() => {
+                lyricsDisp.offsetHeight;
+                // Восстанавливаем скролл
+                lyricsDisp.scrollTop = before.scrollTop;
+
+                const after = lyricsDisp.getBoundingClientRect();
+                logEditor(`После входа: top=${after.top.toFixed(1)} bottom=${after.bottom.toFixed(1)} height=${after.height.toFixed(1)} дельта=${(after.height - before.rect.height).toFixed(1)}`);
+
+                // Центрируем активную строку
+                setTimeout(() => {
+                    const activeLine = document.querySelector(".lyric-line.active-line");
+                    if (activeLine) {
+                        activeLine.scrollIntoView({ block: "center", behavior: "smooth" });
+                    } else if (lyricsDisp.firstElementChild) {
+                        lyricsDisp.firstElementChild.scrollIntoView({ block: "center", behavior: "smooth" });
+                    }
+                }, 50);
+            });
 
         } else {
             document.body.classList.remove("edit-mode", "popover-open");
@@ -139,17 +164,22 @@
             currentWordIndex = -1;
             activeTargetSpan = null;
 
-            // Сброс скролла при выходе из редактора
-            lyricsDisp.scrollTop = 0;
+            // Принудительный рефлоу
+            requestAnimationFrame(() => {
+                lyricsDisp.offsetHeight;
+                lyricsDisp.scrollTop = 0;
 
-            // Восстанавливаем скролл на активную строку
-            setTimeout(() => {
-                const activeLine = document.querySelector(".lyric-line.active-line");
-                if (activeLine && window.scrollToActiveLine && window.playerLines) {
-                    const idx = window.playerLines.findIndex(p => p.domNode === activeLine);
-                    if (idx !== -1) window.scrollToActiveLine(idx, "auto");
-                }
-            }, 50);
+                const after = lyricsDisp.getBoundingClientRect();
+                logEditor(`После выхода: top=${after.top.toFixed(1)} bottom=${after.bottom.toFixed(1)} height=${after.height.toFixed(1)} дельта=${(after.height - before.rect.height).toFixed(1)}`);
+
+                setTimeout(() => {
+                    const activeLine = document.querySelector(".lyric-line.active-line");
+                    if (activeLine && window.scrollToActiveLine && window.playerLines) {
+                        const idx = window.playerLines.findIndex(p => p.domNode === activeLine);
+                        if (idx !== -1) window.scrollToActiveLine(idx, "auto");
+                    }
+                }, 50);
+            });
         }
     }
 
