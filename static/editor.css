@@ -9,8 +9,9 @@ body.edit-mode lyrics-display {
     -webkit-mask-image: none !important;
     mask-image: none !important;
     overflow-y: auto !important;
-    /* Резиновый padding: верх меньше, низ — с запасом под панель */
-    padding: clamp(12vh, 18vw, 25vh) 1rem calc(clamp(12vh, 18vw, 25vh) + 6rem) 1rem !important;
+    bottom: 7rem !important; /* Фиксированный отступ под панель управления */
+    /* Резиновый padding: верх меньше, низ — с запасом под скролл */
+    padding: clamp(12vh, 18vw, 25vh) 1rem calc(clamp(12vh, 18vw, 25vh) + 3rem) 1rem !important;
     scrollbar-width: thin !important;
     scrollbar-color: var(--accent) transparent !important;
 }
@@ -277,15 +278,17 @@ body.edit-mode.popover-open lyrics-display {
 /* ─── Адаптив редактора: портрет (плеер 55%) ─── */
 @media (max-width: 64rem) and (orientation: portrait) {
     body.edit-mode lyrics-display {
+        bottom: 5.5rem !important;
         padding-top: clamp(8vh, 12vw, 14vh) !important;
-        padding-bottom: calc(clamp(8vh, 12vw, 14vh) + 5.5rem) !important;
+        padding-bottom: calc(clamp(8vh, 12vw, 14vh) + 2rem) !important;
     }
 }
 
 /* ─── Адаптив редактора: маленький портрет ─── */
 @media (max-height: 36rem) and (orientation: portrait) {
     body.edit-mode lyrics-display {
+        bottom: 5rem !important;
         padding-top: clamp(5vh, 8vw, 10vh) !important;
-        padding-bottom: calc(clamp(5vh, 8vw, 10vh) + 5rem) !important;
+        padding-bottom: calc(clamp(5vh, 8vw, 10vh) + 2rem) !important;
     }
 }
