@@ -2,18 +2,13 @@
    РЕЖИМ РЕДАКТОРА (body.edit-mode)
    ───────────────────────────────────────────────────────────────────────────── */
 
-/* Фиксируем позицию и размер — идентично обычному режиму */
+/* Фиксируем позицию — идентично обычному режиму (bottom наследуется) */
 body.edit-mode lyrics-display {
-    position: absolute !important;
-    top: 0 !important;
-    left: 0 !important;
-    right: 0 !important;
-    bottom: 7rem !important;
-    -webkit-mask-image: none !important;
-    mask-image: none !important;
-    scrollbar-width: thin !important;
-    scrollbar-color: var(--accent) transparent !important;
-    z-index: 25 !important;
+    -webkit-mask-image: none;
+    mask-image: none;
+    scrollbar-width: thin;
+    scrollbar-color: var(--accent) transparent;
+    z-index: 25;
 }
 
 body.edit-mode lyrics-display::-webkit-scrollbar {
