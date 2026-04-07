@@ -285,22 +285,32 @@ class KaraokeWindow(QWebEngineView):
         self.channel.registerObject("fileApi", self.file_api)
         page.setWebChannel(self.channel)
 
-        # Инъекция qwebchannel.js в каждую загружаемую страницу
-        page.loadFinished.connect(self._inject_webchannel)
+        # Инъекция qwebchannel.js + настройка после загрузки страницы
+        page.loadFinished.connect(self._on_load_finished)
 
         # Загружаем URL
         self.load(QUrl(url))
 
-    def _inject_webchannel(self, ok):
-        """Инъекция QWebChannel JS API после загрузки страницы."""
-        if ok:
-            self.page().runJavaScript("""
-                // QWebChannel уже подключён через setWebChannel
-                // Проверяем что объект доступен
-                if (typeof qt !== 'undefined' && qt.webChannelTransport) {
-                    console.log('[launcher] QWebChannel подключён');
-                }
-            """)
+    def _on_load_finished(self, ok):
+        """После загрузки страницы: настраиваем QWebChannel на JS стороне."""
+        if not ok:
+            return
+
+        # Qt автоматически инжектирует qwebchannel.js при setWebChannel()
+        # Просто настраиваем подключение
+        self.page().runJavaScript("""
+            if (typeof qt !== 'undefined' && qt.webChannelTransport && typeof QWebChannel !== 'undefined') {
+                new QWebChannel(qt.webChannelTransport, function(channel) {
+                    window.qtFileApi = channel.objects.fileApi;
+                    console.log('[launcher] QWebChannel подключён, fileApi доступен');
+                });
+            } else {
+                console.warn('[launcher] QWebChannel не доступен:',
+                    'qt=', typeof qt,
+                    'transport=', typeof (qt && qt.webChannelTransport),
+                    'QWebChannel=', typeof QWebChannel);
+            }
+        """)
 
     def closeEvent(self, event):
         """Confirm close dialog."""
