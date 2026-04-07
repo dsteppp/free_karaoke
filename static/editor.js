@@ -139,8 +139,13 @@
             currentWordIndex = -1;
             activeTargetSpan = null;
 
-            // Сбрасываем скролл lyrics-display чтобы избежать сдвига элементов
+            // Сброс скролла и принудительный рефлоу для фиксации UI
             lyricsDisp.scrollTop = 0;
+            requestAnimationFrame(() => {
+                lyricsDisp.style.display = "none";
+                lyricsDisp.offsetHeight;
+                lyricsDisp.style.display = "";
+            });
 
             // Восстанавливаем скролл на активную строку
             setTimeout(() => {

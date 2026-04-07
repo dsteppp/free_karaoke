@@ -589,11 +589,13 @@ function resetPlayerUI() {
 async function loadKar(t, cvr) {
     stopPlay();
     document.body.classList.remove("edit-mode", "popover-open");
-    
+
     currentTrack   = t;
     window.currentTrack = t;
     els.seek.value = 0;
     syncSliders();
+    // Сброс скролла при загрузке трека — первая строка корректно позиционируется
+    els.lDisp.scrollTop = 0;
 
     if (window.innerWidth <= 1024 && !document.body.classList.contains("fs-mode"))
         els.kCont.scrollIntoView({ behavior: "smooth" });
