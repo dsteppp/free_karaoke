@@ -124,7 +124,6 @@
 
         // Блокируем открытие редактора во время активной обработки (рескан и т.д.)
         if (enable && document.body.classList.contains("processing")) {
-            alert("⏳ Невозможно открыть редактор — идёт обработка. Дождитесь завершения рескана.");
             return;
         }
 
@@ -418,8 +417,6 @@
             toggleEditMode(false);
 
             // Шаг 3: Запускаем partial rescan с anchor_time
-            epBtnRescan.innerHTML = "⏳ Рескан...";
-
             const rescanRes = await fetch(`/api/tracks/${trackId}/partial_rescan`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
@@ -437,15 +434,20 @@
             const result = await rescanRes.json();
             console.log("✅ Partial rescan запущен:", result.message);
 
-            // Шаг 4: Перезагружаем трек (ждем завершения рескана)
+            // Шаг 4: Показываем полноэкранный оверлей
+            showRescanOverlay();
+
+            // Шаг 5: Перезагружаем трек (ждем завершения рескана)
             await waitForRescanComplete();
 
-            // Шаг 5: Восстанавливаем отображение
+            // Шаг 6: Скрываем оверлей и восстанавливаем отображение
+            hideRescanOverlay();
             await reloadTrackAndRestoreTime();
 
             console.log("✅ Рескан завершён, данные обновлены");
 
         } catch (e) {
+            hideRescanOverlay();
             alert("Ошибка при рескане: " + e.message);
             console.error("Partial rescan error:", e);
         } finally {
@@ -459,6 +461,45 @@
             btnApply.style.pointerEvents = "auto";
         }
     });
+
+    // ── Полноэкранный оверлей рескана ──────────────────────────────────────
+    function showRescanOverlay() {
+        const overlay = document.getElementById("rescan-overlay");
+        if (overlay) {
+            overlay.style.display = "flex";
+            document.getElementById("rescan-message").textContent = "Идёт рескан таймингов...";
+        }
+    }
+
+    function hideRescanOverlay() {
+        const overlay = document.getElementById("rescan-overlay");
+        if (overlay) {
+            overlay.style.display = "none";
+        }
+    }
+
+    function updateRescanMessage(message) {
+        const msgEl = document.getElementById("rescan-message");
+        if (msgEl) {
+            msgEl.textContent = message;
+        }
+    }
+
+    // ── Кнопка отмены на оверлее ────────────────────────────────────────────
+    const rescanCancelBtn = document.getElementById("rescan-cancel-btn");
+    if (rescanCancelBtn) {
+        rescanCancelBtn.addEventListener("click", async () => {
+            if (!confirm("Отменить рескан? Текущий трек будет переведён в статус ошибки.")) return;
+
+            try {
+                await fetch("/api/cancel", { method: "POST" });
+                hideRescanOverlay();
+                console.log("⛔ Рескан отменён пользователем");
+            } catch (e) {
+                console.error("Ошибка при отмене рескана:", e);
+            }
+        });
+    }
 
     // Функция ожидания завершения рескана (polling app_status)
     async function waitForRescanComplete() {
@@ -478,9 +519,9 @@
                     }
 
                     waited++;
-                    // Обновляем текст кнопки с прогрессом
+                    // Обновляем сообщение на оверлее
                     const msg = status.message || "Обработка...";
-                    epBtnRescan.innerHTML = `⏳ ${msg}`;
+                    updateRescanMessage(msg);
 
                     if (waited > maxWait) {
                         clearInterval(interval);

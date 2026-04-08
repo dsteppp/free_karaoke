@@ -482,10 +482,12 @@ def _elastic_vad_assembly(words: list, vad_intervals: list, audio_duration: floa
 
             # СЦЕНАРИЙ 2: АУТРО (После последнего якоря)
             elif j == n and available_vads:
-                # В аутро текст должен лечь на первый вокальный остров после якоря (Island Hopping)
-                target_vad = available_vads[0]
-                t_start, t_end = target_vad[0], target_vad[1]
-                log.info("      📍 Сценарий АУТРО: Island Hopping — первый VAD-остров %.2fс-%.2fс", t_start, t_end)
+                # В аутро используем ВСЕ доступные VAD-острова от anchor_prev_end до конца
+                # Раньше брался только первый остров — слова сжимались в одну точку
+                t_start = available_vads[0][0]
+                t_end = available_vads[-1][1]
+                log.info("      📍 Сценарий АУТРО: используем все %d VAD-островов от %.2fс до %.2fс",
+                         len(available_vads), t_start, t_end)
 
             # СЦЕНАРИЙ 3: ДЫРА В СЕРЕДИНЕ (Между якорями)
             else:

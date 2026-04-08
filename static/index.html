@@ -92,6 +92,21 @@
                     </div>
                 </div>
 
+                <!-- ═══ ПОЛНОЭКРАННЫЙ ОВЕРЛЕЙ РЕСКАНА ═══ -->
+                <div id="rescan-overlay" class="rescan-overlay" style="display:none;">
+                    <div class="rescan-overlay-content">
+                        <div class="rescan-spinner"></div>
+                        <div class="rescan-message" id="rescan-message">Идёт рескан таймингов...</div>
+                        <button id="rescan-cancel-btn" class="rescan-cancel-btn">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="20" height="20">
+                                <line x1="18" y1="6" x2="6" y2="18"/>
+                                <line x1="6" y1="6" x2="18" y2="18"/>
+                            </svg>
+                            Отменить рескан
+                        </button>
+                    </div>
+                </div>
+
                 <!-- Строка 2: импорт/экспорт + поиск + сортировка -->
                 <div class="lh-row filters">
 

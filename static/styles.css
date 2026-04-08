@@ -1401,6 +1401,112 @@ body.io-busy .lyrics-wrapper {
     border-right-color: rgba(15, 15, 20, 0.95);
 }
 
+/* ═══════════════════════════════════════════════════════════════════════════
+   ПОЛНОЭКРАННЫЙ ОВЕРЛЕЙ РЕСКАНА
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.rescan-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 10000;
+    background: rgba(10, 10, 15, 0.85);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    animation: overlayFadeIn 0.3s ease-out;
+}
+
+@keyframes overlayFadeIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+
+.rescan-overlay-content {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 1.5rem;
+    padding: 3rem 4rem;
+    background: rgba(20, 20, 30, 0.95);
+    border-radius: 1.5rem;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+    animation: contentSlideIn 0.4s ease-out;
+}
+
+@keyframes contentSlideIn {
+    from {
+        opacity: 0;
+        transform: translateY(20px) scale(0.95);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0) scale(1);
+    }
+}
+
+/* Спиннер */
+.rescan-spinner {
+    width: 64px;
+    height: 64px;
+    border: 4px solid rgba(255, 255, 255, 0.1);
+    border-top-color: var(--accent, #a78bfa);
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+    to { transform: rotate(360deg); }
+}
+
+/* Текст сообщения */
+.rescan-message {
+    color: rgba(255, 255, 255, 0.9);
+    font-size: 1.1rem;
+    font-weight: 500;
+    text-align: center;
+    line-height: 1.5;
+    max-width: 400px;
+}
+
+/* Кнопка отмены */
+.rescan-cancel-btn {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.7rem 1.5rem;
+    background: rgba(239, 68, 68, 0.15);
+    color: #f87171;
+    border: 1px solid rgba(239, 68, 68, 0.3);
+    border-radius: 0.75rem;
+    font-size: 0.95rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    font-family: inherit;
+}
+
+.rescan-cancel-btn:hover {
+    background: rgba(239, 68, 68, 0.25);
+    border-color: rgba(239, 68, 68, 0.5);
+    color: #fca5a5;
+    transform: translateY(-1px);
+}
+
+.rescan-cancel-btn:active {
+    transform: translateY(0);
+    background: rgba(239, 68, 68, 0.35);
+}
+
+.rescan-cancel-btn svg {
+    flex-shrink: 0;
+}
+
 /* ── Блокировка интерфейса во время рескана (processing) ─────────────────── */
 /* Блокируем кнопку "Редактировать" и popover редактора */
 body.processing .editor-btn.edit-start {
