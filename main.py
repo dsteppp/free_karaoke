@@ -929,6 +929,16 @@ async def partial_rescan_endpoint(
         log.error("   ❌ start_word_index=%d >= всего слов=%d", req.start_word_index, len(karaoke_data))
         raise HTTPException(status_code=400, detail="Индекс слова вне диапазона")
 
+    # ── КРИТИЧЕСКОЕ: устанавливаем статус ДО запуска задачи ──────────────
+    # Иначе polling в frontend увидит active=false и сразу закроет оверлей
+    # (между постановкой задачи в очередь и её выполнением есть задержка)
+    from app_status import set_status as app_set_status
+    display_name_for_status = track.title or track.original_name or track.filename
+    if track.artist:
+        display_name_for_status = f"{track.artist} — {display_name_for_status}"
+    app_set_status(f"🔄 {display_name_for_status} | Рескан таймингов от слова {req.start_word_index + 1} ({req.anchor_time:.0f}с)…", progress=None)
+    log.info("   ✅ Статус установлен ДО запуска задачи — оверлей не закроется раньше времени")
+
     # Запускаем задачу в Huey очередь
     partial_rescan_task(track_id, req.start_word_index, req.anchor_time)
 
