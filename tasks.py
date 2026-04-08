@@ -264,10 +264,14 @@ def _process_track(track_id: str):
 # Partial Rescan Task: перескан таймингов от указанного слова до конца песни
 # ──────────────────────────────────────────────────────────────────────────────
 @huey.task()
-def partial_rescan_task(track_id: str, start_word_index: int):
+def partial_rescan_task(track_id: str, start_word_index: int, anchor_time: float):
     """
     Частичный перескан таймингов: обрабатывает только слова [start_word_index:] до конца песни.
     Слова до start_word_index НЕ изменяются — их тайминги сохраняются как есть.
+
+    anchor_time — точное время (секунды) ручного якоря, установленного пользователем.
+    Аудио и VAD обрезаются от anchor_time, чтобы Whisper и matching работали только
+    от указанной точки, игнорируя сломанные тайминги до неё.
     """
     db = SessionLocal()
 
@@ -278,7 +282,7 @@ def partial_rescan_task(track_id: str, start_word_index: int):
             return
 
         log.info("=" * 50)
-        log.info("PARTIAL RESCAN: трек %s, start_word_index=%d", track_id, start_word_index)
+        log.info("PARTIAL RESCAN: трек %s, start_word_index=%d, anchor_time=%.2f", track_id, start_word_index, anchor_time)
 
         # Формируем читаемое имя трека
         display_name = track.title or track.original_name or track.filename
@@ -293,7 +297,7 @@ def partial_rescan_task(track_id: str, start_word_index: int):
         vad_path = f"{base_path}_(VAD).json"
 
         # Устанавливаем статус (блокировка UI)
-        set_status(f"🔄 {display_name} | Рескан таймингов от слова {start_word_index + 1}…", progress=None)
+        set_status(f"🔄 {display_name} | Рескан таймингов от слова {start_word_index + 1} ({anchor_time:.0f}с)…", progress=None)
 
         # Загружаем текст песни
         if not lyrics_path or not os.path.exists(lyrics_path):
@@ -316,44 +320,57 @@ def partial_rescan_task(track_id: str, start_word_index: int):
             set_status(f"❌ {display_name} | Ошибка: индекс слова вне диапазона")
             return
 
-        # Загружаем VAD из кэша
+        # ── КЛЮЧЕВОЙ ЭТАП: обрезаем аудио и VAD по anchor_time ───────────────
+        # Буфер перед якорем (0.5с) — чтобы захватить начало слога
+        ANCHOR_BUFFER = 0.5
+        audio_start_time = max(0.0, anchor_time - ANCHOR_BUFFER)
+
+        log.info("✂️ Обрезка аудио: начинаем анализ с %.2fс (якорь=%.2f, буфер=%.2f)",
+                 audio_start_time, anchor_time, ANCHOR_BUFFER)
+
+        # Загружаем полное аудио
+        audio_data, sr = librosa.load(vocals_path, sr=16000, mono=True)
+        full_duration = len(audio_data) / sr
+
+        # Обрезаем аудио-массив: берём только от anchor_time - buffer до конца
+        start_sample = int(audio_start_time * sr)
+        audio_partial = audio_data[start_sample:]
+        partial_duration = len(audio_partial) / sr
+
+        log.info("   📊 Полное аудио: %.2fс, обрезанное: %.2fс (с %.2f до конца)",
+                 full_duration, partial_duration, audio_start_time)
+
+        # Загружаем или вычисляем VAD
         vad_intervals = None
-        audio_duration = None
         if os.path.exists(vad_path):
             try:
                 with open(vad_path, "r", encoding="utf-8") as f:
                     vad_data = json.load(f)
-                vad_intervals = vad_data.get("intervals", [])
-                audio_duration = vad_data.get("duration", 0)
-                log.info("VAD загружен из кэша: %d интервалов, длительность=%.2fс", len(vad_intervals), audio_duration)
+                all_vad = vad_data.get("intervals", [])
+                log.info("VAD загружен из кэша: %d интервалов", len(all_vad))
             except Exception as e:
                 log.warning("Не удалось загрузить VAD из кэша: %s", e)
-
-        # Если VAD нет — сканируем
-        if not vad_intervals:
-            log.info("VAD не найден в кэше — сканирование вокального стема…")
-            audio_data, sr = librosa.load(vocals_path, sr=16000, mono=True)
-            audio_duration = len(audio_data) / sr
-
+                all_vad = []
+        else:
             from aligner_acoustics import get_vocal_intervals
-            vad_intervals = get_vocal_intervals(audio_data, sr, top_db=35.0)
-            if not vad_intervals:
-                vad_intervals = [(0.0, audio_duration)]
+            all_vad = get_vocal_intervals(audio_data, sr, top_db=35.0)
+            if not all_vad:
+                all_vad = [(0.0, full_duration)]
 
-            # Сохраняем VAD в кэш
-            try:
-                with open(vad_path, "w", encoding="utf-8") as f:
-                    json.dump({"duration": audio_duration, "intervals": vad_intervals}, f)
-            except Exception:
-                pass
+        # Обрезаем VAD-интервалы: только те, что пересекаются с [audio_start_time, full_duration]
+        vad_intervals = []
+        for vs, ve in all_vad:
+            # Интервал должен хотя бы частично быть после audio_start_time
+            if ve > audio_start_time:
+                # Обрезаем начало интервала, если оно раньше audio_start_time
+                clipped_start = max(vs, audio_start_time)
+                vad_intervals.append((clipped_start, ve))
 
-        # Загружаем аудио (если ещё не загружено)
-        if 'audio_data' not in locals() or audio_data is None:
-            audio_data, sr = librosa.load(vocals_path, sr=16000, mono=True)
-            audio_duration = len(audio_data) / sr
+        log.info("   ✂️ VAD обрезан: было %d, осталось %d интервалов от %.2fс",
+                 len(all_vad), len(vad_intervals), audio_start_time)
 
-        # Транскрипция через Whisper (весь аудио)
-        log.info("Запуск Whisper-транскрипции (весь аудио)…")
+        # ── Транскрипция через Whisper ТОЛЬКО обрезанного аудио ──────────────
+        log.info("🎤 Запуск Whisper-транскрипции (обрезанное аудио от %.2fс)…", audio_start_time)
         from stable_whisper import load_model
         from aligner_utils import detect_language, prepare_text, clean_word
         from karaoke_aligner import KaraokeAligner
@@ -363,7 +380,7 @@ def partial_rescan_task(track_id: str, start_word_index: int):
         model = load_model("medium", download_root=aligner.whisper_model_dir, device=aligner.device)
 
         result = model.transcribe(
-            audio_data,
+            audio_partial,
             language=lang,
             word_timestamps=True,
             vad=True,
@@ -371,35 +388,41 @@ def partial_rescan_task(track_id: str, start_word_index: int):
 
         log.info("Транскрипция завершена")
 
-        # Формируем raw_heard_words
+        # Формируем raw_heard_words — сдвигаем тайминги обратно к абсолютным значениям
         raw_heard_words = []
         for segment in result.segments:
             for w in segment.words:
                 cw = clean_word(w.word)
                 if cw:
+                    # Сдвигаем тайминги: Whisper дал время от 0 (обрезанное аудио),
+                    # нам нужно абсолютное время в оригинальном аудио
+                    abs_start = w.start + audio_start_time
+                    abs_end = w.end + audio_start_time
                     raw_heard_words.append({
                         "word": w.word,
                         "clean": cw,
-                        "start": w.start,
-                        "end": w.end,
+                        "start": abs_start,
+                        "end": abs_end,
                         "probability": w.probability,
                     })
 
-        # Фильтрация галлюцинаций
+        # Фильтрация галлюцинаций — по обрезанным VAD
         from aligner_acoustics import filter_whisper_hallucinations
         heard_words = filter_whisper_hallucinations(raw_heard_words, vad_intervals)
 
-        log.info("После фильтрации галлюцинаций: %d слов", len(heard_words))
+        log.info("После фильтрации галлюцинаций: %d слов (от %.2fс до конца)", len(heard_words), audio_start_time)
 
         # Sequence Matching — с partial rescan
-        log.info("Сопоставление текста с аудио (partial rescan от слова %d)…", start_word_index)
+        log.info("Сопоставление текста с аудио (partial rescan от слова %d, якорь=%.2fс)…", start_word_index, anchor_time)
 
         from aligner_orchestra import execute_sequence_matching
         canon_words = prepare_text(lyrics_text)
 
         # ВАЖНО: canon_words — это полный массив, включая старые тайминги
         # execute_sequence_matching с start_word_index > 0 обработает только часть
-        canon_words = execute_sequence_matching(canon_words, heard_words, vad_intervals, audio_duration, start_word_index)
+        canon_words = execute_sequence_matching(
+            canon_words, heard_words, vad_intervals, full_duration, start_word_index, anchor_time
+        )
 
         # Физический контроль (VAD-Magnet) — только для новых слов
         from aligner_acoustics import constrain_to_vad
@@ -438,6 +461,8 @@ def partial_rescan_task(track_id: str, start_word_index: int):
             del model
         if 'audio_data' in locals():
             del audio_data
+        if 'audio_partial' in locals():
+            del audio_partial
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()

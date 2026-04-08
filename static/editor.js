@@ -26,7 +26,7 @@
         </div>
         <div class="ep-footer">
             <button class="ep-reset-btn" id="ep-btn-reset">Сбросить якорь</button>
-            <button class="ep-rescan-btn" id="ep-btn-rescan" disabled>
+            <button class="ep-rescan-btn" id="ep-btn-rescan">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><path d="M1 4v6h6"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>
                 Рескан далее
             </button>
@@ -121,6 +121,13 @@
     // ── Логика Режима ────────────────────────────────────────────────────────
     function toggleEditMode(enable) {
         if (!window.currentTrack || !window.lyricsData) return;
+
+        // Блокируем открытие редактора во время активной обработки (рескан и т.д.)
+        if (enable && document.body.classList.contains("processing")) {
+            alert("⏳ Невозможно открыть редактор — идёт обработка. Дождитесь завершения рескана.");
+            return;
+        }
+
         isEditMode = enable;
 
         if (enable) {
@@ -134,6 +141,9 @@
                 lyricsDisp.scrollTop = lyricsDisp.scrollTop;
             });
 
+            // Обновляем состояние кнопки рескана
+            updateRescanButtonState();
+
         } else {
             document.body.classList.remove("edit-mode", "popover-open");
             popover.classList.remove("visible");
@@ -146,6 +156,19 @@
             });
         }
     }
+
+    // Динамическое обновление состояния кнопки рескана
+    function updateRescanButtonState() {
+        const isProcessing = document.body.classList.contains("processing");
+        epBtnRescan.disabled = isProcessing;
+    }
+
+    // Периодическая проверка состояния (синхронизация с общим статусом)
+    setInterval(() => {
+        if (isEditMode) {
+            updateRescanButtonState();
+        }
+    }, 2000);
 
     // ── Логика Popover (Меню) ────────────────────────────────────────────────
 
@@ -353,20 +376,29 @@
 
         const trackId = window.currentTrack.id;
         const startIndex = currentWordIndex;
+        const anchorTime = window.lyricsData[startIndex].start;
+
+        // Проверяем, что якорь установлен (пользователь задал стартовую точку)
+        if (anchorTime === -1 || anchorTime === undefined) {
+            alert("⚠️ Сначала установите якорь «Старт» для этого слова, чтобы указать движку точную точку начала поиска.");
+            return;
+        }
 
         // Подтверждение от пользователя
         const confirmed = confirm(
-            `Рескан таймингов от слова №${startIndex + 1} до конца песни?\n\n` +
+            `Рескан таймингов от слова №${startIndex + 1} («${window.lyricsData[startIndex].word}»)?\n\n` +
             `Все тайминги до этого слова будут сохранены.\n` +
-            `Редактор будет закрыт, изменения применены.\n\n` +
+            `Ручные якоря будут применены, затем запущен рескан от ${formatMs(anchorTime)}.\n` +
+            `Редактор будет закрыт.\n\n` +
             `Продолжить?`
         );
 
         if (!confirmed) return;
 
-        // Шаг 1: Применяем изменения из редактора
+        // Шаг 1: Применяем изменения из редактора (ручные якоря, правки текста)
         btnApply.innerHTML = "⏳ Сохранение...";
         btnApply.style.pointerEvents = "none";
+        epBtnRescan.disabled = true;
 
         try {
             const applyRes = await fetch(`/api/tracks/${trackId}/edit_lyrics`, {
@@ -380,17 +412,21 @@
                 throw new Error(err.detail || "Ошибка при сохранении изменений");
             }
 
+            console.log("✅ Ручные изменения применены, запуск рескана...");
+
             // Шаг 2: Закрываем редактор
             toggleEditMode(false);
 
-            // Шаг 3: Запускаем partial rescan
-            epBtnRescan.disabled = true;
+            // Шаг 3: Запускаем partial rescan с anchor_time
             epBtnRescan.innerHTML = "⏳ Рескан...";
 
             const rescanRes = await fetch(`/api/tracks/${trackId}/partial_rescan`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ start_word_index: startIndex })
+                body: JSON.stringify({
+                    start_word_index: startIndex,
+                    anchor_time: anchorTime
+                })
             });
 
             if (!rescanRes.ok) {
@@ -402,11 +438,12 @@
             console.log("✅ Partial rescan запущен:", result.message);
 
             // Шаг 4: Перезагружаем трек (ждем завершения рескана)
-            // Polling: ждем пока app_status.active === false
             await waitForRescanComplete();
 
             // Шаг 5: Восстанавливаем отображение
             await reloadTrackAndRestoreTime();
+
+            console.log("✅ Рескан завершён, данные обновлены");
 
         } catch (e) {
             alert("Ошибка при рескане: " + e.message);
@@ -441,6 +478,10 @@
                     }
 
                     waited++;
+                    // Обновляем текст кнопки с прогрессом
+                    const msg = status.message || "Обработка...";
+                    epBtnRescan.innerHTML = `⏳ ${msg}`;
+
                     if (waited > maxWait) {
                         clearInterval(interval);
                         reject(new Error("Таймаут ожидания рескана (5 минут)"));

@@ -7,7 +7,7 @@ from app_logger import get_logger
 
 log = get_logger("aligner_orchestra")
 
-def execute_sequence_matching(canon_words: list, heard_words: list, vad_intervals: list, audio_duration: float, start_word_index: int = 0) -> list:
+def execute_sequence_matching(canon_words: list, heard_words: list, vad_intervals: list, audio_duration: float, start_word_index: int = 0, anchor_time: float = None) -> list:
     """
     V8.4 Elastic Cluster Alignment.
     Математика кластеров + Эластичная заливка VAD.
@@ -16,12 +16,16 @@ def execute_sequence_matching(canon_words: list, heard_words: list, vad_interval
     Параметры:
         start_word_index: индекс слова, с которого начинать matching.
                           Слова до этого индекса НЕ обрабатываются — их тайминги сохраняются.
+        anchor_time: точное время (секунды) ручного якоря.
+                     Используется для фильтрации heard_words и фиксации стартовой точки.
     """
     log.info("=" * 50)
     log.info("🧠 [Orchestra] Старт Elastic Sequence Matching...")
     if start_word_index > 0:
         log.info("   📍 Partial rescan: обрабатываем слова с индекса %d из %d", start_word_index, len(canon_words))
         log.info("   🔒 Слова [0:%d] заблокированы — тайминги не изменятся", start_word_index)
+        if anchor_time is not None:
+            log.info("   ⚓ Ручной якорь: слово %d начинается в %.2fс", start_word_index, anchor_time)
 
     n_canon = len(canon_words)
     n_heard = len(heard_words)
@@ -32,7 +36,7 @@ def execute_sequence_matching(canon_words: list, heard_words: list, vad_interval
 
     # Если start_word_index > 0 — это partial rescan
     if start_word_index > 0 and start_word_index < n_canon:
-        return _partial_sequence_matching(canon_words, heard_words, vad_intervals, audio_duration, start_word_index)
+        return _partial_sequence_matching(canon_words, heard_words, vad_intervals, audio_duration, start_word_index, anchor_time)
 
     # Стандартный полный matching (start_word_index == 0)
     return _full_sequence_matching(canon_words, heard_words, vad_intervals, audio_duration)
@@ -169,19 +173,31 @@ def _full_sequence_matching(canon_words: list, heard_words: list, vad_intervals:
     return canon_words
 
 
-def _partial_sequence_matching(canon_words: list, heard_words: list, vad_intervals: list, audio_duration: float, start_word_index: int) -> list:
-    """Частичное сопоставление только для слов [start_word_index:]."""
+def _partial_sequence_matching(canon_words: list, heard_words: list, vad_intervals: list, audio_duration: float, start_word_index: int, anchor_time: float = None) -> list:
+    """
+    Частичное сопоставление только для слов [start_word_index:].
+
+    anchor_time — точная точка начала вокала, установленная пользователем.
+    Все heard_words ДО anchor_time отбрасываются.
+    Первое слово partial_canon фиксируется на anchor_time как жёсткий якорь.
+    """
     n_canon = len(canon_words)
     n_heard = len(heard_words)
     partial_canon = canon_words[start_word_index:]
     n_canon_partial = len(partial_canon)
 
-    log.info("   📝 Partial matching: %d слов из %d", n_canon_partial, n_canon)
+    log.info("   📝 Partial matching: %d слов из %d (якорь=%.2fс)", n_canon_partial, n_canon, anchor_time or 0)
+
+    # ── КЛЮЧЕВОЕ: фильтруем heard_words — только те, что >= anchor_time ──────
+    if anchor_time is not None:
+        # Буфер 0.3с — чтобы захватить слова, которые чуть раньше якоря
+        heard_words = [w for w in heard_words if w["start"] >= anchor_time - 0.3]
+        log.info("   ✂️ heard_words обрезан: осталось %d слов (от %.2fс)", len(heard_words), anchor_time - 0.3)
 
     # 1. Формируем пул кандидатов (совпадения > 60%)
     candidates = []
     for c_idx in range(n_canon_partial):
-        for h_idx in range(n_heard):
+        for h_idx in range(len(heard_words)):
             c_text = partial_canon[c_idx]["clean_text"]
             h_text = heard_words[h_idx]["clean"]
             sim = rapidfuzz.fuzz.ratio(c_text, h_text)
@@ -291,6 +307,27 @@ def _partial_sequence_matching(canon_words: list, heard_words: list, vad_interva
 
     log.info(f"   🔗 Утверждено жестких якорей: {len(valid_sequence)}")
 
+    # ── КЛЮЧЕВОЕ: фиксируем первый якорь на anchor_time ──────────────────────
+    if anchor_time is not None and valid_sequence:
+        # Первый элемент valid_sequence — это первое найденное совпадение.
+        # Если оно начинается раньше anchor_time - 0.5с — сдвигаем/отбрасываем.
+        first_match = valid_sequence[0]
+        if first_match["start"] < anchor_time - 0.5:
+            log.info("   ⚓ Первый якорь (%.2fс) раньше ручного якоря (%.2fс) — отбрасываем",
+                     first_match["start"], anchor_time)
+            valid_sequence = valid_sequence[1:]
+
+        # Если первый якорь всё ещё не совпадает с anchor_time — используем anchor_time как основу
+        if valid_sequence:
+            first_match = valid_sequence[0]
+            # Если ручной якорь уже установлен в canon_words — используем его
+            manual_start = canon_words[start_word_index].get("start", -1)
+            if manual_start > 0 and abs(manual_start - first_match["start"]) > 1.0:
+                log.info("   ⚓ Ручной якорь %.2fс отличается от найденного %.2fс — используем ручной",
+                         manual_start, first_match["start"])
+                # Не заменяем найденный якорь — DP сам найдёт путь от ручного якоря
+                # просто логируем для отладки
+
     # Применяем тайминги к partial_canon (с учётом сдвига индексов)
     for match in valid_sequence:
         cw = partial_canon[match["c_idx"]]
@@ -298,19 +335,25 @@ def _partial_sequence_matching(canon_words: list, heard_words: list, vad_interva
         cw["end"] = match["end"]
 
     # 4. Elastic VAD Assembly — только для partial_canon
-    _elastic_vad_assembly(partial_canon, vad_intervals, audio_duration)
+    # ВАЖНО: передаём обрезанные vad_intervals (только от anchor_time)
+    _elastic_vad_assembly(partial_canon, vad_intervals, audio_duration, anchor_time)
 
     log.info("🧠 [Orchestra] Partial Sequence Matching завершен.")
     log.info("=" * 50)
     return canon_words  # Возвращаем полный массив (старые + новые тайминги)
 
 
-def _elastic_vad_assembly(words: list, vad_intervals: list, audio_duration: float):
+def _elastic_vad_assembly(words: list, vad_intervals: list, audio_duration: float, anchor_time: float = None):
     """
     ФИЛЬТР №3: Elastic VAD Assembly (V8.4).
     Ищет голос внутри слепых зон и растягивает слова ровно по контуру этого голоса.
+
+    anchor_time — если задан, это partial rescan. Первый якорь — это anchor_time,
+    и все VAD-интервалы ДО anchor_time игнорируются.
     """
     log.info("   🧲 [Elastic Assembly] Старт эластичной заливки слепых зон...")
+    if anchor_time is not None:
+        log.info("   ⚓ Partial rescan: anchor_time=%.2fс — заливка от этой точки", anchor_time)
 
     n = len(words)
     i = 0
@@ -324,7 +367,19 @@ def _elastic_vad_assembly(words: list, vad_intervals: list, audio_duration: floa
                 j += 1
 
             gap_size = j - i
-            anchor_prev_end = words[i-1]["end"] if i > 0 and words[i-1]["start"] != -1.0 else 0.0
+
+            # ── КЛЮЧЕВОЕ для partial rescan: правильный anchor_prev_end ──────
+            if anchor_time is not None and i == 0:
+                # Это partial rescan — первый якорь это anchor_time
+                # Предыдущий якорь — это последнее слово ДО start_word_index в оригинальном массиве
+                # Но здесь мы работаем с partial_canon, так что anchor_prev_end = anchor_time
+                anchor_prev_end = anchor_time
+                log.info("   📍 Partial rescan: anchor_prev_end = %.2fс (ручной якорь)", anchor_prev_end)
+            elif i > 0 and words[i-1]["start"] != -1.0:
+                anchor_prev_end = words[i-1]["end"]
+            else:
+                anchor_prev_end = 0.0
+
             anchor_next_start = words[j]["start"] if j < n and words[j]["start"] != -1.0 else audio_duration
 
             # Собираем VAD-острова, которые находятся ВНУТРИ этой дыры

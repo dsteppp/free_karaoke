@@ -495,7 +495,13 @@ function renderList() {
             rB.setAttribute("data-tooltip", "Пересинхронизировать текст");
             rB.setAttribute("data-tooltip-pos", "right");
             rB.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.3"/></svg>`;
-            rB.onclick = () => apiReq(t.id, "reset_text");
+            rB.onclick = () => {
+                if (document.body.classList.contains("processing")) {
+                    alert("⏳ Невозможно — идёт обработка. Дождитесь завершения.");
+                    return;
+                }
+                apiReq(t.id, "reset_text");
+            };
 
             const eB = document.createElement("button");
             eB.className = "edit-meta-btn";
@@ -503,7 +509,13 @@ function renderList() {
             eB.setAttribute("data-tooltip", "Редактировать метаданные");
             eB.setAttribute("data-tooltip-pos", "right");
             eB.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>`;
-            eB.onclick = () => openMetaEditor(t.id);
+            eB.onclick = () => {
+                if (document.body.classList.contains("processing")) {
+                    alert("⏳ Невозможно редактировать — идёт обработка. Дождитесь завершения.");
+                    return;
+                }
+                openMetaEditor(t.id);
+            };
 
             acts.append(pB, rB, eB);
         }

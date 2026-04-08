@@ -877,6 +877,7 @@ async def edit_track_metadata(
 # ──────────────────────────────────────────────────────────────────────────────
 class PartialRescanRequest(BaseModel):
     start_word_index: int  # Индекс слова, с которого начинать рескан (0-based)
+    anchor_time: float     # Точное время (секунды) ручного якоря — точка начала поиска
 
 
 @app.post("/api/tracks/{track_id}/partial_rescan")
@@ -888,9 +889,10 @@ async def partial_rescan_endpoint(
     """
     Частичный перескан таймингов от указанного слова до конца песни.
     Слова до start_word_index НЕ изменяются — их тайминги сохраняются как есть.
+    anchor_time — точная точка начала вокала, установленная пользователем.
     Запускается через Huey очередь (асинхронно).
     """
-    log.info("🔄 [partial_rescan] track_id=%s, start_word_index=%d", track_id, req.start_word_index)
+    log.info("🔄 [partial_rescan] track_id=%s, start_word_index=%d, anchor_time=%.2f", track_id, req.start_word_index, req.anchor_time)
 
     track = db.query(Track).filter(Track.id == track_id).first()
     if not track:
@@ -903,6 +905,10 @@ async def partial_rescan_endpoint(
     if req.start_word_index < 0:
         log.error("   ❌ start_word_index=%d < 0", req.start_word_index)
         raise HTTPException(status_code=400, detail="Индекс слова не может быть отрицательным")
+
+    if req.anchor_time < 0:
+        log.error("   ❌ anchor_time=%.2f < 0", req.anchor_time)
+        raise HTTPException(status_code=400, detail="Время якоря не может быть отрицательным")
 
     # Загружаем JSON чтобы проверить диапазон
     base_name = os.path.splitext(track.filename)[0]
@@ -924,14 +930,14 @@ async def partial_rescan_endpoint(
         raise HTTPException(status_code=400, detail="Индекс слова вне диапазона")
 
     # Запускаем задачу в Huey очередь
-    partial_rescan_task(track_id, req.start_word_index)
+    partial_rescan_task(track_id, req.start_word_index, req.anchor_time)
 
     display_name = track.title or track.original_name or track.filename
     if track.artist:
         display_name = f"{track.artist} — {display_name}"
 
-    log.info("✅ Partial rescan запущен для трека %s (от слова %d из %d)",
-             track_id, req.start_word_index + 1, len(karaoke_data))
+    log.info("✅ Partial rescan запущен для трека %s (от слова %d из %d, anchor=%.2f)",
+             track_id, req.start_word_index + 1, len(karaoke_data), req.anchor_time)
 
     return {
         "status": "ok",
