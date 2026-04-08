@@ -187,14 +187,28 @@ def _partial_sequence_matching(canon_words: list, heard_words: list, vad_interva
     n_canon_partial = len(partial_canon)
 
     log.info("   📝 Partial matching: %d слов из %d (якорь=%.2fс)", n_canon_partial, n_canon, anchor_time or 0)
+    if anchor_time is not None:
+        log.info("   ⚓ Anchor word: #%d «%s» на %.2fс", start_word_index, partial_canon[0]["word"] if partial_canon else "?", anchor_time)
 
     # ── КЛЮЧЕВОЕ: фильтруем heard_words — только те, что >= anchor_time ──────
     if anchor_time is not None:
+        heard_before_filter = len(heard_words)
         # Буфер 0.3с — чтобы захватить слова, которые чуть раньше якоря
         heard_words = [w for w in heard_words if w["start"] >= anchor_time - 0.3]
-        log.info("   ✂️ heard_words обрезан: осталось %d слов (от %.2fс)", len(heard_words), anchor_time - 0.3)
+        filtered_count = heard_before_filter - len(heard_words)
+        log.info("   ✂️ heard_words обрезан по anchor_time (%.2fс):", anchor_time)
+        log.info("      📥 Было: %d слов", heard_before_filter)
+        log.info("      🗑️ Отброшено (до якоря - 0.3с): %d", filtered_count)
+        log.info("      ✅ Осталось для matching: %d", len(heard_words))
+
+        # Лог первых отфильтрованных слов
+        for i, hw in enumerate(heard_words[:8]):
+            log.info("      heard_clip[%d]: «%s» %.2fс-%.2fс", i, hw["clean"], hw["start"], hw["end"])
+        if len(heard_words) > 8:
+            log.info("      ... и ещё %d слов", len(heard_words) - 8)
 
     # 1. Формируем пул кандидатов (совпадения > 60%)
+    log.info("   🔍 Поиск кандидатов (fuzz.ratio >= 60%%)...")
     candidates = []
     for c_idx in range(n_canon_partial):
         for h_idx in range(len(heard_words)):
@@ -211,6 +225,16 @@ def _partial_sequence_matching(canon_words: list, heard_words: list, vad_interva
                 })
 
     candidates.sort(key=lambda x: x["start"])
+    log.info("   🔍 Найдено кандидатов: %d", len(candidates))
+
+    # Покажем топ кандидатов по similarity
+    if candidates:
+        top_cands = sorted(candidates, key=lambda x: x["sim"], reverse=True)[:5]
+        for tc in top_cands:
+            log.info("      кандидат: canon[%d]«%s» ↔ heard[%d]«%s» sim=%d%% t=%.2fс",
+                     tc["c_idx"], partial_canon[tc["c_idx"]]["clean_text"],
+                     tc["h_idx"], heard_words[tc["h_idx"]]["clean"],
+                     tc["sim"], tc["start"])
 
     # 2. SDR-Guard v2: Динамическое программирование пути
     num_cand = len(candidates)
@@ -275,6 +299,15 @@ def _partial_sequence_matching(canon_words: list, heard_words: list, vad_interva
 
     raw_sequence.reverse()
 
+    log.info("   🛤️ DP нашёл путь: %d якорей, score=%d", len(raw_sequence), dp[max_idx])
+    # Покажем путь
+    for i, match in enumerate(raw_sequence[:8]):
+        log.info("      path[%d]: canon[%d]«%s» ← heard «%s» t=%.2fс sim=%d",
+                 i, match["c_idx"], partial_canon[match["c_idx"]]["clean_text"],
+                 heard_words[match["h_idx"]]["clean"], match["start"], match["sim"])
+    if len(raw_sequence) > 8:
+        log.info("      ... и ещё %d якорей", len(raw_sequence) - 8)
+
     # 3. V8.4 Cluster Filter
     clusters = []
     current_cluster = []
@@ -293,6 +326,10 @@ def _partial_sequence_matching(canon_words: list, heard_words: list, vad_interva
 
     if current_cluster:
         clusters.append(current_cluster)
+
+    log.info("   📊 Кластеров найдено: %d", len(clusters))
+    for i, cl in enumerate(clusters):
+        log.info("      cluster[%d]: %d якорей, t=%.2fс-%.2fс", i, len(cl), cl[0]["start"], cl[-1]["end"])
 
     valid_sequence = []
     orphans_removed = 0
@@ -316,17 +353,24 @@ def _partial_sequence_matching(canon_words: list, heard_words: list, vad_interva
             log.info("   ⚓ Первый якорь (%.2fс) раньше ручного якоря (%.2fс) — отбрасываем",
                      first_match["start"], anchor_time)
             valid_sequence = valid_sequence[1:]
+            if valid_sequence:
+                log.info("   ⚓ Новый первый якорь: «%s» на %.2fс",
+                         partial_canon[valid_sequence[0]["c_idx"]]["clean_text"],
+                         valid_sequence[0]["start"])
+            else:
+                log.warning("   ⚠️ Все якоря отброшены — были раньше anchor_time!")
 
-        # Если первый якорь всё ещё не совпадает с anchor_time — используем anchor_time как основу
+        # Если первый якорь всё ещё не совпадает с anchor_time — логируем расхождение
         if valid_sequence:
             first_match = valid_sequence[0]
             # Если ручной якорь уже установлен в canon_words — используем его
             manual_start = canon_words[start_word_index].get("start", -1)
             if manual_start > 0 and abs(manual_start - first_match["start"]) > 1.0:
-                log.info("   ⚓ Ручной якорь %.2fс отличается от найденного %.2fс — используем ручной",
+                log.info("   ⚓ Ручной якорь %.2fс отличается от найденного %.2fс (расхождение %.2fс)",
+                         manual_start, first_match["start"], abs(manual_start - first_match["start"]))
+            elif manual_start > 0:
+                log.info("   ⚓ Ручной якорь %.2fс ≈ найденный %.2fс — совпадают!",
                          manual_start, first_match["start"])
-                # Не заменяем найденный якорь — DP сам найдёт путь от ручного якоря
-                # просто логируем для отладки
 
     # Применяем тайминги к partial_canon (с учётом сдвига индексов)
     for match in valid_sequence:
@@ -334,9 +378,17 @@ def _partial_sequence_matching(canon_words: list, heard_words: list, vad_interva
         cw["start"] = match["start"]
         cw["end"] = match["end"]
 
+    log.info("   📊 Тайминги применены к %d словам из %d", len(valid_sequence), n_canon_partial)
+
     # 4. Elastic VAD Assembly — только для partial_canon
     # ВАЖНО: передаём обрезанные vad_intervals (только от anchor_time)
+    log.info("   🧲 Запуск Elastic VAD Assembly (anchor_time=%.2fс)...", anchor_time or 0)
     _elastic_vad_assembly(partial_canon, vad_intervals, audio_duration, anchor_time)
+
+    # Подсчитаем сколько слов заполнено через Elastic VAD
+    filled_by_vad = sum(1 for w in partial_canon if w["start"] >= 0 and w.get("start", -1) > 0)
+    still_broken = sum(1 for w in partial_canon if w["start"] == -1.0)
+    log.info("   📊 После Elastic VAD: %d слов с таймингами, %d всё ещё без", filled_by_vad, still_broken)
 
     log.info("🧠 [Orchestra] Partial Sequence Matching завершен.")
     log.info("=" * 50)
@@ -355,6 +407,26 @@ def _elastic_vad_assembly(words: list, vad_intervals: list, audio_duration: floa
     if anchor_time is not None:
         log.info("   ⚓ Partial rescan: anchor_time=%.2fс — заливка от этой точки", anchor_time)
 
+    # Подсчитаем слепые зоны
+    blind_spots = []
+    i = 0
+    while i < len(words):
+        if words[i]["start"] == -1.0:
+            j = i
+            while j < len(words) and words[j]["start"] == -1.0:
+                j += 1
+            blind_spots.append((i, j))
+            i = j
+        else:
+            i += 1
+
+    log.info("   📊 Найдено слепых зон: %d", len(blind_spots))
+    for bs_idx, (start_i, end_i) in enumerate(blind_spots):
+        word_text = " ".join(words[k]["clean_text"] for k in range(start_i, min(end_i, start_i + 5)))
+        if end_i - start_i > 5:
+            word_text += " ..."
+        log.info("      blind_spot[%d]: слова [%d:%d] «%s»", bs_idx, start_i, end_i, word_text)
+
     n = len(words)
     i = 0
     healed_count = 0
@@ -371,8 +443,6 @@ def _elastic_vad_assembly(words: list, vad_intervals: list, audio_duration: floa
             # ── КЛЮЧЕВОЕ для partial rescan: правильный anchor_prev_end ──────
             if anchor_time is not None and i == 0:
                 # Это partial rescan — первый якорь это anchor_time
-                # Предыдущий якорь — это последнее слово ДО start_word_index в оригинальном массиве
-                # Но здесь мы работаем с partial_canon, так что anchor_prev_end = anchor_time
                 anchor_prev_end = anchor_time
                 log.info("   📍 Partial rescan: anchor_prev_end = %.2fс (ручной якорь)", anchor_prev_end)
             elif i > 0 and words[i-1]["start"] != -1.0:
@@ -381,6 +451,9 @@ def _elastic_vad_assembly(words: list, vad_intervals: list, audio_duration: floa
                 anchor_prev_end = 0.0
 
             anchor_next_start = words[j]["start"] if j < n and words[j]["start"] != -1.0 else audio_duration
+
+            log.info("   🔍 Слепая зона [%d:%d] (%d слов): prev_end=%.2fс → next_start=%.2fс",
+                     i, j, gap_size, anchor_prev_end, anchor_next_start)
 
             # Собираем VAD-острова, которые находятся ВНУТРИ этой дыры
             available_vads = []
@@ -392,18 +465,27 @@ def _elastic_vad_assembly(words: list, vad_intervals: list, audio_duration: floa
                     if o_e - o_s > 0.1: # Игнорируем микро-шумы
                         available_vads.append((o_s, o_e))
 
+            log.info("      📊 VAD-островов в диапазоне [%.2f, %.2f]: %d",
+                     anchor_prev_end, anchor_next_start, len(available_vads))
+            for v_idx, (vs, ve) in enumerate(available_vads[:5]):
+                log.info("         vad[%d]: %.2fс — %.2fс (%.2fс)", v_idx, vs, ve, ve - vs)
+            if len(available_vads) > 5:
+                log.info("         ... и ещё %d", len(available_vads) - 5)
+
             # СЦЕНАРИЙ 1: ИНТРО (До первого якоря)
             if i == 0 and available_vads:
                 # В интро текст прижимается к первому якорю (вправо)
                 # Берем только последний VAD-остров перед якорем, чтобы избежать шума зала на 0-й секунде
                 target_vad = available_vads[-1]
                 t_start, t_end = target_vad[0], target_vad[1]
+                log.info("      📍 Сценарий ИНТРО: используем последний VAD-остров %.2fс-%.2fс", t_start, t_end)
 
             # СЦЕНАРИЙ 2: АУТРО (После последнего якоря)
             elif j == n and available_vads:
                 # В аутро текст должен лечь на первый вокальный остров после якоря (Island Hopping)
                 target_vad = available_vads[0]
                 t_start, t_end = target_vad[0], target_vad[1]
+                log.info("      📍 Сценарий АУТРО: Island Hopping — первый VAD-остров %.2fс-%.2fс", t_start, t_end)
 
             # СЦЕНАРИЙ 3: ДЫРА В СЕРЕДИНЕ (Между якорями)
             else:
@@ -411,20 +493,26 @@ def _elastic_vad_assembly(words: list, vad_intervals: list, audio_duration: floa
                     # Растягиваем слова от начала первого острова до конца последнего острова в этой дыре
                     t_start = available_vads[0][0]
                     t_end = available_vads[-1][1]
+                    log.info("      📍 Сценарий ДЫРА: %d VAD-островов, растягиваем %.2fс-%.2fс",
+                             len(available_vads), t_start, t_end)
                 else:
                     # Аварийный сценарий: VAD вообще не услышал голос в этой дыре.
                     # Равномерно заполняем пространство между якорями.
                     t_start = anchor_prev_end + 0.05
                     t_end = anchor_next_start - 0.05
+                    log.info("      ⚠️ Сценарий АВАРИЯ: нет VAD, заполняем %.2fс-%.2fс равномерно", t_start, t_end)
 
             if t_start >= t_end:
                 t_start = max(anchor_prev_end + 0.01, t_end - 0.1)
+                log.info("      ⚠️ Коррекция: t_start >= t_end,调整后 %.2fс-%.2fс", t_start, t_end)
 
             # ELASTIC PACKING (Резиновое распределение по весу гласных)
             # Это решает проблему "недокрашивания" Доры
             weights = [get_vowel_weight(words[k]["clean_text"], words[k]["line_break"]) for k in range(i, j)]
             total_weight = sum(weights)
             total_time = t_end - t_start
+
+            log.info("      📊 Elastic packing: total_weight=%d, total_time=%.2fс", total_weight, total_time)
 
             current_time = t_start
             micro_gap = 0.05 # 50мс пауза между словами для дыхания плеера
@@ -441,6 +529,9 @@ def _elastic_vad_assembly(words: list, vad_intervals: list, audio_duration: floa
                 w["start"] = current_time
                 w["end"] = min(current_time + actual_dur, t_end)
 
+                log.info("         [%d] «%s» weight=%d share=%.2fс → %.2fс-%.2fс (dur=%.2fс)",
+                         k, w["clean_text"], weights[k-i], word_share, w["start"], w["end"], actual_dur)
+
                 # Сдвигаем курсор времени
                 current_time = w["end"] + micro_gap
                 healed_count += 1
@@ -451,4 +542,6 @@ def _elastic_vad_assembly(words: list, vad_intervals: list, audio_duration: floa
             i += 1
 
     if healed_count > 0:
-        log.info(f"   🧲 [Elastic Assembly] Заполнено {zones_processed} слепых зон ({healed_count} слов).")
+        log.info("   🧲 [Elastic Assembly] Заполнено %d слепых зон (%d слов).", zones_processed, healed_count)
+    else:
+        log.info("   🧲 [Elastic Assembly] Нет слепых зон для заполнения.")

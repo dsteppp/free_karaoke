@@ -281,8 +281,14 @@ def partial_rescan_task(track_id: str, start_word_index: int, anchor_time: float
             log.warning("Трек %s не найден в БД — пропуск partial rescan.", track_id)
             return
 
-        log.info("=" * 50)
-        log.info("PARTIAL RESCAN: трек %s, start_word_index=%d, anchor_time=%.2f", track_id, start_word_index, anchor_time)
+        log.info("=" * 80)
+        log.info("🔄 PARTIAL RESCAN: СТАРТ")
+        log.info("   🆔 Трек: %s", track_id)
+        log.info("   🎵 Имя файла: %s", track.filename)
+        log.info("   📝 Title: %s", track.title)
+        log.info("   🎤 Artist: %s", track.artist)
+        log.info("   ⚓ Якорь: слово #%d на %.2fс", start_word_index, anchor_time)
+        log.info("=" * 80)
 
         # Формируем читаемое имя трека
         display_name = track.title or track.original_name or track.filename
@@ -296,6 +302,14 @@ def partial_rescan_task(track_id: str, start_word_index: int, anchor_time: float
         karaoke_json_path = f"{base_path}_(Karaoke Lyrics).json"
         vad_path = f"{base_path}_(VAD).json"
 
+        # ── Загрузка входных данных ──────────────────────────────────────────
+        log.info("─" * 60)
+        log.info("📂 ЭТАП 1: Загрузка входных данных")
+        log.info("   📁 Vocals: %s (exists=%s)", vocals_path, os.path.exists(vocals_path))
+        log.info("   📁 Lyrics: %s (exists=%s)", lyrics_path, os.path.exists(lyrics_path))
+        log.info("   📁 Karaoke JSON: %s (exists=%s)", karaoke_json_path, os.path.exists(karaoke_json_path))
+        log.info("   📁 VAD кэш: %s (exists=%s)", vad_path, os.path.exists(vad_path))
+
         # Устанавливаем статус (блокировка UI)
         set_status(f"🔄 {display_name} | Рескан таймингов от слова {start_word_index + 1} ({anchor_time:.0f}с)…", progress=None)
 
@@ -306,6 +320,8 @@ def partial_rescan_task(track_id: str, start_word_index: int, anchor_time: float
         with open(lyrics_path, "r", encoding="utf-8") as f:
             lyrics_text = f.read()
 
+        log.info("   📄 Текст загружен: %d символов", len(lyrics_text))
+
         # Загружаем существующие тайминги (старые)
         if not karaoke_json_path or not os.path.exists(karaoke_json_path):
             raise FileNotFoundError(f"Файл караоке JSON не найден: {karaoke_json_path}")
@@ -313,7 +329,48 @@ def partial_rescan_task(track_id: str, start_word_index: int, anchor_time: float
         with open(karaoke_json_path, "r", encoding="utf-8") as f:
             old_karaoke_data = json.load(f)
 
-        log.info("Загружено %d слов из существующего JSON", len(old_karaoke_data))
+        log.info("   📊 Karaoke JSON загружен: %d слов", len(old_karaoke_data))
+
+        # ── Логирование состояния слов до рескана ────────────────────────────
+        log.info("─" * 60)
+        log.info("📊 ЭТАП 2: Анализ исходных таймингов")
+
+        # Считаем слова с broken таймингами
+        broken_before = 0
+        manual_before = 0
+        valid_before = 0
+        broken_after = 0
+
+        for idx, w in enumerate(old_karaoke_data):
+            is_broken = (w.get("start", -1) == -1 or w.get("end", -1) == -1)
+            is_manual = w.get("is_manual_start", False) or w.get("is_manual_end", False)
+            is_before = idx < start_word_index
+
+            if is_before:
+                if is_broken:
+                    broken_before += 1
+                elif is_manual:
+                    manual_before += 1
+                else:
+                    valid_before += 1
+            else:
+                if is_broken:
+                    broken_after += 1
+
+        log.info("   📍 ДО якоря (слов %d):", start_word_index)
+        log.info("      ✅ Рабочих таймингов: %d", valid_before)
+        log.info("      ⚓ Ручных якорей: %d", manual_before)
+        log.info("      ❌ Сломанных (start=-1): %d", broken_before)
+        log.info("   📍 ПОСЛЕ якоря (слов %d):", len(old_karaoke_data) - start_word_index)
+        log.info("      ❌ Сломанных (требуют рескана): %d", broken_after)
+
+        # Логирование ключевого слова-якоря
+        anchor_word = old_karaoke_data[start_word_index]
+        log.info("   ⚓ СЛОВО-ЯКОРЬ #%d: «%s»", start_word_index, anchor_word.get("word", "?"))
+        log.info("      🕐 Старый start: %.3fс", anchor_word.get("start", -1))
+        log.info("      🕐 Старый end: %.3fс", anchor_word.get("end", -1))
+        log.info("      ⚓ Новый anchor_time: %.3fс (установлен вручную)", anchor_time)
+        log.info("      🔄 Разница: %.3fс", anchor_time - anchor_word.get("start", -1))
 
         if start_word_index >= len(old_karaoke_data):
             log.warning("start_word_index=%d >= всего слов=%d — рескан невозможен", start_word_index, len(old_karaoke_data))
@@ -321,14 +378,19 @@ def partial_rescan_task(track_id: str, start_word_index: int, anchor_time: float
             return
 
         # ── КЛЮЧЕВОЙ ЭТАП: обрезаем аудио и VAD по anchor_time ───────────────
+        log.info("─" * 60)
+        log.info("✂️ ЭТАП 3: Обрезка аудио и VAD по якорю")
+
         # Буфер перед якорем (0.5с) — чтобы захватить начало слога
         ANCHOR_BUFFER = 0.5
         audio_start_time = max(0.0, anchor_time - ANCHOR_BUFFER)
 
-        log.info("✂️ Обрезка аудио: начинаем анализ с %.2fс (якорь=%.2f, буфер=%.2f)",
-                 audio_start_time, anchor_time, ANCHOR_BUFFER)
+        log.info("   ⚓ Якорь пользователя: %.2fс", anchor_time)
+        log.info("   📐 Буфер для захвата начала слога: %.2fс", ANCHOR_BUFFER)
+        log.info("   📍 Аудио начинаем с: %.2fс", audio_start_time)
 
         # Загружаем полное аудио
+        log.info("   🎧 Загрузка вокального стема...")
         audio_data, sr = librosa.load(vocals_path, sr=16000, mono=True)
         full_duration = len(audio_data) / sr
 
@@ -337,40 +399,70 @@ def partial_rescan_task(track_id: str, start_word_index: int, anchor_time: float
         audio_partial = audio_data[start_sample:]
         partial_duration = len(audio_partial) / sr
 
-        log.info("   📊 Полное аудио: %.2fс, обрезанное: %.2fс (с %.2f до конца)",
-                 full_duration, partial_duration, audio_start_time)
+        log.info("   📊 Полное аудио: %.2fс (%d сэмплов)", full_duration, len(audio_data))
+        log.info("   📊 Обрезанное аудио: %.2fс (%d сэмплов) — с %.2fс до конца", partial_duration, len(audio_partial), audio_start_time)
+        log.info("   📉 Обрезано: %.2fс тишины/проигрыша в начале", audio_start_time)
 
         # Загружаем или вычисляем VAD
+        log.info("   🔊 Загрузка/расчёт VAD-интервалов...")
         vad_intervals = None
         if os.path.exists(vad_path):
             try:
                 with open(vad_path, "r", encoding="utf-8") as f:
                     vad_data = json.load(f)
                 all_vad = vad_data.get("intervals", [])
-                log.info("VAD загружен из кэша: %d интервалов", len(all_vad))
+                log.info("   📂 VAD загружен из кэша: %d интервалов", len(all_vad))
+                # Покажем первые 5 интервалов для понимания
+                for i, (vs, ve) in enumerate(all_vad[:5]):
+                    log.info("      VAD[%d]: %.2fс — %.2fс (%.2fс)", i, vs, ve, ve - vs)
+                if len(all_vad) > 5:
+                    log.info("      ... и ещё %d интервалов", len(all_vad) - 5)
             except Exception as e:
                 log.warning("Не удалось загрузить VAD из кэша: %s", e)
                 all_vad = []
         else:
+            log.info("   🔄 VAD кэш не найден — вычисляем заново...")
             from aligner_acoustics import get_vocal_intervals
             all_vad = get_vocal_intervals(audio_data, sr, top_db=35.0)
             if not all_vad:
                 all_vad = [(0.0, full_duration)]
+            log.info("   🔊 VAD рассчитан: %d интервалов", len(all_vad))
 
         # Обрезаем VAD-интервалы: только те, что пересекаются с [audio_start_time, full_duration]
         vad_intervals = []
+        vad_clipped_count = 0
+        vad_dropped_count = 0
         for vs, ve in all_vad:
             # Интервал должен хотя бы частично быть после audio_start_time
             if ve > audio_start_time:
                 # Обрезаем начало интервала, если оно раньше audio_start_time
-                clipped_start = max(vs, audio_start_time)
+                if vs < audio_start_time:
+                    clipped_start = audio_start_time
+                    vad_clipped_count += 1
+                else:
+                    clipped_start = vs
                 vad_intervals.append((clipped_start, ve))
+            else:
+                vad_dropped_count += 1
 
-        log.info("   ✂️ VAD обрезан: было %d, осталось %d интервалов от %.2fс",
-                 len(all_vad), len(vad_intervals), audio_start_time)
+        log.info("   ✂️ VAD обрезан по якорю (%.2fс):", audio_start_time)
+        log.info("      📥 Было интервалов: %d", len(all_vad))
+        log.info("      ✂️ Обрезано начало: %d", vad_clipped_count)
+        log.info("      🗑️ Отброшено (до якоря): %d", vad_dropped_count)
+        log.info("      ✅ Осталось для анализа: %d", len(vad_intervals))
+
+        # Покажем первые 5 обрезанных VAD интервалов
+        for i, (vs, ve) in enumerate(vad_intervals[:5]):
+            log.info("      VAD_clip[%d]: %.2fс — %.2fс (%.2fс)", i, vs, ve, ve - vs)
+        if len(vad_intervals) > 5:
+            log.info("      ... и ещё %d интервалов", len(vad_intervals) - 5)
 
         # ── Транскрипция через Whisper ТОЛЬКО обрезанного аудио ──────────────
-        log.info("🎤 Запуск Whisper-транскрипции (обрезанное аудио от %.2fс)…", audio_start_time)
+        log.info("─" * 60)
+        log.info("🎤 ЭТАП 4: Whisper-транскрипция (обрезанное аудио)")
+        log.info("   🌐 Аудио: %.2fс (от %.2fс до конца)", partial_duration, audio_start_time)
+        log.info("   🧠 Модель: medium")
+
         from stable_whisper import load_model
         from aligner_utils import detect_language, prepare_text, clean_word
         from karaoke_aligner import KaraokeAligner
@@ -379,6 +471,9 @@ def partial_rescan_task(track_id: str, start_word_index: int, anchor_time: float
         aligner = KaraokeAligner()
         model = load_model("medium", download_root=aligner.whisper_model_dir, device=aligner.device)
 
+        log.info("   🌍 Язык: %s", lang)
+        log.info("   ⏳ Запуск transcribe...")
+
         result = model.transcribe(
             audio_partial,
             language=lang,
@@ -386,7 +481,18 @@ def partial_rescan_task(track_id: str, start_word_index: int, anchor_time: float
             vad=True,
         )
 
-        log.info("Транскрипция завершена")
+        # Подсчитаем сегменты и слова от Whisper
+        total_segments = len(result.segments)
+        total_raw_words = sum(len(seg.words) for seg in result.segments)
+        log.info("   ✅ Транскрипция завершена")
+        log.info("   📊 Сегментов: %d, слов (сырых): %d", total_segments, total_raw_words)
+
+        # Лог первых нескольких сегментов
+        for seg_idx, seg in enumerate(result.segments[:3]):
+            words_sample = [f"«{w.word.strip()}»({w.start:.2f}-{w.end:.2f})" for w in seg.words[:5]]
+            log.info("   Сегмент[%d]: %s ...", seg_idx, " ".join(words_sample))
+        if total_segments > 3:
+            log.info("   ... и ещё %d сегментов", total_segments - 3)
 
         # Формируем raw_heard_words — сдвигаем тайминги обратно к абсолютным значениям
         raw_heard_words = []
@@ -406,17 +512,91 @@ def partial_rescan_task(track_id: str, start_word_index: int, anchor_time: float
                         "probability": w.probability,
                     })
 
-        # Фильтрация галлюцинаций — по обрезанным VAD
+        log.info("   📝 raw_heard_words: %d слов (после clean_word)", len(raw_heard_words))
+        # Покажем первые 10 heard words
+        for i, hw in enumerate(raw_heard_words[:10]):
+            log.info("      heard[%d]: «%s» clean=«%s» %.2fс-%.2fс p=%.2f",
+                     i, hw["word"].strip(), hw["clean"], hw["start"], hw["end"], hw["probability"])
+        if len(raw_heard_words) > 10:
+            log.info("      ... и ещё %d слов", len(raw_heard_words) - 10)
+
+        # ── Фильтрация галлюцинаций ─────────────────────────────────────────
+        log.info("─" * 60)
+        log.info("🧹 ЭТАП 5: Фильтрация галлюцинаций по VAD")
+        log.info("   📥 Вход: %d raw_heard_words", len(raw_heard_words))
+        log.info("   📊 VAD интервалов для фильтрации: %d", len(vad_intervals))
+
         from aligner_acoustics import filter_whisper_hallucinations
         heard_words = filter_whisper_hallucinations(raw_heard_words, vad_intervals)
 
-        log.info("После фильтрации галлюцинаций: %d слов (от %.2fс до конца)", len(heard_words), audio_start_time)
+        filtered_out = len(raw_heard_words) - len(heard_words)
+        log.info("   ✅ После фильтрации: %d слов (отфильтровано: %d)", len(heard_words), filtered_out)
 
-        # Sequence Matching — с partial rescan
-        log.info("Сопоставление текста с аудио (partial rescan от слова %d, якорь=%.2fс)…", start_word_index, anchor_time)
+        # Покажем первые 10 отфильтрованных слов
+        for i, hw in enumerate(heard_words[:10]):
+            log.info("      clean[%d]: «%s» %.2fс-%.2fс", i, hw["clean"], hw["start"], hw["end"])
+        if len(heard_words) > 10:
+            log.info("      ... и ещё %d слов", len(heard_words) - 10)
+
+        # ── Sequence Matching ───────────────────────────────────────────────
+        log.info("─" * 60)
+        log.info("🧠 ЭТАП 6: Sequence Matching (сопоставление текста с аудио)")
+        log.info("   ⚓ Partial rescan от слова #%d («%s»)", start_word_index, anchor_word.get("word", "?"))
+        log.info("   ⚓ Anchor time: %.2fс", anchor_time)
+        log.info("   📝 Слов в тексте (всего): %d", len(old_karaoke_data))
+        log.info("   📝 Слов после якоря: %d", len(old_karaoke_data) - start_word_index)
+        log.info("   🎤 heard_words для matching: %d", len(heard_words))
 
         from aligner_orchestra import execute_sequence_matching
         canon_words = prepare_text(lyrics_text)
+
+        log.info("   📄 canon_words (из lyrics): %d слов", len(canon_words))
+
+        # ── КРИТИЧЕСКОЕ: копируем старые тайминги слов ДО якоря ─────────────
+        # prepare_text создаёт ВСЕ слова с start=-1, end=-1.
+        # prepare_text МОЖЕТ дать другое количество слов, чем old_karaoke_data
+        # (например, если в JSON есть теги [Chorus] которые были удалены).
+        # Нужно сопоставить слова по тексту и скопировать тайминги.
+        log.info("   🔄 Восстановление старых таймингов для слов [0:%d]...", start_word_index)
+
+        restored_count = 0
+        mismatch_count = 0
+
+        for idx in range(start_word_index):
+            if idx >= len(canon_words):
+                log.warning("   ⚠️ canon_words короче old_karaoke_data — остановка на idx=%d", idx)
+                break
+
+            old_w = old_karaoke_data[idx]
+            new_w = canon_words[idx]
+
+            # Сравниваем текст слов (case-insensitive, strip)
+            old_text = old_w.get("word", "").strip().lower()
+            new_text = new_w["word"].strip().lower()
+
+            if old_text == new_text:
+                new_w["start"] = old_w.get("start", -1.0)
+                new_w["end"] = old_w.get("end", -1.0)
+                # Копируем флаги ручных якорей если они были в JSON
+                if "is_manual_start" in old_w:
+                    new_w["is_manual_start"] = old_w["is_manual_start"]
+                if "is_manual_end" in old_w:
+                    new_w["is_manual_end"] = old_w["is_manual_end"]
+                if old_w.get("start", -1) >= 0:
+                    restored_count += 1
+            else:
+                mismatch_count += 1
+                log.warning("   ⚠️ Несоответствие слов [%d]: old=«%s» ≠ new=«%s» — пропускаем",
+                            idx, old_w.get("word", "?"), new_w["word"])
+
+        log.info("   ✅ Восстановлено таймингов: %d | Несовпадений: %d", restored_count, mismatch_count)
+
+        # Лог первых слов canon (после восстановления)
+        for i in range(min(5, len(canon_words))):
+            w = canon_words[i]
+            status = "✅" if w.get("start", -1) >= 0 else "❌"
+            log.info("      %s canon[%d]: «%s» clean=«%s» start=%.3f end=%.3f",
+                     status, i, w["word"], w["clean_text"], w.get("start", -1), w.get("end", -1))
 
         # ВАЖНО: canon_words — это полный массив, включая старые тайминги
         # execute_sequence_matching с start_word_index > 0 обработает только часть
@@ -424,21 +604,94 @@ def partial_rescan_task(track_id: str, start_word_index: int, anchor_time: float
             canon_words, heard_words, vad_intervals, full_duration, start_word_index, anchor_time
         )
 
-        # Физический контроль (VAD-Magnet) — только для новых слов
+        # ── Анализ результатов matching ─────────────────────────────────────
+        log.info("─" * 60)
+        log.info("📊 ЭТАП 7: Анализ результатов matching")
+
+        matched_after = 0
+        broken_after_match = 0
+        manual_anchors_after = 0
+
+        for idx in range(start_word_index, len(canon_words)):
+            w = canon_words[idx]
+            if w.get("start", -1) >= 0:
+                matched_after += 1
+                if w.get("is_manual_start", False) or w.get("is_manual_end", False):
+                    manual_anchors_after += 1
+            else:
+                broken_after_match += 1
+
+        log.info("   ✅ Слов с таймингами после рескана: %d", matched_after)
+        log.info("   ⚓ Ручных якорей (сохранены): %d", manual_anchors_after)
+        log.info("   ❌ Слов без таймингов (слепые зоны): %d", broken_after_match)
+
+        # Лог первых 10 слов после якоря
+        log.info("   📝 Первые 10 слов после якоря:")
+        for i in range(start_word_index, min(start_word_index + 10, len(canon_words))):
+            w = canon_words[i]
+            status = "✅" if w.get("start", -1) >= 0 else "❌"
+            manual = " ⚓MANUAL" if (w.get("is_manual_start") or w.get("is_manual_end")) else ""
+            log.info("      %s canon[%d]: «%s» start=%.3f end=%.3f%s",
+                     status, i, w["word"], w.get("start", -1), w.get("end", -1), manual)
+
+        # ── Физический контроль (VAD-Magnet) ────────────────────────────────
+        log.info("─" * 60)
+        log.info("🧲 ЭТАП 8: VAD-Magnet (притягивание к голосу)")
         from aligner_acoustics import constrain_to_vad
+        vad_magnet_shifts = 0
         for idx, w in enumerate(canon_words):
             if idx >= start_word_index and w["start"] >= 0:
+                old_start = w["start"]
+                old_end = w["end"]
                 w["start"], w["end"], _ = constrain_to_vad(w["start"], w["end"], vad_intervals, max_shift_sec=1.5)
                 if w["end"] - w["start"] < 0.05:
                     w["end"] = w["start"] + 0.1
+                if abs(w["start"] - old_start) > 0.01:
+                    vad_magnet_shifts += 1
 
-        # Устранение нахлёстов — только для новых слов
+        log.info("   📍 Слов сдвинуто VAD-Magnet: %d", vad_magnet_shifts)
+
+        # ── Устранение нахлёстов ────────────────────────────────────────────
+        log.info("─" * 60)
+        log.info("🔧 ЭТАП 9: Устранение нахлёстов")
         from karaoke_aligner import KaraokeAligner
         temp_aligner = KaraokeAligner()
         temp_aligner._resolve_overlaps(canon_words[start_word_index:])
+        log.info("   ✅ Нахлёсты устранены")
+
+        # ── Итоговая сводка ─────────────────────────────────────────────────
+        log.info("─" * 60)
+        log.info("📋 ЭТАП 10: Итоговая сводка partial rescan")
+
+        total_with_timing = 0
+        total_broken = 0
+        total_manual = 0
+        for idx, w in enumerate(canon_words):
+            if w.get("start", -1) >= 0:
+                total_with_timing += 1
+                if w.get("is_manual_start", False) or w.get("is_manual_end", False):
+                    total_manual += 1
+            else:
+                total_broken += 1
+
+        log.info("   📊 ВСЕГО слов: %d", len(canon_words))
+        log.info("   ✅ С таймингами: %d (%.1f%%)", total_with_timing, 100.0 * total_with_timing / max(1, len(canon_words)))
+        log.info("   ⚓ Ручных якорей: %d", total_manual)
+        log.info("   ❌ Без таймингов: %d (%.1f%%)", total_broken, 100.0 * total_broken / max(1, len(canon_words)))
+        log.info("   📍 ДО якоря (не тронуты): %d слов", start_word_index)
+        log.info("   📍 ПОСЛЕ якоря (обработаны): %d слов", len(canon_words) - start_word_index)
+
+        # Лог последних 5 слов для проверки конца
+        log.info("   📝 Последние 5 слов:")
+        for i in range(max(0, len(canon_words) - 5), len(canon_words)):
+            w = canon_words[i]
+            status = "✅" if w.get("start", -1) >= 0 else "❌"
+            log.info("      %s canon[%d]: «%s» start=%.3f end=%.3f",
+                     status, i, w["word"], w.get("start", -1), w.get("end", -1))
 
         # Формируем JSON
-        log.info("Сохранение результатов…")
+        log.info("─" * 60)
+        log.info("💾 ЭТАП 11: Сохранение результатов")
 
         final_json = []
         for w in canon_words:
@@ -453,8 +706,14 @@ def partial_rescan_task(track_id: str, start_word_index: int, anchor_time: float
         with open(karaoke_json_path, "w", encoding="utf-8") as f:
             json.dump(final_json, f, ensure_ascii=False, indent=2)
 
-        log.info("Partial rescan завершён для трека %s: %d слов обработано (из %d)",
-                 track_id, len(canon_words) - start_word_index, len(canon_words))
+        log.info("   💾 JSON сохранён: %s", karaoke_json_path)
+        log.info("   📝 Записано слов: %d", len(final_json))
+
+        log.info("=" * 80)
+        log.info("✅ PARTIAL RESCAN ЗАВЕРШЁН УСПЕШНО")
+        log.info("   📊 Слов обработано: %d (из %d)", len(canon_words) - start_word_index, len(canon_words))
+        log.info("   ✅ С таймингами: %d | ❌ Без таймингов: %d", total_with_timing - (start_word_index - broken_before - manual_before), total_broken)
+        log.info("=" * 80)
 
         # Освобождение памяти
         if 'model' in locals() and model:
@@ -468,8 +727,8 @@ def partial_rescan_task(track_id: str, start_word_index: int, anchor_time: float
             torch.cuda.empty_cache()
             torch.cuda.ipc_collect()
 
-        log.info("GPU память сброшена после partial rescan.")
-        log.info("=" * 50)
+        log.info("💾 GPU память сброшена после partial rescan.")
+        log.info("=" * 80)
 
     except InterruptedError as e:
         db.rollback()
