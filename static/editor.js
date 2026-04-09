@@ -464,6 +464,9 @@
 
     // ── Полноэкранный оверлей рескана ──────────────────────────────────────
     function showRescanOverlay() {
+        // Выходим из полноэкранного режима — оверлей не работает в fs-mode
+        document.body.classList.remove("fs-mode");
+
         const overlay = document.getElementById("rescan-overlay");
         if (overlay) {
             overlay.style.display = "flex";
