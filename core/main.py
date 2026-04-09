@@ -44,12 +44,21 @@ async def add_no_cache_headers(request: Request, call_next):
     return response
 
 
-BASE_DIR    = os.path.dirname(os.path.abspath(__file__))
-LIBRARY_DIR = os.path.join(BASE_DIR, "library")
+# ── Portable-режим: переменные окружения FK_* ────────────────────────────────
+# Устанавливаются bootstrap-скриптами для Windows/Linux portable
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+LIBRARY_DIR = os.environ.get("FK_LIBRARY_DIR") or os.path.join(BASE_DIR, "library")
 STATIC_DIR  = os.path.join(BASE_DIR, "static")
+CONFIG_DIR  = os.environ.get("FK_CONFIG_DIR") or BASE_DIR
+CACHE_DIR   = os.environ.get("FK_CACHE_DIR") or os.path.join(BASE_DIR, "cache")
+LOGS_DIR    = os.environ.get("FK_LOGS_DIR") or os.path.join(BASE_DIR, "debug_logs")
+MODELS_DIR  = os.environ.get("FK_MODELS_DIR") or os.path.join(BASE_DIR, "models")
 
 os.makedirs(LIBRARY_DIR, exist_ok=True)
 os.makedirs(STATIC_DIR,  exist_ok=True)
+os.makedirs(CACHE_DIR,   exist_ok=True)
+os.makedirs(LOGS_DIR,    exist_ok=True)
 
 app.mount("/static",  StaticFiles(directory=STATIC_DIR),  name="static")
 app.mount("/library", StaticFiles(directory=LIBRARY_DIR), name="library")

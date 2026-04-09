@@ -13,15 +13,22 @@ import time
 import subprocess
 import json
 
-# ── Изоляция кэшей ───────────────────────────────────────────────────────────
+# ── Portable-режим: переменные окружения FK_* ────────────────────────────────
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-os.environ.setdefault("TORCH_HOME",            os.path.join(BASE_DIR, "cache", "torch"))
-os.environ.setdefault("HF_HOME",               os.path.join(BASE_DIR, "cache", "huggingface"))
-os.environ.setdefault("HUGGINGFACE_HUB_CACHE", os.path.join(BASE_DIR, "cache", "huggingface", "hub"))
-os.environ.setdefault("TRANSFORMERS_CACHE",     os.path.join(BASE_DIR, "cache", "huggingface", "hub"))
-os.environ.setdefault("UV_CACHE_DIR",          os.path.join(BASE_DIR, "cache", "uv"))
-os.environ.setdefault("XDG_CACHE_HOME",        os.path.join(BASE_DIR, "cache"))
+# Если заданы portable-переменные — используем их, иначе — дефолт внутри core/
+CACHE_DIR   = os.environ.get("FK_CACHE_DIR") or os.path.join(BASE_DIR, "cache")
+LOGS_DIR    = os.environ.get("FK_LOGS_DIR") or os.path.join(BASE_DIR, "debug_logs")
+LIBRARY_DIR = os.environ.get("FK_LIBRARY_DIR") or os.path.join(BASE_DIR, "library")
+MODELS_DIR  = os.environ.get("FK_MODELS_DIR") or os.path.join(BASE_DIR, "models")
+
+# Изоляция кэшей
+os.environ.setdefault("TORCH_HOME",            os.path.join(CACHE_DIR, "torch"))
+os.environ.setdefault("HF_HOME",               os.path.join(CACHE_DIR, "huggingface"))
+os.environ.setdefault("HUGGINGFACE_HUB_CACHE", os.path.join(CACHE_DIR, "huggingface", "hub"))
+os.environ.setdefault("TRANSFORMERS_CACHE",     os.path.join(CACHE_DIR, "huggingface", "hub"))
+os.environ.setdefault("UV_CACHE_DIR",          os.path.join(CACHE_DIR, "uv"))
+os.environ.setdefault("XDG_CACHE_HOME",        CACHE_DIR)
 
 # ── Qt: argv не должен быть пустым ───────────────────────────────────────────
 if not sys.argv:
@@ -43,7 +50,7 @@ if sys.platform.startswith("linux"):
     os.environ["QT_QPA_PLATFORM"] = "xcb"
 
 # ── Chromium кэш внутри проекта ───────────────────────────────────────────────
-chromium_cache = os.path.join(BASE_DIR, "cache", "chromium")
+chromium_cache = os.path.join(CACHE_DIR, "chromium")
 os.makedirs(chromium_cache, exist_ok=True)
 os.environ["QTWEBENGINE_DICTIONARIES_PATH"] = chromium_cache
 
@@ -114,7 +121,7 @@ def clear_python_cache(base_dir):
 
 def clear_chromium_cache():
     """Удаляем Chromium-кэш при каждом запуске — гарантия свежего UI."""
-    cache_dir = os.path.join(BASE_DIR, "cache", "chromium")
+    cache_dir = os.path.join(CACHE_DIR, "chromium")
     if os.path.isdir(cache_dir):
         log.info("Очистка Chromium-кэша: %s", cache_dir)
         try:

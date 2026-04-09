@@ -1,0 +1,45 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Free Karaoke — Karaoke Lyrics JSON",
+  "description": "Формат синхронизированных таймингов слов для караоке-плеера. Файл: {base_name}_(Karaoke Lyrics).json",
+  "type": "array",
+  "items": {
+    "type": "object",
+    "required": ["word", "start", "end"],
+    "properties": {
+      "word": {
+        "type": "string",
+        "description": "Текст слова или слога"
+      },
+      "start": {
+        "type": "number",
+        "description": "Время начала слова в секундах от начала аудио",
+        "minimum": 0
+      },
+      "end": {
+        "type": "number",
+        "description": "Время окончания слова в секундах от начала аудио",
+        "minimum": 0
+      },
+      "line_break": {
+        "type": "boolean",
+        "description": "Если true — после этого слова начинать новую строку в караоке-плеере",
+        "default": false
+      },
+      "letters": {
+        "type": "array",
+        "description": "Побуквенная анимация (опционально, может быть пустым)",
+        "items": {
+          "type": "object"
+        }
+      }
+    },
+    "additionalProperties": false
+  },
+  "examples": [
+    [
+      {"word": "Hello", "start": 1.230, "end": 1.680, "line_break": false, "letters": []},
+      {"word": "world", "start": 1.780, "end": 2.100, "line_break": true, "letters": []}
+    ]
+  ]
+}

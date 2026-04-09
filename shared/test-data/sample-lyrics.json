@@ -1,0 +1,19 @@
+[
+  {"word": "Is", "start": 0.500, "end": 0.650, "line_break": false, "letters": []},
+  {"word": "this", "start": 0.680, "end": 0.850, "line_break": false, "letters": []},
+  {"word": "the", "start": 0.870, "end": 0.980, "line_break": false, "letters": []},
+  {"word": "real", "start": 1.000, "end": 1.300, "line_break": false, "letters": []},
+  {"word": "life?", "start": 1.350, "end": 1.700, "line_break": true, "letters": []},
+  {"word": "Is", "start": 1.800, "end": 1.950, "line_break": false, "letters": []},
+  {"word": "this", "start": 1.980, "end": 2.150, "line_break": false, "letters": []},
+  {"word": "just", "start": 2.180, "end": 2.500, "line_break": false, "letters": []},
+  {"word": "fantasy?", "start": 2.550, "end": 3.100, "line_break": true, "letters": []},
+  {"word": "Caught", "start": 3.200, "end": 3.500, "line_break": false, "letters": []},
+  {"word": "in", "start": 3.530, "end": 3.650, "line_break": false, "letters": []},
+  {"word": "a", "start": 3.680, "end": 3.780, "line_break": false, "letters": []},
+  {"word": "landslide,", "start": 3.820, "end": 4.300, "line_break": false, "letters": []},
+  {"word": "no", "start": 4.350, "end": 4.550, "line_break": false, "letters": []},
+  {"word": "escape", "start": 4.600, "end": 5.000, "line_break": false, "letters": []},
+  {"word": "from", "start": 5.050, "end": 5.300, "line_break": false, "letters": []},
+  {"word": "reality.", "start": 5.350, "end": 5.900, "line_break": true, "letters": []}
+]

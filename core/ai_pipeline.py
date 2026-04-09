@@ -456,7 +456,7 @@ def repair_all_library_meta(library_dir: str, db_path: str = ""):
              repaired, removed_meta, elapsed)
 
 BASE_DIR    = os.path.dirname(os.path.abspath(__file__))
-MODELS_DIR  = os.path.join(BASE_DIR, "models")
+MODELS_DIR  = os.environ.get("FK_MODELS_DIR") or os.path.join(BASE_DIR, "models")
 WHISPER_DIR = os.path.join(MODELS_DIR, "whisper")
 
 os.makedirs(MODELS_DIR,  exist_ok=True)

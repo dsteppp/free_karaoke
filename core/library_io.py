@@ -18,12 +18,12 @@ from app_status import set_status, clear_status
 
 log = get_logger("library_io")
 
-# Путь к логу импорта — удаляется при старте приложения
-IMPORT_LOG_PATH = os.path.join(
+# Путь к логу импорта — portable-режим
+LOGS_DIR = os.environ.get("FK_LOGS_DIR") or os.path.join(
     os.path.dirname(os.path.abspath(__file__)),
-    "debug_logs",
-    "import.log"
+    "debug_logs"
 )
+IMPORT_LOG_PATH = os.path.join(LOGS_DIR, "import.log")
 
 _import_lock = threading.Lock()
 _import_running = False

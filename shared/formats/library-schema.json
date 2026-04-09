@@ -1,0 +1,58 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Free Karaoke — Library Metadata JSON",
+  "description": "Метаданные библиотеки треков. Файл: {base_name}_library.json",
+  "type": "object",
+  "required": ["title"],
+  "properties": {
+    "title": {
+      "type": "string",
+      "description": "Название трека"
+    },
+    "artist": {
+      "type": "string",
+      "description": "Имя исполнителя"
+    },
+    "lyrics": {
+      "type": "string",
+      "description": "Полный текст песни (Genius или из тегов)"
+    },
+    "album": {
+      "type": "string",
+      "description": "Название альбома"
+    },
+    "year": {
+      "type": ["string", "number"],
+      "description": "Год выпуска"
+    },
+    "genre": {
+      "type": "string",
+      "description": "Жанр"
+    },
+    "cover_url": {
+      "type": "string",
+      "description": "URL или base64 обложки"
+    },
+    "bg_url": {
+      "type": "string",
+      "description": "URL или base64 фона караоке"
+    },
+    "duration": {
+      "type": "number",
+      "description": "Длительность трека в секундах"
+    },
+    "language": {
+      "type": "string",
+      "description": "Код языка трека (en, ru, etc.)"
+    }
+  },
+  "additionalProperties": true,
+  "examples": [
+    {
+      "title": "Bohemian Rhapsody",
+      "artist": "Queen",
+      "lyrics": "Is this the real life...",
+      "cover_url": "data:image/jpeg;base64,/9j/4AAQSkZ..."
+    }
+  ]
+}

@@ -1,9 +1,15 @@
 import uuid
-from sqlalchemy import create_engine, Column, String, Float, Integer
+import os
+from sqlalchemy import create_engine, Column, String, Float, Text, Integer
 from sqlalchemy.orm import sessionmaker, declarative_base
 
-# Создаст локальный файл базы данных karaoke.db прямо в папке проекта
-SQLALCHEMY_DATABASE_URL = "sqlite:///./karaoke.db"
+# ── Portable-режим: переменные окружения FK_* ────────────────────────────────
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+LIBRARY_DIR = os.environ.get("FK_LIBRARY_DIR") or BASE_DIR
+
+# SQLite DB — в portable-режиме в пользовательской директории
+DB_PATH = os.environ.get("FK_DB_PATH") or os.path.join(LIBRARY_DIR, "karaoke.db")
+SQLALCHEMY_DATABASE_URL = f"sqlite:///{DB_PATH}"
 
 # Создаем движок SQLite. 
 # check_same_thread=False обязателен для работы FastAPI с SQLite

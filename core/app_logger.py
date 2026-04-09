@@ -4,12 +4,12 @@ from logging.handlers import RotatingFileHandler
 from datetime import datetime
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DEBUG_LOGS_DIR = os.path.join(BASE_DIR, "debug_logs")
-os.makedirs(DEBUG_LOGS_DIR, exist_ok=True)
+LOGS_DIR = os.environ.get("FK_LOGS_DIR") or os.path.join(BASE_DIR, "debug_logs")
+os.makedirs(LOGS_DIR, exist_ok=True)
 
-HUEY_LOG_PATH = os.path.join(DEBUG_LOGS_DIR, "huey.log")
-UVICORN_LOG_PATH = os.path.join(DEBUG_LOGS_DIR, "uvicorn.log")
-MAIN_LOG_PATH = os.path.join(DEBUG_LOGS_DIR, "main.log")
+HUEY_LOG_PATH = os.path.join(LOGS_DIR, "huey.log")
+UVICORN_LOG_PATH = os.path.join(LOGS_DIR, "uvicorn.log")
+MAIN_LOG_PATH = os.path.join(LOGS_DIR, "main.log")
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Форматтер с временем и модулем
@@ -117,7 +117,7 @@ def dump_debug(name: str, data, track_stem: str = ""):
     if not track_stem:
         track_stem = "debug"
     
-    filename = os.path.join(DEBUG_LOGS_DIR, f"{track_stem}_(DEBUG_{name}).json")
+    filename = os.path.join(LOGS_DIR, f"{track_stem}_(DEBUG_{name}).json")
     
     try:
         with open(filename, "w", encoding="utf-8") as f:
@@ -136,7 +136,7 @@ def dump_debug_text(name: str, text: str, track_stem: str = ""):
     if not track_stem:
         track_stem = "debug"
     
-    filename = os.path.join(DEBUG_LOGS_DIR, f"{track_stem}_(DEBUG_{name}).txt")
+    filename = os.path.join(LOGS_DIR, f"{track_stem}_(DEBUG_{name}).txt")
     
     try:
         with open(filename, "w", encoding="utf-8") as f:
