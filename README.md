@@ -1,5 +1,7 @@
 <!-- 🌐 Этот документ двуязычный. English version is below. / Английская версия — в конце файла. -->
 
+> 🇬🇧 **English version:** [scroll to the bottom](#-english-version) of this page.
+
 ---
 
 # 🎤 Free Karaoke

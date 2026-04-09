@@ -14,6 +14,12 @@ debug_logs/
 __pycache__/
 .venv/
 
+# ── Папка Releases (артефакты сборок) ──────────────────
+# Исключения: README.md и .gitkeep отслеживаются
+Releases/
+!Releases/README.md
+!Releases/.gitkeep
+
 # ── ML-модели (большие файлы, скачиваются при сборке) ──
 desktop/shared/models/*.bin
 desktop/shared/models/*.pt
