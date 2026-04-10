@@ -920,8 +920,11 @@ async def partial_rescan_endpoint(
         raise HTTPException(status_code=400, detail="Время якоря не может быть отрицательным")
 
     # Загружаем JSON чтобы проверить диапазон
-    base_name = os.path.splitext(track.filename)[0]
-    karaoke_json_path = os.path.join("library", f"{base_name}_(Karaoke Lyrics).json")
+    # Приоритет: путь из БД (импорт), fallback: построение относительного пути
+    karaoke_json_path = track.karaoke_json_path
+    if not karaoke_json_path or not os.path.isabs(karaoke_json_path) or not os.path.exists(karaoke_json_path):
+        base_name = os.path.splitext(track.filename)[0]
+        karaoke_json_path = os.path.join("library", f"{base_name}_(Karaoke Lyrics).json")
 
     if not os.path.exists(karaoke_json_path):
         log.error("   ❌ Караоке JSON не найден: %s", karaoke_json_path)

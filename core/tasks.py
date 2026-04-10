@@ -62,12 +62,23 @@ def _process_track(track_id: str):
 
         base_name         = os.path.splitext(track.filename)[0]
         base_path         = os.path.join("library", base_name)
-        vocals_path       = f"{base_path}_(Vocals).mp3"
-        instrumental_path = f"{base_path}_(Instrumental).mp3"
-        lyrics_path       = f"{base_path}_(Genius Lyrics).txt"
-        karaoke_json_path = f"{base_path}_(Karaoke Lyrics).json"
+
+        # ── Разрешение путей: приоритет БД (импорт), fallback на построение (новая загрузка) ──
+        def _resolve_path(db_path: str | None, fallback: str) -> str:
+            """Если в БД есть абсолютный путь и файл существует — используем его.
+            Иначе — строим относительный (для новых загрузок)."""
+            if db_path and os.path.isabs(db_path) and os.path.exists(db_path):
+                return db_path
+            return fallback
+
+        vocals_path       = _resolve_path(track.vocals_path,       f"{base_path}_(Vocals).mp3")
+        instrumental_path = _resolve_path(track.instrumental_path, f"{base_path}_(Instrumental).mp3")
+        lyrics_path       = _resolve_path(track.lyrics_path,       f"{base_path}_(Genius Lyrics).txt")
+        karaoke_json_path = _resolve_path(track.karaoke_json_path, f"{base_path}_(Karaoke Lyrics).json")
 
         log.debug("base_name=%s, base_path=%s", base_name, base_path)
+        log.debug("vocals=%s, inst=%s, lyrics=%s, json=%s",
+                  vocals_path, instrumental_path, lyrics_path, karaoke_json_path)
 
         check_if_cancelled()
 
@@ -297,9 +308,16 @@ def partial_rescan_task(track_id: str, start_word_index: int, anchor_time: float
 
         base_name = os.path.splitext(track.filename)[0]
         base_path = os.path.join("library", base_name)
-        vocals_path = f"{base_path}_(Vocals).mp3"
-        lyrics_path = f"{base_path}_(Genius Lyrics).txt"
-        karaoke_json_path = f"{base_path}_(Karaoke Lyrics).json"
+
+        # ── Разрешение путей: приоритет БД (импорт), fallback на построение ──
+        def _resolve_path(db_path: str | None, fallback: str) -> str:
+            if db_path and os.path.isabs(db_path) and os.path.exists(db_path):
+                return db_path
+            return fallback
+
+        vocals_path = _resolve_path(track.vocals_path, f"{base_path}_(Vocals).mp3")
+        lyrics_path = _resolve_path(track.lyrics_path, f"{base_path}_(Genius Lyrics).txt")
+        karaoke_json_path = _resolve_path(track.karaoke_json_path, f"{base_path}_(Karaoke Lyrics).json")
         vad_path = f"{base_path}_(VAD).json"
 
         # ── Загрузка входных данных ──────────────────────────────────────────
