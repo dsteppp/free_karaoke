@@ -50,34 +50,46 @@ object FeatureLock {
         feature: Feature,
         onDismiss: () -> Unit
     ) {
-        FeatureNotAvailableDialog(
+        FeatureLockNotAvailableDialog(
             featureName = getFeatureName(feature),
             onDismiss = onDismiss
         )
     }
+}
 
-    @Composable
-    fun FeatureNotAvailableDialog(
-        featureName: String,
-        onDismiss: () -> Unit
-    ) {
-        AlertDialog(
-            onDismissRequest = onDismiss,
-            title = { Text(text = stringResource(R.string.feature_locked)) },
-            text = {
-                Text(
-                    text = "«$featureName» недоступно.\n" +
-                            stringResource(R.string.feature_lock_message)
-                )
-            },
-            confirmButton = {
-                TextButton(onClick = onDismiss) {
-                    Text(stringResource(R.string.ok))
-                }
-            },
-            dismissButton = null
-        )
-    }
+/** Top-level Compose-функция для вызова из MainActivity */
+@Composable
+fun FeatureNotAvailableDialog(
+    featureName: String,
+    onDismiss: () -> Unit
+) {
+    FeatureLockNotAvailableDialog(
+        featureName = featureName,
+        onDismiss = onDismiss
+    )
+}
+
+@Composable
+private fun FeatureLockNotAvailableDialog(
+    featureName: String,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(text = stringResource(R.string.feature_locked)) },
+        text = {
+            Text(
+                text = "«$featureName» недоступно.\n" +
+                        stringResource(R.string.feature_lock_message)
+            )
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text(stringResource(R.string.ok))
+            }
+        },
+        dismissButton = null
+    )
 }
 
 /**

@@ -213,12 +213,14 @@ fun KaraokePlayerScreen(
                     onClick = { featureLockState.showLockDialog(FeatureLock.getFeatureName(FeatureLock.Feature.SEPARATION)) },
                     label = { Text(stringResource(R.string.feature_separation)) },
                     leadingIcon = { Icon(Icons.Default.MusicNote, null) },
+                    selected = false,
                     enabled = false
                 )
                 FilterChip(
                     onClick = { featureLockState.showLockDialog(FeatureLock.getFeatureName(FeatureLock.Feature.TRANSCRIPTION)) },
                     label = { Text(stringResource(R.string.feature_transcription)) },
                     leadingIcon = { Icon(Icons.Default.Mic, null) },
+                    selected = false,
                     enabled = false
                 )
             }
