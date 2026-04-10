@@ -21,10 +21,14 @@ class KaraokeAligner:
     def __init__(self, model_name="medium"):
         self.model_name = model_name
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        
+
         base_dir = os.path.dirname(os.path.abspath(__file__))
-        self.whisper_model_dir = os.path.join(base_dir, "models", "whisper")
-        os.makedirs(self.whisper_model_dir, exist_ok=True)
+        models_dir = os.environ.get("FK_MODELS_DIR") or os.path.join(base_dir, "models")
+        self.whisper_model_dir = os.path.join(models_dir, "whisper")
+        try:
+            os.makedirs(self.whisper_model_dir, exist_ok=True)
+        except OSError:
+            pass  # Read-only filesystem (AppImage squashfs) — модель уже там
         
         self._track_stem = ""
 
