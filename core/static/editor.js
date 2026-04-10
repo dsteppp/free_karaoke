@@ -464,6 +464,12 @@
 
     // ── Полноэкранный оверлей рескана ──────────────────────────────────────
     function showRescanOverlay() {
+        // Закрываем popover редактора перед показом оверлея
+        document.body.classList.remove("edit-mode", "popover-open");
+        popover.classList.remove("visible");
+        currentWordIndex = -1;
+        activeTargetSpan = null;
+
         // Выходим из полноэкранного режима — оверлей не работает в fs-mode
         document.body.classList.remove("fs-mode");
 

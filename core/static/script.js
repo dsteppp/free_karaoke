@@ -928,6 +928,18 @@ function syncSliders() {
 function toggleFS() {
     const isFS = document.body.classList.contains("fs-mode");
     document.body.classList.toggle("fs-mode", !isFS);
+
+    // Закрываем popover редактора при выходе из полноэкранного режима
+    if (isFS) {
+        document.body.classList.remove("edit-mode", "popover-open");
+        const popover = document.getElementById("editor-popover");
+        if (popover) {
+            popover.classList.remove("visible");
+            const event = new CustomEvent("editor-popover-close");
+            document.dispatchEvent(event);
+        }
+    }
+
     setTimeout(() => {
         if (lastScrollTarget !== -1) scrollToActiveLine(lastScrollTarget, "auto");
     }, 50);
