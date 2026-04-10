@@ -5,7 +5,7 @@ from sqlalchemy.orm import sessionmaker, declarative_base
 
 # ── Portable-режим: переменные окружения FK_* ────────────────────────────────
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-LIBRARY_DIR = os.environ.get("FK_LIBRARY_DIR") or BASE_DIR
+LIBRARY_DIR = os.environ.get("FK_LIBRARY_DIR") or os.path.join(BASE_DIR, "library")
 
 # SQLite DB — в portable-режиме в пользовательской директории
 DB_PATH = os.environ.get("FK_DB_PATH") or os.path.join(LIBRARY_DIR, "karaoke.db")
