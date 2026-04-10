@@ -675,7 +675,7 @@ async def edit_track_metadata(
         raise HTTPException(status_code=400, detail="Трек не готов к редактированию")
 
     base_name = os.path.splitext(track.filename)[0]
-    base_path = os.path.join("library", base_name)
+    base_path = os.path.join(LIBRARY_DIR, base_name)
     lyrics_path = f"{base_path}_(Genius Lyrics).txt"
     lib_path = f"{base_path}_library.json"
     karaoke_json_path = f"{base_path}_(Karaoke Lyrics).json"
@@ -920,11 +920,11 @@ async def partial_rescan_endpoint(
         raise HTTPException(status_code=400, detail="Время якоря не может быть отрицательным")
 
     # Загружаем JSON чтобы проверить диапазон
-    # Приоритет: путь из БД (импорт), fallback: построение относительного пути
+    # Приоритет: путь из БД (импорт), fallback: LIBRARY_DIR
     karaoke_json_path = track.karaoke_json_path
     if not karaoke_json_path or not os.path.isabs(karaoke_json_path) or not os.path.exists(karaoke_json_path):
         base_name = os.path.splitext(track.filename)[0]
-        karaoke_json_path = os.path.join("library", f"{base_name}_(Karaoke Lyrics).json")
+        karaoke_json_path = os.path.join(LIBRARY_DIR, f"{base_name}_(Karaoke Lyrics).json")
 
     if not os.path.exists(karaoke_json_path):
         log.error("   ❌ Караоке JSON не найден: %s", karaoke_json_path)

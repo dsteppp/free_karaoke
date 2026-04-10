@@ -16,7 +16,7 @@ log = get_logger("editor")
 router = APIRouter()
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-LIBRARY_DIR = os.path.join(BASE_DIR, "library")
+LIBRARY_DIR = os.environ.get("FK_LIBRARY_DIR") or os.path.join(BASE_DIR, "library")
 
 class EditorWord(BaseModel):
     word: str

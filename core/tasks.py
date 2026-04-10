@@ -1,5 +1,5 @@
 from huey_config import huey
-from database import SessionLocal, Track
+from database import SessionLocal, Track, LIBRARY_DIR
 from ai_pipeline import (
     convert_to_mp3,
     separate_vocals,
@@ -61,7 +61,7 @@ def _process_track(track_id: str):
             display_name = f"{track.artist} — {display_name}"
 
         base_name         = os.path.splitext(track.filename)[0]
-        base_path         = os.path.join("library", base_name)
+        base_path         = os.path.join(LIBRARY_DIR, base_name)
 
         # ── Разрешение путей: приоритет БД (импорт), fallback на построение (новая загрузка) ──
         def _resolve_path(db_path: str | None, fallback: str) -> str:
@@ -307,7 +307,7 @@ def partial_rescan_task(track_id: str, start_word_index: int, anchor_time: float
             display_name = f"{track.artist} — {display_name}"
 
         base_name = os.path.splitext(track.filename)[0]
-        base_path = os.path.join("library", base_name)
+        base_path = os.path.join(LIBRARY_DIR, base_name)
 
         # ── Разрешение путей: приоритет БД (импорт), fallback на построение ──
         def _resolve_path(db_path: str | None, fallback: str) -> str:
