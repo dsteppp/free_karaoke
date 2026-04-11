@@ -473,135 +473,50 @@ if [ -d "$QT_PLUGINS_SRC" ]; then
 fi
 
 # Bundle additional system libraries that PyQt6/WebEngine may need
-echo "   Bundling additional system libs..."
-for lib in \
-    libxcb-xinerama.so.0 \
-    libxcb-cursor.so.0 \
-    libxcb-icccm.so.4 \
-    libxcb-image.so.0 \
-    libxcb-keysyms.so.1 \
-    libxcb-randr.so.0 \
-    libxcb-render-util.so.0 \
-    libxcb-shape.so.0 \
-    libxcb-shm.so.0 \
-    libxcb-xfixes.so.0 \
-    libxcb-xkb.so.1 \
-    libxkbcommon.so.0 \
-    libxkbcommon-x11.so.0 \
-    libdbus-1.so.3 \
-    libglib-2.0.so.0 \
-    libgobject-2.0.so.0 \
-    libgthread-2.0.so.0 \
-    libgio-2.0.so.0 \
-    libgmodule-2.0.so.0 \
-    libfontconfig.so.1 \
-    libfreetype.so.6 \
-    libexpat.so.1 \
-    libharfbuzz.so.0 \
-    libgraphite2.so.3 \
-    libicui18n.so.* \
-    libicuuc.so.* \
-    libicudata.so.* \
-    libpcre2-16.so.0 \
-    libpcre2-8.so.0 \
-    libzstd.so.1 \
-    liblzma.so.5 \
-    libbz2.so.1.0 \
-    libpng16.so.16 \
-    libjpeg.so.8 \
-    libtiff.so.6 \
-    libwebp.so.7 \
-    libwebpdemux.so.2 \
-    libwebpmux.so.3 \
-    libgstapp-1.0.so.0 \
-    libgstaudio-1.0.so.0 \
-    libgstbase-1.0.so.0 \
-    libgstpbutils-1.0.so.0 \
-    libgstvideo-1.0.so.0 \
-    libgstreamer-1.0.so.0 \
-    liborc-0.4.so.0 \
-    libtag.so.1 \
-    libminizip.so.1 \
-    libbrotlidec.so.1 \
-    libbrotlicommon.so.1 \
-    libdouble-conversion.so.3 \
-    libsystemd.so.0 \
-    libcap.so.2 \
-    libgcrypt.so.20 \
-    libgpg-error.so.0 \
-    liblz4.so.1 \
-    libselinux.so.1 \
-    libpcre.so.3 \
-    libmount.so.1 \
-    libblkid.so.1 \
-    libuuid.so.1 \
-    libffi.so.8 \
-    libpcre2-32.so.0 \
-    libX11.so.6 \
-    libX11-xcb.so.1 \
-    libXext.so.6 \
-    libXau.so.6 \
-    libXdmcp.so.6 \
-    libXi.so.6 \
-    libXrender.so.1 \
-    libSM.so.6 \
-    libICE.so.6 \
-    libGL.so.1 \
-    libEGL.so.1 \
-    libGLX.so.0 \
-    libGLdispatch.so.0 \
-    libdrm.so.2 \
-    libgbm.so.1 \
-    libwayland-client.so.0 \
-    libwayland-server.so.0 \
-    libwayland-cursor.so.0 \
-    libwayland-egl.so.1 \
-    libatspi.so.0 \
-    libasound.so.2 \
-    libpulse.so.0 \
-    libpulsecommon-*.so \
-    libsamplerate.so.0 \
-    libsndfile.so.1 \
-    libFLAC.so.12 \
-    libogg.so.0 \
-    libvorbis.so.0 \
-    libvorbisenc.so.2 \
-    libopus.so.0 \
-    libmp3lame.so.0 \
-    libx264.so.* \
-    libx265.so.* \
-    libaom.so.* \
-    libdav1d.so.* \
-    libvpx.so.* \
-    libopenh264.so.* \
-    libswresample.so.* \
-    libswscale.so.* \
-    libavcodec.so.* \
-    libavformat.so.* \
-    libavutil.so.* \
-    libavfilter.so.* \
-    libavdevice.so.* \
-    libpango-1.0.so.0 \
-    libpangocairo-1.0.so.0 \
-    libpangoft2-1.0.so.0 \
-    libcairo.so.2 \
-    libpixman-1.so.0 \
-    libxcb-util.so.1 \
-; do
-    # Try standard locations
-    for search_path in \
-        /lib/x86_64-linux-gnu \
-        /usr/lib/x86_64-linux-gnu \
-        /usr/lib \
-        /lib \
-    ; do
-        found=$(find "$search_path" -maxdepth 1 -name "$lib" 2>/dev/null | head -1)
-        if [ -n "$found" ] && [ -f "$found" ]; then
-            cp -L "$found" "$SYS_LIBS_DIR/" 2>/dev/null || true
-            break
-        fi
-    done
-done
+# Оптимизация: вместо поиска каждой библиотеки по отдельности,
+# копируем целые наборы .so одним махом из системных директорий
+echo "   Bundling additional system libs (optimized bulk copy)..."
+
+# Копируем X11/XCB libs
+cp -L /usr/lib/x86_64-linux-gnu/libX{11,11-xcb,ext,au,dmcp,i,render,SM,ICE}.so* "$SYS_LIBS_DIR/" 2>/dev/null || true
+cp -L /usr/lib/x86_64-linux-gnu/libxcb{-xinerama,-cursor,-icccm,-image,-keysyms,-randr,-render-util,-shape,-shm,-xfixes,-xkb,-util}.so* "$SYS_LIBS_DIR/" 2>/dev/null || true
+
+# Копируем xkbcommon
+cp -L /usr/lib/x86_64-linux-gnu/libxkbcommon{,-x11}.so* "$SYS_LIBS_DIR/" 2>/dev/null || true
+
+# Копируем dbus + GLib stack
+cp -L /usr/lib/x86_64-linux-gnu/libdbus-1.so* "$SYS_LIBS_DIR/" 2>/dev/null || true
+cp -L /usr/lib/x86_64-linux-gnu/lib{glib-2.0,gobject-2.0,gthread-2.0,gio-2.0,gmodule-2.0}-*.so* "$SYS_LIBS_DIR/" 2>/dev/null || true
+
+# Копируем font/rendering stack
+cp -L /usr/lib/x86_64-linux-gnu/lib{fontconfig,freetype,expat,harfbuzz,graphite2,pixman-1,pango-1.0,pangocairo-1.0,pangoft2-1.0,cairo}.so* "$SYS_LIBS_DIR/" 2>/dev/null || true
+cp -L /usr/lib/x86_64-linux-gnu/libpcre2-{16,8,32}.so* "$SYS_LIBS_DIR/" 2>/dev/null || true
+cp -L /usr/lib/x86_64-linux-gnu/libpcre.so* "$SYS_LIBS_DIR/" 2>/dev/null || true
+
+# Копируем ICU libs
+cp -L /usr/lib/x86_64-linux-gnu/libicu{i18n,uc,data}*.so* "$SYS_LIBS_DIR/" 2>/dev/null || true
+
+# Копируем compression/archive libs
+cp -L /usr/lib/x86_64-linux-gnu/lib{zstd,lzma,bz2,lz4,z}.so* "$SYS_LIBS_DIR/" 2>/dev/null || true
+cp -L /usr/lib/x86_64-linux-gnu/libpng16.so* "$SYS_LIBS_DIR/" 2>/dev/null || true
+cp -L /usr/lib/x86_64-linux-gnu/lib{jpeg,tiff,webp,webpdemux,webpmux}.so* "$SYS_LIBS_DIR/" 2>/dev/null || true
+cp -L /usr/lib/x86_64-linux-gnu/libbrotli{dec,common}.so* "$SYS_LIBS_DIR/" 2>/dev/null || true
+
+# Копируем GStreamer
+cp -L /usr/lib/x86_64-linux-gnu/lib{gst{app,audio,base,pbutils,video,tag}-1.0,gstreamer-1.0,orc-0.4}.so* "$SYS_LIBS_DIR/" 2>/dev/null || true
+
+# Копируем audio libs
+cp -L /usr/lib/x86_64-linux-gnu/lib{asound,pulse,pulsecommon-*,samplerate,sndfile,FLAC,ogg,vorbis,vorbisenc,opus,mp3lame}.so* "$SYS_LIBS_DIR/" 2>/dev/null || true
+
+# Копируем video codec libs
+cp -L /usr/lib/x86_64-linux-gnu/lib{x264,x265,aom,dav1d,vpx,openh264,swresample,swscale,avcodec,avformat,avutil,avfilter,avdevice}.so* "$SYS_LIBS_DIR/" 2>/dev/null || true
+
+# Копируем GL/EGL/Wayland
+cp -L /usr/lib/x86_64-linux-gnu/lib{GL,EGL,GLX,GLdispatch,drm,gbm}.so* "$SYS_LIBS_DIR/" 2>/dev/null || true
+cp -L /usr/lib/x86_64-linux-gnu/libwayland{-client,-server,-cursor,-egl}.so* "$SYS_LIBS_DIR/" 2>/dev/null || true
+
+# Копируем misc system libs
+cp -L /usr/lib/x86_64-linux-gnu/lib{systemd,cap,gcrypt,gpg-error,selinux,mount,blkid,uuid,ffi,double-conversion,minizip,tag}.so* "$SYS_LIBS_DIR/" 2>/dev/null || true
 
 SYS_LIBS_SIZE=$(du -sh "$SYS_LIBS_DIR" 2>/dev/null | cut -f1 || echo "0")
 echo "   ✅ System libraries bundled ($SYS_LIBS_SIZE)"
