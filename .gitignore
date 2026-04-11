@@ -28,6 +28,7 @@ releases/_build-cache/
 releases/*.AppImage
 releases/*.apk
 releases/FreeKaraoke-*/
+releases/core/
 
 # ── Собранные артефакты ────────────────────────────────
 dist/

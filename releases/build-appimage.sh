@@ -362,7 +362,7 @@ if [ -f "$SCRIPT_DIR/ai-karaoke.svg" ]; then
     cp "$SCRIPT_DIR/ai-karaoke.svg" "$APPDIR/usr/share/icons/hicolor/256x256/apps/ai-karaoke.svg"
 fi
 
-# Create config directory
+# Create config directory with portable.env.example
 mkdir -p "$APPDIR/usr/share/ai-karaoke/config"
 cat > "$APPDIR/usr/share/ai-karaoke/config/portable.env.example" << 'ENV'
 # Free Karaoke — Portable Environment
@@ -380,6 +380,10 @@ WHISPER_MODEL=medium
 # Log level
 LOG_LEVEL=INFO
 ENV
+
+# Also add example file to AppDir root for visibility
+cp "$APPDIR/usr/share/ai-karaoke/config/portable.env.example" \
+   "$APPDIR/usr/share/ai-karaoke/portable.env.example"
 
 echo "   ✅ AppDir structure ready"
 
