@@ -111,7 +111,7 @@ def bootstrap_models():
             log.error("   ❌ Ошибка копирования %s: %s", name, e)
             return False
 
-    # Копируем MDX23C vocal separation model
+    # Копируем MDX23C vocal separation model + YAML config
     mdx_src = os.path.join(appimage_models, "audio_separator", "MDX23C-8KFFT-InstVoc_HQ.ckpt")
     mdx_dst = os.path.join(writable_models, "audio_separator", "MDX23C-8KFFT-InstVoc_HQ.ckpt")
     min_mdx = MIN_MODEL_SIZES["MDX23C-8KFFT-InstVoc_HQ.ckpt"]
@@ -119,6 +119,17 @@ def bootstrap_models():
     if _needs_copy(mdx_src, mdx_dst, min_mdx):
         log.info("📦 Bootstrap: копирую MDX23C модель в writable кэш...")
         _safe_copy(mdx_src, mdx_dst, "MDX23C")
+
+    # YAML конфигурация модели (обязательна для audio-separator)
+    yaml_src = os.path.join(appimage_models, "audio_separator", "MDX23C-8KFFT-InstVoc_HQ.yaml")
+    yaml_dst = os.path.join(writable_models, "audio_separator", "MDX23C-8KFFT-InstVoc_HQ.yaml")
+    if os.path.exists(yaml_src) and not os.path.exists(yaml_dst):
+        try:
+            os.makedirs(os.path.dirname(yaml_dst), exist_ok=True)
+            shutil.copy2(yaml_src, yaml_dst)
+            log.info("   ✅ MDX23C .yaml конфиг скопирован")
+        except OSError:
+            pass
 
     # Копируем Whisper модель
     whisper_src = os.path.join(appimage_models, "whisper", "medium.pt")

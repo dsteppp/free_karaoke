@@ -66,6 +66,16 @@ def _copy_models_to_writable(src: str, dst: str):
     mdx_dst = os.path.join(dst, "audio_separator", "MDX23C-8KFFT-InstVoc_HQ.ckpt")
     _safe_copy(mdx_src, mdx_dst, "MDX23C")
 
+    # YAML конфигурация модели (обязательна для audio-separator)
+    yaml_src = os.path.join(src, "audio_separator", "MDX23C-8KFFT-InstVoc_HQ.yaml")
+    yaml_dst = os.path.join(dst, "audio_separator", "MDX23C-8KFFT-InstVoc_HQ.yaml")
+    if os.path.exists(yaml_src) and not os.path.exists(yaml_dst):
+        try:
+            os.makedirs(os.path.dirname(yaml_dst), exist_ok=True)
+            shutil.copy2(yaml_src, yaml_dst)
+        except OSError:
+            pass
+
     # Whisper модель
     whisper_src = os.path.join(src, "whisper", "medium.pt")
     whisper_dst = os.path.join(dst, "whisper", "medium.pt")

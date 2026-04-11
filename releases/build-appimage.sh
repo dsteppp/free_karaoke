@@ -340,15 +340,25 @@ else
     echo "   Run: cd core && bash reinstall.sh"
 fi
 
-# Copy MDX23C vocal separation model (bundled for offline use)
-if [ -f "$CACHE_DIR/models/MDX23C-8KFFT-InstVoc_HQ.ckpt" ]; then
+# Copy MDX23C vocal separation model + YAML config (bundled for offline use)
+MDX_CKPT="$CACHE_DIR/models/MDX23C-8KFFT-InstVoc_HQ.ckpt"
+MDX_YAML="$CORE_DIR/models/audio_separator/MDX23C-8KFFT-InstVoc_HQ.yaml"
+
+if [ -f "$MDX_CKPT" ]; then
     echo "   Copying MDX23C model..."
     mkdir -p "$APPDIR/usr/share/ai-karaoke/models/audio_separator"
-    cp "$CACHE_DIR/models/MDX23C-8KFFT-InstVoc_HQ.ckpt" \
-       "$APPDIR/usr/share/ai-karaoke/models/audio_separator/"
-    echo "   ✅ MDX23C bundled (offline separation ready)"
+    cp "$MDX_CKPT" "$APPDIR/usr/share/ai-karaoke/models/audio_separator/"
+    MDX_SIZE=$(du -sh "$MDX_CKPT" | cut -f1)
+    echo "   ✅ MDX23C .ckpt bundled ($MDX_SIZE)"
 else
-    echo "   ⚠️  MDX23C model not in cache — will download on first use"
+    echo "   ⚠️  MDX23C .ckpt not in cache — will download on first use"
+fi
+
+if [ -f "$MDX_YAML" ]; then
+    cp "$MDX_YAML" "$APPDIR/usr/share/ai-karaoke/models/audio_separator/"
+    echo "   ✅ MDX23C .yaml config bundled"
+else
+    echo "   ⚠️  MDX23C .yaml config not found — model may not work offline"
 fi
 
 # Copy ffmpeg
