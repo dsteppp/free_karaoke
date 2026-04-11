@@ -37,28 +37,39 @@ def _resolve_models_dir():
 
 
 def _copy_models_to_writable(src: str, dst: str):
-    """Копирует модели из read-only src в writable dst."""
+    """Копирует модели из read-only src в writable dst с проверкой размера."""
     import shutil
+
+    MIN_MODEL_SIZE = 100 * 1024 * 1024  # 100 MB минимум
+
+    def _safe_copy(src_path: str, dst_path: str, name: str):
+        if not os.path.exists(src_path):
+            return
+        # Проверяем размер — если файл уже есть и достаточно большой, пропускаем
+        if os.path.exists(dst_path):
+            dst_size = os.path.getsize(dst_path)
+            if dst_size >= MIN_MODEL_SIZE:
+                return  # Файл OK
+            log.warning("   ⚠️  %s слишком мал (%.1f MB) — перезаписываю",
+                        name, dst_size / (1024*1024))
+            os.remove(dst_path)
+        try:
+            os.makedirs(os.path.dirname(dst_path), exist_ok=True)
+            shutil.copy2(src_path, dst_path)
+            new_size = os.path.getsize(dst_path)
+            log.info("   ✅ %s скопирована (%.1f MB)", name, new_size / (1024*1024))
+        except OSError:
+            pass  # Модель может загрузиться из интернета
 
     # MDX23C vocal separation model
     mdx_src = os.path.join(src, "audio_separator", "MDX23C-8KFFT-InstVoc_HQ.ckpt")
     mdx_dst = os.path.join(dst, "audio_separator", "MDX23C-8KFFT-InstVoc_HQ.ckpt")
-    if os.path.exists(mdx_src) and not os.path.exists(mdx_dst):
-        try:
-            os.makedirs(os.path.dirname(mdx_dst), exist_ok=True)
-            shutil.copy2(mdx_src, mdx_dst)
-        except OSError:
-            pass  # Модель может загрузиться из интернета
+    _safe_copy(mdx_src, mdx_dst, "MDX23C")
 
     # Whisper модель
     whisper_src = os.path.join(src, "whisper", "medium.pt")
     whisper_dst = os.path.join(dst, "whisper", "medium.pt")
-    if os.path.exists(whisper_src) and not os.path.exists(whisper_dst):
-        try:
-            os.makedirs(os.path.dirname(whisper_dst), exist_ok=True)
-            shutil.copy2(whisper_src, whisper_dst)
-        except OSError:
-            pass
+    _safe_copy(whisper_src, whisper_dst, "Whisper medium")
 
 import subprocess
 import re
@@ -615,18 +626,22 @@ def separate_vocals(mp3_path: str) -> tuple[str, str]:
     instrumental_final = os.path.join(basedir, f"{basename}_(Instrumental).mp3")
 
     t_model = time.time()
+
+    # Определяем директорию с моделями audio-separator
+    sep_model_dir = os.path.join(MODELS_DIR, "audio_separator")
+    local_model = os.path.join(sep_model_dir, "MDX23C-8KFFT-InstVoc_HQ.ckpt")
+
     separator = Separator(
-        model_file_dir=MODELS_DIR,
+        model_file_dir=sep_model_dir,
         output_dir=basedir,
         output_format="MP3",
         normalization_threshold=0.9,
     )
 
     # Проверяем локальную модель (AppImage bundling / dev-режим)
-    local_model = os.path.join(MODELS_DIR, "audio_separator", "MDX23C-8KFFT-InstVoc_HQ.ckpt")
     if os.path.exists(local_model):
         log.info("   📦 Используем локальную модель MDX23C (офлайн)")
-        separator.load_model(model_filename=local_model)
+        separator.load_model(model_filename="MDX23C-8KFFT-InstVoc_HQ.ckpt")
     else:
         log.info("   📥 Загрузка модели MDX23C из интернета...")
         separator.load_model(model_filename="MDX23C-8KFFT-InstVoc_HQ.ckpt")

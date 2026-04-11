@@ -41,6 +41,9 @@ def bootstrap_models():
     Если FK_MODELS_DIR указывает на read-only директорию (AppImage squashfs),
     модели копируются в FK_CACHE_DIR/models/ и возвращается новый путь.
 
+    Проверяет размер скопированных файлов — если файл уже существует но
+    меньше ожидаемого минимума, перезаписывает.
+
     Returns:
         str: Путь к writable директории с моделями.
     """
@@ -64,33 +67,67 @@ def bootstrap_models():
     writable_models = os.path.join(cache_dir, "models")
     os.makedirs(writable_models, exist_ok=True)
 
+    # Минимальные ожидаемые размеры моделей (байты)
+    MIN_MODEL_SIZES = {
+        "MDX23C-8KFFT-InstVoc_HQ.ckpt": 100 * 1024 * 1024,   # 100 MB минимум (реальный ~428MB)
+        "medium.pt": 100 * 1024 * 1024,                         # 100 MB минимум (реальный ~1.5GB)
+    }
+
+    def _needs_copy(src: str, dst: str, min_size: int) -> bool:
+        """True если файл нужно скопировать (нет, или слишком маленький)."""
+        if not os.path.exists(src):
+            return False
+        if not os.path.exists(dst):
+            return True
+        # Файл существует — проверяем размер
+        actual_size = os.path.getsize(dst)
+        if actual_size < min_size:
+            log.warning("   ⚠️  Файл %s слишком мал (%.1f MB < %.1f MB) — перезаписываю",
+                        os.path.basename(dst),
+                        actual_size / (1024*1024),
+                        min_size / (1024*1024))
+            return True
+        return False
+
+    def _safe_copy(src: str, dst: str, name: str) -> bool:
+        """Безопасное копирование с проверкой результата."""
+        try:
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            # Удаляем битый файл если есть
+            if os.path.exists(dst):
+                os.remove(dst)
+            shutil.copy2(src, dst)
+            # Проверяем что скопировалось
+            src_size = os.path.getsize(src)
+            dst_size = os.path.getsize(dst)
+            if dst_size != src_size:
+                log.error("   ❌ %s: размер не совпадает (src=%d, dst=%d)",
+                          name, src_size, dst_size)
+                return False
+            log.info("   ✅ %s скопирована (%.1f MB)",
+                     name, dst_size / (1024 * 1024))
+            return True
+        except OSError as e:
+            log.error("   ❌ Ошибка копирования %s: %s", name, e)
+            return False
+
     # Копируем MDX23C vocal separation model
     mdx_src = os.path.join(appimage_models, "audio_separator", "MDX23C-8KFFT-InstVoc_HQ.ckpt")
     mdx_dst = os.path.join(writable_models, "audio_separator", "MDX23C-8KFFT-InstVoc_HQ.ckpt")
+    min_mdx = MIN_MODEL_SIZES["MDX23C-8KFFT-InstVoc_HQ.ckpt"]
 
-    if os.path.exists(mdx_src) and not os.path.exists(mdx_dst):
+    if _needs_copy(mdx_src, mdx_dst, min_mdx):
         log.info("📦 Bootstrap: копирую MDX23C модель в writable кэш...")
-        os.makedirs(os.path.dirname(mdx_dst), exist_ok=True)
-        try:
-            shutil.copy2(mdx_src, mdx_dst)
-            log.info("   ✅ MDX23C скопирована (%.1f MB)",
-                     os.path.getsize(mdx_dst) / (1024 * 1024))
-        except OSError as e:
-            log.error("   ❌ Ошибка копирования MDX23C: %s", e)
+        _safe_copy(mdx_src, mdx_dst, "MDX23C")
 
     # Копируем Whisper модель
     whisper_src = os.path.join(appimage_models, "whisper", "medium.pt")
     whisper_dst = os.path.join(writable_models, "whisper", "medium.pt")
+    min_whisper = MIN_MODEL_SIZES["medium.pt"]
 
-    if os.path.exists(whisper_src) and not os.path.exists(whisper_dst):
+    if _needs_copy(whisper_src, whisper_dst, min_whisper):
         log.info("📦 Bootstrap: копирую Whisper модель в writable кэш...")
-        os.makedirs(os.path.dirname(whisper_dst), exist_ok=True)
-        try:
-            shutil.copy2(whisper_src, whisper_dst)
-            log.info("   ✅ Whisper medium скопирована (%.1f MB)",
-                     os.path.getsize(whisper_dst) / (1024 * 1024))
-        except OSError as e:
-            log.error("   ❌ Ошибка копирования Whisper: %s", e)
+        _safe_copy(whisper_src, whisper_dst, "Whisper medium")
 
     # Обновляем FK_MODELS_DIR на writable путь
     os.environ["FK_MODELS_DIR"] = writable_models
