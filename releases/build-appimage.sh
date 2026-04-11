@@ -394,8 +394,11 @@ AMD_VENV="$APPDIR/usr/share/ai-karaoke/.venv_amd"
 python3.11 -m venv "$AMD_VENV"
 source "$AMD_VENV/bin/activate"
 pip install --upgrade pip -q
-pip install --cache-dir="$CACHE_DIR/pip" -r "$BUILD_DIR/requirements-amd.txt"
-deactivate
+pip install --cache-dir="$CACHE_DIR/pip" -r "$BUILD_DIR/requirements-amd.txt" || {
+    echo "❌ Failed to install AMD dependencies"
+    exit 1
+}
+deactivate || true
 AMD_SIZE=$(du -sh "$AMD_VENV" | cut -f1)
 echo "   ✅ AMD venv built ($AMD_SIZE)"
 
@@ -411,8 +414,11 @@ NVIDIA_VENV="$APPDIR/usr/share/ai-karaoke/.venv_nvidia"
 python3.11 -m venv "$NVIDIA_VENV"
 source "$NVIDIA_VENV/bin/activate"
 pip install --upgrade pip -q
-pip install --cache-dir="$CACHE_DIR/pip" -r "$BUILD_DIR/requirements-nvidia.txt"
-deactivate
+pip install --cache-dir="$CACHE_DIR/pip" -r "$BUILD_DIR/requirements-nvidia.txt" || {
+    echo "❌ Failed to install NVIDIA dependencies"
+    exit 1
+}
+deactivate || true
 NVIDIA_SIZE=$(du -sh "$NVIDIA_VENV" | cut -f1)
 echo "   ✅ NVIDIA venv built ($NVIDIA_SIZE)"
 
