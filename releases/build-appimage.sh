@@ -59,7 +59,7 @@ if ! command -v python3.11 &>/dev/null; then
     echo "   Проект требует именно Python 3.11 (не 3.12+)."
     echo "   Установите его через менеджер пакетов вашей системы:"
     echo ""
-    echo "   Arch/Manjaro:  sudo pacman -S python311"
+    echo "   Arch/Manjaro:  sudo pacman -S python311 или yay -S python311"
     echo "   Ubuntu/Debian: sudo apt install python3.11 python3.11-venv"
     echo "   Fedora:        sudo dnf install python3.11"
     echo "   openSUSE:      sudo zypper install python311"
