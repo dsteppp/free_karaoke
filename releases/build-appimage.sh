@@ -321,10 +321,11 @@ mkdir -p "$APPDIR/usr/bin"
 mkdir -p "$APPDIR/usr/share/ai-karaoke"
 mkdir -p "$APPDIR/usr/share/icons/hicolor/256x256/apps"
 
-# Copy core (exclude cache, db, library, models, .venv)
+# Copy core (exclude cache, db, library, models, .venv, secrets)
 echo "   Copying core/..."
 rsync -a --exclude='cache' --exclude='debug_logs' --exclude='__pycache__' \
       --exclude='*.db*' --exclude='.env' --exclude='.env.cache' \
+      --exclude='portable.env' \
       --exclude='library' --exclude='models' --exclude='.venv' \
       --exclude='venv' \
       "$CORE_DIR/" "$APPDIR/usr/share/ai-karaoke/"
