@@ -651,12 +651,28 @@ def separate_vocals(mp3_path: str) -> tuple[str, str]:
     sep_model_dir = os.path.join(MODELS_DIR, "audio_separator")
     local_model = os.path.join(sep_model_dir, "MDX23C-8KFFT-InstVoc_HQ.ckpt")
 
+    # Выбираем устройство: NVIDIA=cuda, AMD/CPU=cpu
+    # ROCm PyTorch вызывает HIP kernel error с MDX23C, поэтому AMD → CPU
+    sep_device = "cpu"  # default
+    try:
+        import torch
+        if torch.cuda.is_available():
+            # Проверяем что это реальная NVIDIA CUDA, а не ROCm
+            device_name = torch.cuda.get_device_name(0)
+            if "NVIDIA" in device_name or "GeForce" in device_name or "Tesla" in device_name or "Quadro" in device_name:
+                sep_device = "cuda"
+                log.info("   🎮 NVIDIA GPU detected (%s) — using CUDA for separation", device_name)
+            else:
+                log.info("   ⚠️  ROCm/AMD GPU detected (%s) — using CPU for separation (HIP compatibility)", device_name)
+    except Exception:
+        pass
+
     separator = Separator(
         model_file_dir=sep_model_dir,
         output_dir=basedir,
         output_format="MP3",
         normalization_threshold=0.9,
-        device="cpu",  # Принудительно CPU — ROCm PyTorch вызывает HIP kernel error
+        device=sep_device,
     )
 
     # Проверяем локальную модель (AppImage bundling / dev-режим)
