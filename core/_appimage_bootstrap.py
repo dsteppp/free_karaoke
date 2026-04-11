@@ -131,6 +131,17 @@ def bootstrap_models():
         except OSError:
             pass
 
+    # download_checks.json — список моделей для валидации (офлайн)
+    checks_src = os.path.join(appimage_models, "audio_separator", "download_checks.json")
+    checks_dst = os.path.join(writable_models, "audio_separator", "download_checks.json")
+    if os.path.exists(checks_src) and not os.path.exists(checks_dst):
+        try:
+            os.makedirs(os.path.dirname(checks_dst), exist_ok=True)
+            shutil.copy2(checks_src, checks_dst)
+            log.info("   ✅ download_checks.json скопирован")
+        except OSError:
+            pass
+
     # Копируем Whisper модель
     whisper_src = os.path.join(appimage_models, "whisper", "medium.pt")
     whisper_dst = os.path.join(writable_models, "whisper", "medium.pt")

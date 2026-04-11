@@ -340,9 +340,10 @@ else
     echo "   Run: cd core && bash reinstall.sh"
 fi
 
-# Copy MDX23C vocal separation model + YAML config (bundled for offline use)
+# Copy MDX23C vocal separation model + YAML config + download_checks (bundled for offline use)
 MDX_CKPT="$CACHE_DIR/models/MDX23C-8KFFT-InstVoc_HQ.ckpt"
 MDX_YAML="$CORE_DIR/models/audio_separator/MDX23C-8KFFT-InstVoc_HQ.yaml"
+MDX_CHECKS="$CORE_DIR/models/audio_separator/download_checks.json"
 
 if [ -f "$MDX_CKPT" ]; then
     echo "   Copying MDX23C model..."
@@ -359,6 +360,13 @@ if [ -f "$MDX_YAML" ]; then
     echo "   ✅ MDX23C .yaml config bundled"
 else
     echo "   ⚠️  MDX23C .yaml config not found — model may not work offline"
+fi
+
+if [ -f "$MDX_CHECKS" ]; then
+    cp "$MDX_CHECKS" "$APPDIR/usr/share/ai-karaoke/models/audio_separator/"
+    echo "   ✅ download_checks.json bundled (offline model validation)"
+else
+    echo "   ⚠️  download_checks.json not found — model validation may fail offline"
 fi
 
 # Copy ffmpeg

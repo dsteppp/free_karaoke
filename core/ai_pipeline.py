@@ -76,6 +76,16 @@ def _copy_models_to_writable(src: str, dst: str):
         except OSError:
             pass
 
+    # download_checks.json — список моделей для валидации (офлайн)
+    checks_src = os.path.join(src, "audio_separator", "download_checks.json")
+    checks_dst = os.path.join(dst, "audio_separator", "download_checks.json")
+    if os.path.exists(checks_src) and not os.path.exists(checks_dst):
+        try:
+            os.makedirs(os.path.dirname(checks_dst), exist_ok=True)
+            shutil.copy2(checks_src, checks_dst)
+        except OSError:
+            pass
+
     # Whisper модель
     whisper_src = os.path.join(src, "whisper", "medium.pt")
     whisper_dst = os.path.join(dst, "whisper", "medium.pt")

@@ -556,11 +556,17 @@ async def delete_single_track(track_id: str, db: Session = Depends(get_db)):
     if track.filename:
         library_meta_path = os.path.join(LIBRARY_DIR, track.filename.rsplit(".", 1)[0] + "_library.json")
 
-    # VAD файл (кэш voice activity detection)
+    # VAD файл (кэш voice activity detection) — создаётся от LIBRARY_DIR
     vad_path = None
+    if track.filename:
+        vad_base = os.path.splitext(track.filename)[0]
+        vad_path = os.path.join(LIBRARY_DIR, f"{vad_base}_(VAD).json")
+
+    # Также проверяем путь от vocals_path (на случай если VAD создан от него)
+    vad_path_vocals = None
     if track.vocals_path:
-        base = os.path.splitext(track.vocals_path)[0]
-        vad_path = f"{base}_(VAD).json"
+        vocals_base = os.path.splitext(track.vocals_path)[0]
+        vad_path_vocals = f"{vocals_base}_(VAD).json"
 
     paths = [
         track.original_path,
@@ -570,6 +576,7 @@ async def delete_single_track(track_id: str, db: Session = Depends(get_db)):
         track.karaoke_json_path,
         library_meta_path,
         vad_path,
+        vad_path_vocals,  # На случай если VAD создан от vocals_path
     ]
     for path in paths:
         if path and os.path.exists(path):
