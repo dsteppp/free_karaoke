@@ -2,6 +2,64 @@ import os
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 os.environ["PYTORCH_ALLOC_CONF"]       = "expandable_segments:True"
 
+# ── AppImage: определяем writable MODELS_DIR ─────────────────────────────
+def _resolve_models_dir():
+    """
+    Если FK_MODELS_DIR указывает на read-only (AppImage squashfs),
+    переопределяем на FK_CACHE_DIR/models (writable) и копируем модели.
+    """
+    models = os.environ.get("FK_MODELS_DIR", "")
+    if not models:
+        # Dev-режим: fallback на core/models
+        return os.path.join(os.path.dirname(os.path.abspath(__file__)), "models")
+
+    # Проверяем запись
+    try:
+        test = os.path.join(models, ".write_check")
+        os.makedirs(models, exist_ok=True)
+        with open(test, "w") as f:
+            f.write("ok")
+        os.remove(test)
+        return models
+    except OSError:
+        # Read-only (AppImage) — используем writable overlay
+        cache = os.environ.get("FK_CACHE_DIR", "")
+        if not cache:
+            return models  # Нет кэша — возвращаем что есть
+        writable = os.path.join(cache, "models")
+        os.makedirs(writable, exist_ok=True)
+
+        # Копируем модели из read-only AppImage
+        _copy_models_to_writable(models, writable)
+
+        os.environ["FK_MODELS_DIR"] = writable
+        return writable
+
+
+def _copy_models_to_writable(src: str, dst: str):
+    """Копирует модели из read-only src в writable dst."""
+    import shutil
+
+    # MDX23C vocal separation model
+    mdx_src = os.path.join(src, "audio_separator", "MDX23C-8KFFT-InstVoc_HQ.ckpt")
+    mdx_dst = os.path.join(dst, "audio_separator", "MDX23C-8KFFT-InstVoc_HQ.ckpt")
+    if os.path.exists(mdx_src) and not os.path.exists(mdx_dst):
+        try:
+            os.makedirs(os.path.dirname(mdx_dst), exist_ok=True)
+            shutil.copy2(mdx_src, mdx_dst)
+        except OSError:
+            pass  # Модель может загрузиться из интернета
+
+    # Whisper модель
+    whisper_src = os.path.join(src, "whisper", "medium.pt")
+    whisper_dst = os.path.join(dst, "whisper", "medium.pt")
+    if os.path.exists(whisper_src) and not os.path.exists(whisper_dst):
+        try:
+            os.makedirs(os.path.dirname(whisper_dst), exist_ok=True)
+            shutil.copy2(whisper_src, whisper_dst)
+        except OSError:
+            pass
+
 import subprocess
 import re
 import json
@@ -456,11 +514,15 @@ def repair_all_library_meta(library_dir: str, db_path: str = ""):
              repaired, removed_meta, elapsed)
 
 BASE_DIR    = os.path.dirname(os.path.abspath(__file__))
-MODELS_DIR  = os.environ.get("FK_MODELS_DIR") or os.path.join(BASE_DIR, "models")
+MODELS_DIR  = _resolve_models_dir()
 WHISPER_DIR = os.path.join(MODELS_DIR, "whisper")
 
-os.makedirs(MODELS_DIR,  exist_ok=True)
-os.makedirs(WHISPER_DIR, exist_ok=True)
+# Безопасное создание директорий (AppImage: MODELS_DIR может быть read-only fallback)
+try:
+    os.makedirs(MODELS_DIR,  exist_ok=True)
+    os.makedirs(WHISPER_DIR, exist_ok=True)
+except OSError:
+    pass  # В AppImage models уже созданы bootstrap'ом
 
 load_dotenv()
 

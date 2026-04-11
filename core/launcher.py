@@ -37,12 +37,14 @@ elif sys.argv[0] == "":
     sys.argv[0] = "ai-karaoke-pro"
 
 # ── Настройки Chromium ────────────────────────────────────────────────────────
+_webview_cache = os.path.join(CACHE_DIR, "webview")
+os.makedirs(_webview_cache, exist_ok=True)
 os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = (
     "--no-sandbox "
     "--disable-gpu-sandbox "
     "--disable-dev-shm-usage "
     "--disable-http-cache "
-    "--disable-cache "
+    f"--disk-cache-dir={_webview_cache} "
     "--disk-cache-size=0"
 )
 
@@ -401,6 +403,13 @@ def main():
     signal.signal(signal.SIGTERM, _signal_handler)
     signal.signal(signal.SIGINT, _signal_handler)
 
+    # ── AppImage Bootstrap: копируем модели из read-only в writable ────────
+    try:
+        from _appimage_bootstrap import bootstrap_models
+        bootstrap_models()
+    except Exception as e:
+        log.debug("AppImage bootstrap пропущен: %s", e)
+
     # ── GPU Detection (AppImage) ─────────────────────────────────────────
     gpu_mode = "cpu"
     try:
@@ -411,9 +420,11 @@ def main():
         log.debug("gpu_detect.py не найден — CPU режим (dev-сборка)")
 
     # ── Genius Token Prompt (AppImage) ───────────────────────────────────
+    # В AppImage CONFIG_DIR = FreeKaraoke/config/ (writable), не BASE_DIR
+    token_config_dir = os.environ.get("FK_CONFIG_DIR", BASE_DIR)
     try:
         from token_prompt import ensure_genius_token
-        ensure_genius_token(BASE_DIR)
+        ensure_genius_token(token_config_dir)
     except ImportError:
         log.debug("token_prompt.py не найден — пропуск (dev-сборка)")
 
@@ -427,7 +438,7 @@ def main():
     log.info("Сканирование библиотеки на наличие URL-обложек...")
     from ai_pipeline import download_and_embed_covers
     try:
-        download_and_embed_covers(os.path.join(BASE_DIR, "library"), max_total_time=30.0)
+        download_and_embed_covers(LIBRARY_DIR, max_total_time=30.0)
     except Exception as e:
         log.warning("Обложки не встроены (интернет недоступен): %s", e)
     log.info("Обложки обработаны.")
@@ -436,10 +447,11 @@ def main():
     # ── Миграция: создаём _library.json для старых треков ────────────────
     log.info("Миграция: проверка _library.json...")
     from ai_pipeline import migrate_create_library_meta
+    from database import DB_PATH
     try:
         migrate_create_library_meta(
-            os.path.join(BASE_DIR, "library"),
-            db_path=os.path.join(BASE_DIR, "karaoke.db"),
+            LIBRARY_DIR,
+            db_path=DB_PATH,
             max_total_time=60.0,
         )
     except Exception as e:
@@ -495,7 +507,7 @@ def main():
             gui=gui_backend,
             private_mode=False,
             debug=False,
-            storage_path=os.path.join(BASE_DIR, "cache", "webview"),
+            storage_path=os.path.join(CACHE_DIR, "webview"),
         )
     except Exception as e:
         log.error("Ошибка при запуске окна: %s", e)

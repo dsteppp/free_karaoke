@@ -475,8 +475,9 @@ async def scan_library(db: Session = Depends(get_db)):
 
     # ── Ремонт: обновляем _library.json из БД + удаляем _meta.json ────────
     from ai_pipeline import repair_all_library_meta
+    from database import DB_PATH
     try:
-        repair_all_library_meta(LIBRARY_DIR, db_path=os.path.join(BASE_DIR, "karaoke.db"))
+        repair_all_library_meta(LIBRARY_DIR, db_path=DB_PATH)
     except Exception as e:
         log.warning("Ремонт _library.json пропущен: %s", e)
 
