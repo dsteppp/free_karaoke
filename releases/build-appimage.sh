@@ -30,6 +30,7 @@ OUTPUT_DIR="$SCRIPT_DIR"
 mkdir -p "$CACHE_DIR"
 mkdir -p "$CACHE_DIR/pip"  # pip cache — clean home directory
 mkdir -p "$CACHE_DIR/models"  # ML models cache (MDX23C)
+mkdir -p "$BUILD_DIR"  # build output directory
 
 echo "╔══════════════════════════════════════════════════════════════╗"
 echo "║     Free Karaoke — Universal AppImage Builder               ║"
@@ -47,9 +48,28 @@ check_dep() {
         exit 1
     fi
 }
-check_dep python3 "python3.11"
 check_dep curl "curl"
 check_dep tar "tar"
+check_dep rsync "rsync"
+
+# Python 3.11 — строго требуется для совместимости пакетов (ctranslate2, numba, audio-separator)
+if ! command -v python3.11 &>/dev/null; then
+    echo "❌ Python 3.11 не найден"
+    echo ""
+    echo "   Проект требует именно Python 3.11 (не 3.12+)."
+    echo "   Установите его через менеджер пакетов вашей системы:"
+    echo ""
+    echo "   Arch/Manjaro:  sudo pacman -S python311"
+    echo "   Ubuntu/Debian: sudo apt install python3.11 python3.11-venv"
+    echo "   Fedora:        sudo dnf install python3.11"
+    echo "   openSUSE:      sudo zypper install python311"
+    echo ""
+    echo "   Или через deadsnakes PPA (Ubuntu):"
+    echo "     sudo add-apt-repository ppa:deadsnakes/ppa"
+    echo "     sudo apt install python3.11 python3.11-venv"
+    exit 1
+fi
+echo "   ✅ Python 3.11: $(python3.11 --version)"
 
 # ── Download helpers (with cache) ─────────────────────────────────────
 download_cached() {
@@ -129,7 +149,6 @@ if [ ! -f "$CUDA_LIBS_DIR/.done" ]; then
         libnvrtc.so.12 \
         libnvJitLink.so.12 \
         libnvrtc-builtins.so.12.4 \
-        libcuda.so.1 \
     ; do
         found=$(find "$CUDA_LIBS_DIR/tmp" -name "$lib" -o -name "${lib}.*" 2>/dev/null | head -1)
         if [ -n "$found" ]; then
@@ -143,6 +162,26 @@ if [ ! -f "$CUDA_LIBS_DIR/.done" ]; then
     echo "   ✅ CUDA runtime libraries ready"
 else
     echo "   ✅ CUDA runtime libraries cached"
+fi
+
+# Whisper medium model (required for transcription — must be bundled for offline use)
+WHISPER_MODEL="$CACHE_DIR/models/whisper-medium.pt"
+WHISPER_CORE="$CORE_DIR/models/whisper/medium.pt"
+if [ ! -f "$WHISPER_CORE" ]; then
+    echo "   📥 Whisper medium model not found in core/models/whisper/"
+    if [ ! -f "$WHISPER_MODEL" ]; then
+        echo "   📥 Downloading whisper medium model (~1.5 GB, one-time)..."
+        mkdir -p "$CACHE_DIR/models"
+        curl -fSL \
+            "https://openaipublic.azureedge.net/main/whisper/models/345ae4da62f9b3d59415adc60127b97c714f32e89e936602e85993674d08dcb1/medium.pt" \
+            -o "$WHISPER_MODEL"
+    fi
+    echo "   📦 Installing whisper model to core/models/whisper/"
+    mkdir -p "$CORE_DIR/models/whisper"
+    cp "$WHISPER_MODEL" "$WHISPER_CORE"
+    echo "   ✅ Whisper medium model ready"
+else
+    echo "   ✅ Whisper medium model found in core/"
 fi
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -547,7 +586,6 @@ for lib in \
     for search_path in \
         /lib/x86_64-linux-gnu \
         /usr/lib/x86_64-linux-gnu \
-        /lib/x86_64-linux-gnu \
         /usr/lib \
         /lib \
     ; do
