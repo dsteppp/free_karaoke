@@ -401,6 +401,22 @@ def main():
     signal.signal(signal.SIGTERM, _signal_handler)
     signal.signal(signal.SIGINT, _signal_handler)
 
+    # ── GPU Detection (AppImage) ─────────────────────────────────────────
+    gpu_mode = "cpu"
+    try:
+        from gpu_detect import detect_gpu
+        gpu_mode = detect_gpu()
+        log.info("🎮 GPU режим: %s", gpu_mode.upper())
+    except ImportError:
+        log.debug("gpu_detect.py не найден — CPU режим (dev-сборка)")
+
+    # ── Genius Token Prompt (AppImage) ───────────────────────────────────
+    try:
+        from token_prompt import ensure_genius_token
+        ensure_genius_token(CONFIG_DIR)
+    except ImportError:
+        log.debug("token_prompt.py не найден — пропуск (dev-сборка)")
+
     clear_python_cache(BASE_DIR)
     clear_chromium_cache()
 

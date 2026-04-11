@@ -1,45 +1,8 @@
 # ═══════════════════════════════════════════════════════
-# Free Karaoke — Монорепозиторий .gitignore
+# Free Karaoke — .gitignore
 # ═══════════════════════════════════════════════════════
 
-# ── Файлы верхнего уровня (перемещены в core/) ─────────
-# Эти файлы остались от старой структуры — игнорируем
-*.db
-*.db-shm
-*.db-wal
-cache/
-library/
-models/
-debug_logs/
-__pycache__/
-.venv/
-
-# ── Папка Releases (артефакты сборок) ──────────────────
-# Исключения: README.md, .gitkeep и скрипты сборки
-Releases/
-!Releases/README.md
-!Releases/.gitkeep
-!Releases/build-*.sh
-
-# ── ML-модели (большие файлы, скачиваются при сборке) ──
-desktop/shared/models/*.bin
-desktop/shared/models/*.pt
-desktop/shared/models/*.onnx
-desktop/shared/models/*.pth
-desktop/shared/models/*.h5
-core/models/
-
-# ── Собранные артефакты ────────────────────────────────
-dist/
-build/
-*.AppImage
-*.apk
-*.aab
-*.exe
-FreeKaraoke-*/
-Free_Karaoke/
-
-# ── Кэши и временные файлы (core) ─────────────────────
+# ── Пользовательские данные (core) ─────────────────────
 core/cache/
 core/debug_logs/
 core/library/
@@ -49,35 +12,37 @@ core/*.db-shm
 core/*.db-wal
 core/huey_queue.db
 core/huey_queue.db-*
-
-# ── Кэши Python ────────────────────────────────────────
 core/__pycache__/
 core/*.pyc
-core/*.pyo
 core/.venv/
 core/venv/
 
 # ── Секреты пользователя ───────────────────────────────
 core/.env
 core/.env.cache
-core/requirements.txt
 
-# ── Библиотека пользователя (core) ─────────────────────
-core/library/
+# ── Скрипты сборки — временная директория ─────────────
+releases/_build/
+releases/_build-cache/
+releases/*.AppImage
+releases/*.apk
+releases/FreeKaraoke-*/
 
-# ── Android ────────────────────────────────────────────
-android/.gradle/
-android/.idea/
-android/app/build/
-android/local.properties
-android/captures/
-android/*.jks
-android/*.keystore
+# ── Собранные артефакты ────────────────────────────────
+dist/
+build/
+*.AppImage
+*.apk
+*.aab
+Free_Karaoke/
+FreeKaraoke/
 
-# ── Desktop packaging ──────────────────────────────────
-desktop/windows/build/
-desktop/linux/build/
-desktop/linux/*.AppImage
+# ── Python ─────────────────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.eggs/
 
 # ── IDE ────────────────────────────────────────────────
 .idea/
@@ -89,7 +54,3 @@ desktop/linux/*.AppImage
 # ── OS ─────────────────────────────────────────────────
 .DS_Store
 Thumbs.db
-
-# ── Бэкапы (_back в имени, любой регистр) ─────────────
-# Но НЕ editor_backend.py и подобные рабочие файлы
-*_[Bb][Aa][Cc][Kk]_[Bb][Aa][Cc][Kk]*
