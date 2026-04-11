@@ -413,7 +413,7 @@ def main():
     # ── Genius Token Prompt (AppImage) ───────────────────────────────────
     try:
         from token_prompt import ensure_genius_token
-        ensure_genius_token(CONFIG_DIR)
+        ensure_genius_token(BASE_DIR)
     except ImportError:
         log.debug("token_prompt.py не найден — пропуск (dev-сборка)")
 
