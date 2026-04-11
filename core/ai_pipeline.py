@@ -653,28 +653,23 @@ def separate_vocals(mp3_path: str) -> tuple[str, str]:
     # ── Динамический выбор устройства ──────────────────────────────────
     # audio-separator 0.41.1 НЕ принимает device в конструкторе.
     # Устройство выбирается автоматически по torch.cuda.is_available().
-    # Для AMD ROCm принудительно скрываем GPU через CUDA_VISIBLE_DEVICES.
+    # На AMD ROCm CUDA_VISIBLE_DEVICES="" установлен в launcher.py ДО
+    # запуска Huey worker, поэтому PyTorch видит только CPU.
     #
     # NVIDIA GPU  → CUDA автоматически (быстрая сепарация)
-    # AMD ROCm    → CUDA_VISIBLE_DEVICES="" → CPU (избегаем HIP error)
+    # AMD ROCm    → CUDA_VISIBLE_DEVICES="" (из launcher.py) → CPU
     # CPU         → CPU
-    is_nvidia = False
-    has_gpu = False
     try:
         import torch as _torch
         if _torch.cuda.is_available():
-            has_gpu = True
             device_name = _torch.cuda.get_device_name(0)
             if any(name in device_name for name in ["NVIDIA", "GeForce", "Tesla", "Quadro", "RTX"]):
-                is_nvidia = True
                 log.info("Запуск сепарации аудио (NVIDIA GPU: %s)...", device_name)
             else:
-                log.info("Запуск сепарации аудио (ROCm/AMD → CPU fallback)...")
-                os.environ["CUDA_VISIBLE_DEVICES"] = ""  # Скрываем GPU от PyTorch
+                log.info("Запуск сепарации аудио (ROCm/AMD → CPU)...")
+        else:
+            log.info("Запуск сепарации аудио (CPU)...")
     except Exception:
-        pass
-
-    if not is_nvidia and not has_gpu:
         log.info("Запуск сепарации аудио (CPU)...")
 
     separator = Separator(

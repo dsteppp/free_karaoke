@@ -419,6 +419,14 @@ def main():
     except ImportError:
         log.debug("gpu_detect.py не найден — CPU режим (dev-сборка)")
 
+    # ── AMD ROCm fix: отключаем GPU для audio-separator ──────────────────
+    # PyTorch ROCm + audio-separator MDX23C вызывают HIP kernel error.
+    # CUDA_VISIBLE_DEVICES="" нужно установить ДО запуска Huey worker,
+    # т.к. PyTorch кэширует информацию о GPU при импорте.
+    if gpu_mode == "amd":
+        os.environ["CUDA_VISIBLE_DEVICES"] = ""
+        log.info("🔧 AMD ROCm: CUDA_VISIBLE_DEVICES отключён (audio-separator CPU fallback)")
+
     # ── Genius Token Prompt (AppImage) ───────────────────────────────────
     # В AppImage CONFIG_DIR = FreeKaraoke/config/ (writable), не BASE_DIR
     token_config_dir = os.environ.get("FK_CONFIG_DIR", BASE_DIR)
