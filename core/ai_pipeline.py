@@ -651,24 +651,30 @@ def separate_vocals(mp3_path: str) -> tuple[str, str]:
     local_model = os.path.join(sep_model_dir, "MDX23C-8KFFT-InstVoc_HQ.ckpt")
 
     # ── Динамический выбор устройства ──────────────────────────────────
-    # NVIDIA GPU  → device="cuda" (быстрая сепарация)
-    # AMD ROCm    → device="cpu"  (избегаем HIP kernel error)
-    # CPU         → device="cpu"
-    sep_device = "cpu"  # default: CPU
+    # audio-separator 0.41.1 НЕ принимает device в конструкторе.
+    # Устройство выбирается автоматически по torch.cuda.is_available().
+    # Для AMD ROCm принудительно скрываем GPU через CUDA_VISIBLE_DEVICES.
+    #
+    # NVIDIA GPU  → CUDA автоматически (быстрая сепарация)
+    # AMD ROCm    → CUDA_VISIBLE_DEVICES="" → CPU (избегаем HIP error)
+    # CPU         → CPU
+    is_nvidia = False
+    has_gpu = False
     try:
-        import torch
-        if torch.cuda.is_available():
-            device_name = torch.cuda.get_device_name(0)
-            # NVIDIA CUDA работает с MDX23C, ROCm вызывает HIP error
+        import torch as _torch
+        if _torch.cuda.is_available():
+            has_gpu = True
+            device_name = _torch.cuda.get_device_name(0)
             if any(name in device_name for name in ["NVIDIA", "GeForce", "Tesla", "Quadro", "RTX"]):
-                sep_device = "cuda"
+                is_nvidia = True
                 log.info("Запуск сепарации аудио (NVIDIA GPU: %s)...", device_name)
             else:
                 log.info("Запуск сепарации аудио (ROCm/AMD → CPU fallback)...")
+                os.environ["CUDA_VISIBLE_DEVICES"] = ""  # Скрываем GPU от PyTorch
     except Exception:
         pass
 
-    if sep_device == "cpu":
+    if not is_nvidia and not has_gpu:
         log.info("Запуск сепарации аудио (CPU)...")
 
     separator = Separator(
@@ -676,7 +682,6 @@ def separate_vocals(mp3_path: str) -> tuple[str, str]:
         output_dir=basedir,
         output_format="MP3",
         normalization_threshold=0.9,
-        device=sep_device,
     )
 
     # Проверяем локальную модель (AppImage bundling / dev-режим)
