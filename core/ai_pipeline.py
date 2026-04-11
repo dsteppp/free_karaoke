@@ -632,12 +632,11 @@ def compress_stem_mp3(file_path: str) -> None:
     os.replace(temp, file_path)
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Сепарация вокала (audio-separator, CPU)
+# Сепарация вокала (audio-separator, NVIDIA GPU / CPU)
 # ──────────────────────────────────────────────────────────────────────────────
 def separate_vocals(mp3_path: str) -> tuple[str, str]:
     import time
     t_start = time.time()
-    log.info("Запуск сепарации аудио (CPU)...")
 
     basedir  = os.path.dirname(mp3_path)
     basename = os.path.splitext(os.path.basename(mp3_path))[0]
@@ -651,21 +650,26 @@ def separate_vocals(mp3_path: str) -> tuple[str, str]:
     sep_model_dir = os.path.join(MODELS_DIR, "audio_separator")
     local_model = os.path.join(sep_model_dir, "MDX23C-8KFFT-InstVoc_HQ.ckpt")
 
-    # Выбираем устройство: NVIDIA=cuda, AMD/CPU=cpu
-    # ROCm PyTorch вызывает HIP kernel error с MDX23C, поэтому AMD → CPU
-    sep_device = "cpu"  # default
+    # ── Динамический выбор устройства ──────────────────────────────────
+    # NVIDIA GPU  → device="cuda" (быстрая сепарация)
+    # AMD ROCm    → device="cpu"  (избегаем HIP kernel error)
+    # CPU         → device="cpu"
+    sep_device = "cpu"  # default: CPU
     try:
         import torch
         if torch.cuda.is_available():
-            # Проверяем что это реальная NVIDIA CUDA, а не ROCm
             device_name = torch.cuda.get_device_name(0)
-            if "NVIDIA" in device_name or "GeForce" in device_name or "Tesla" in device_name or "Quadro" in device_name:
+            # NVIDIA CUDA работает с MDX23C, ROCm вызывает HIP error
+            if any(name in device_name for name in ["NVIDIA", "GeForce", "Tesla", "Quadro", "RTX"]):
                 sep_device = "cuda"
-                log.info("   🎮 NVIDIA GPU detected (%s) — using CUDA for separation", device_name)
+                log.info("Запуск сепарации аудио (NVIDIA GPU: %s)...", device_name)
             else:
-                log.info("   ⚠️  ROCm/AMD GPU detected (%s) — using CPU for separation (HIP compatibility)", device_name)
+                log.info("Запуск сепарации аудио (ROCm/AMD → CPU fallback)...")
     except Exception:
         pass
+
+    if sep_device == "cpu":
+        log.info("Запуск сепарации аудио (CPU)...")
 
     separator = Separator(
         model_file_dir=sep_model_dir,
