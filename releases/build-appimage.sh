@@ -110,10 +110,10 @@ fi
 echo "   ✅ ffmpeg ready"
 
 # MDX23C vocal separation model (for audio-separator)
-MDX_MODEL="$CACHE_DIR/models/MDX23C-8KFFT-InstVoc_HQ.ckpt"
+MDX_MODEL="$CACHE_DIR/models/audio_separator/MDX23C-8KFFT-InstVoc_HQ.ckpt"
 if [ ! -f "$MDX_MODEL" ]; then
     echo "   📥 Downloading MDX23C vocal separation model (~1.5 GB, one-time)..."
-    mkdir -p "$CACHE_DIR/models"
+    mkdir -p "$CACHE_DIR/models/audio_separator"
     download_cached \
         "https://github.com/TRvlvr/model_repo/releases/download/all_public_uvr_models/MDX23C-8KFFT-InstVoc_HQ.ckpt" \
         "$MDX_MODEL"
