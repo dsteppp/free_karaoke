@@ -75,6 +75,7 @@ bash build-appimage.sh
 | Что скачивается | Размер | Назначение |
 |-----------------|--------|-----------|
 | CUDA 12.4.1 installer | ~3.6 ГБ | Извлечение CUDA runtime .so для NVIDIA venv |
+| MDX23C-8KFFT-InstVoc_HQ.ckpt | ~1.5 ГБ | Модель сепарации вокала (офлайн) |
 | appimagetool | ~3 МБ | Упаковка AppImage |
 | ffmpeg static | ~40 МБ | Конвертация аудио внутри AppImage |
 
@@ -182,6 +183,7 @@ The script always builds **both venvs** (AMD + NVIDIA), regardless of the build 
 | Downloaded | Size | Purpose |
 |------------|------|---------|
 | CUDA 12.4.1 installer | ~3.6 GB | Extract CUDA runtime .so for NVIDIA venv |
+| MDX23C-8KFFT-InstVoc_HQ.ckpt | ~1.5 GB | Vocal separation model (offline) |
 | appimagetool | ~3 MB | AppImage packaging |
 | ffmpeg static | ~40 MB | Audio conversion inside AppImage |
 

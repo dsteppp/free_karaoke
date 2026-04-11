@@ -28,6 +28,8 @@ CACHE_DIR="$SCRIPT_DIR/_build-cache"
 OUTPUT_DIR="$SCRIPT_DIR"
 
 mkdir -p "$CACHE_DIR"
+mkdir -p "$CACHE_DIR/pip"  # pip cache — clean home directory
+mkdir -p "$CACHE_DIR/models"  # ML models cache (MDX23C)
 
 echo "╔══════════════════════════════════════════════════════════════╗"
 echo "║     Free Karaoke — Universal AppImage Builder               ║"
@@ -86,6 +88,19 @@ if [ ! -d "$CACHE_DIR/ffmpeg" ] || [ ! -f "$CACHE_DIR/ffmpeg/ffmpeg" ]; then
     rm -f "$FFMPEG_ARCHIVE"
 fi
 echo "   ✅ ffmpeg ready"
+
+# MDX23C vocal separation model (for audio-separator)
+MDX_MODEL="$CACHE_DIR/models/MDX23C-8KFFT-InstVoc_HQ.ckpt"
+if [ ! -f "$MDX_MODEL" ]; then
+    echo "   📥 Downloading MDX23C vocal separation model (~1.5 GB, one-time)..."
+    mkdir -p "$CACHE_DIR/models"
+    download_cached \
+        "https://github.com/TRvlvr/model_repo/releases/download/all_public_uvr_models/MDX23C-8KFFT-InstVoc_HQ.ckpt" \
+        "$MDX_MODEL"
+    echo "   ✅ MDX23C model ready"
+else
+    echo "   ✅ MDX23C model cached"
+fi
 
 # CUDA 12.4 runtime libraries (for NVIDIA venv — needed for onnxruntime-gpu + torch CUDA)
 CUDA_LIBS_DIR="$CACHE_DIR/cuda-12.4-libs"
@@ -277,12 +292,23 @@ rsync -a --exclude='cache' --exclude='debug_logs' --exclude='__pycache__' \
 
 # Copy ML models
 if [ -d "$CORE_DIR/models" ]; then
-    echo "   Copying ML models..."
+    echo "   Copying ML models from core/..."
     mkdir -p "$APPDIR/usr/share/ai-karaoke/models"
     rsync -a "$CORE_DIR/models/" "$APPDIR/usr/share/ai-karaoke/models/"
 else
     echo "   ⚠️  Models not found in core/models/"
     echo "   Run: cd core && bash reinstall.sh"
+fi
+
+# Copy MDX23C vocal separation model (bundled for offline use)
+if [ -f "$CACHE_DIR/models/MDX23C-8KFFT-InstVoc_HQ.ckpt" ]; then
+    echo "   Copying MDX23C model..."
+    mkdir -p "$APPDIR/usr/share/ai-karaoke/models/audio_separator"
+    cp "$CACHE_DIR/models/MDX23C-8KFFT-InstVoc_HQ.ckpt" \
+       "$APPDIR/usr/share/ai-karaoke/models/audio_separator/"
+    echo "   ✅ MDX23C bundled (offline separation ready)"
+else
+    echo "   ⚠️  MDX23C model not in cache — will download on first use"
 fi
 
 # Copy ffmpeg
@@ -329,7 +355,7 @@ AMD_VENV="$APPDIR/usr/share/ai-karaoke/.venv_amd"
 python3.11 -m venv "$AMD_VENV"
 source "$AMD_VENV/bin/activate"
 pip install --upgrade pip -q
-pip install -r "$BUILD_DIR/requirements-amd.txt"
+pip install --cache-dir="$CACHE_DIR/pip" -r "$BUILD_DIR/requirements-amd.txt"
 deactivate
 AMD_SIZE=$(du -sh "$AMD_VENV" | cut -f1)
 echo "   ✅ AMD venv built ($AMD_SIZE)"
@@ -346,7 +372,7 @@ NVIDIA_VENV="$APPDIR/usr/share/ai-karaoke/.venv_nvidia"
 python3.11 -m venv "$NVIDIA_VENV"
 source "$NVIDIA_VENV/bin/activate"
 pip install --upgrade pip -q
-pip install -r "$BUILD_DIR/requirements-nvidia.txt"
+pip install --cache-dir="$CACHE_DIR/pip" -r "$BUILD_DIR/requirements-nvidia.txt"
 deactivate
 NVIDIA_SIZE=$(du -sh "$NVIDIA_VENV" | cut -f1)
 echo "   ✅ NVIDIA venv built ($NVIDIA_SIZE)"

@@ -559,7 +559,15 @@ def separate_vocals(mp3_path: str) -> tuple[str, str]:
         output_format="MP3",
         normalization_threshold=0.9,
     )
-    separator.load_model(model_filename="MDX23C-8KFFT-InstVoc_HQ.ckpt")
+
+    # Проверяем локальную модель (AppImage bundling / dev-режим)
+    local_model = os.path.join(MODELS_DIR, "audio_separator", "MDX23C-8KFFT-InstVoc_HQ.ckpt")
+    if os.path.exists(local_model):
+        log.info("   📦 Используем локальную модель MDX23C (офлайн)")
+        separator.load_model(model_filename=local_model)
+    else:
+        log.info("   📥 Загрузка модели MDX23C из интернета...")
+        separator.load_model(model_filename="MDX23C-8KFFT-InstVoc_HQ.ckpt")
     log.info("   ⏱️ Загрузка модели: %.1fс", time.time() - t_model)
 
     t_infer = time.time()
