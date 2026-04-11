@@ -1,6 +1,6 @@
-<!-- 🌐 Bilingual document. 🇬 English version: [scroll down](#-english-version) -->
-
 # 🎤 Free Karaoke
+
+> **🇬 English version:** [scroll to the bottom](#-english-version)
 
 **Кроссплатформенное караоке-приложение** — создаёт караоке из любого аудиофайла с помощью нейросетей.
 
