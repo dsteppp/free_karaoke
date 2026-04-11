@@ -656,6 +656,7 @@ def separate_vocals(mp3_path: str) -> tuple[str, str]:
         output_dir=basedir,
         output_format="MP3",
         normalization_threshold=0.9,
+        device="cpu",  # Принудительно CPU — ROCm PyTorch вызывает HIP kernel error
     )
 
     # Проверяем локальную модель (AppImage bundling / dev-режим)
