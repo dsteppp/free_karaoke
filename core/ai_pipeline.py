@@ -648,44 +648,61 @@ def separate_vocals(mp3_path: str) -> tuple[str, str]:
 
     # Определяем директорию с моделями audio-separator
     sep_model_dir = os.path.join(MODELS_DIR, "audio_separator")
-    local_model = os.path.join(sep_model_dir, "MDX23C-8KFFT-InstVoc_HQ.ckpt")
 
-    # ── Динамический выбор устройства ──────────────────────────────────
-    # audio-separator 0.41.1 НЕ принимает device в конструкторе.
-    # Устройство выбирается автоматически по torch.cuda.is_available().
-    # На AMD ROCm CUDA_VISIBLE_DEVICES="" установлен в launcher.py ДО
-    # запуска Huey worker, поэтому PyTorch видит только CPU.
+    # ── Выбираем модель по GPU ─────────────────────────────────────────
+    # NVIDIA GPU  → MDX23C .ckpt (лучшее качество, CUDA ускорение)
+    # AMD/CPU     → Kim_Vocal_1 ONNX (быстрее на CPU через ONNX Runtime)
     #
-    # NVIDIA GPU  → CUDA автоматически (быстрая сепарация)
-    # AMD ROCm    → CUDA_VISIBLE_DEVICES="" (из launcher.py) → CPU
-    # CPU         → CPU
+    # MDX23C на CPU через PyTorch = 10+ минут на трек.
+    # Kim_Vocal_1 ONNX через ONNX Runtime CPU = 2-3 минуты (3-5x быстрее).
+    is_nvidia = False
+    use_mdx23c = False
+
     try:
         import torch as _torch
         if _torch.cuda.is_available():
             device_name = _torch.cuda.get_device_name(0)
             if any(name in device_name for name in ["NVIDIA", "GeForce", "Tesla", "Quadro", "RTX"]):
-                log.info("Запуск сепарации аудио (NVIDIA GPU: %s)...", device_name)
+                is_nvidia = True
+                use_mdx23c = True
+                log.info("Запуск сепарации аудио (NVIDIA GPU: %s, модель MDX23C)...", device_name)
             else:
-                log.info("Запуск сепарации аудио (ROCm/AMD → CPU)...")
+                log.info("Запуск сепарации аудио (ROCm/AMD → CPU, модель Kim ONNX)...")
         else:
-            log.info("Запуск сепарации аудио (CPU)...")
+            log.info("Запуск сепарации аудио (CPU, модель Kim ONNX)...")
     except Exception:
-        log.info("Запуск сепарации аудио (CPU)...")
+        log.info("Запуск сепарации аудио (CPU, модель Kim ONNX)...")
 
-    separator = Separator(
-        model_file_dir=sep_model_dir,
-        output_dir=basedir,
-        output_format="MP3",
-        normalization_threshold=0.9,
-    )
-
-    # Проверяем локальную модель (AppImage bundling / dev-режим)
-    if os.path.exists(local_model):
-        log.info("   📦 Используем локальную модель MDX23C (офлайн)")
-        separator.load_model(model_filename="MDX23C-8KFFT-InstVoc_HQ.ckpt")
+    if use_mdx23c:
+        # NVIDIA — MDX23C (лучшее качество)
+        local_model = os.path.join(sep_model_dir, "MDX23C-8KFFT-InstVoc_HQ.ckpt")
+        separator = Separator(
+            model_file_dir=sep_model_dir,
+            output_dir=basedir,
+            output_format="MP3",
+            normalization_threshold=0.9,
+        )
+        if os.path.exists(local_model):
+            log.info("   📦 Используем локальную модель MDX23C (офлайн)")
+            separator.load_model(model_filename="MDX23C-8KFFT-InstVoc_HQ.ckpt")
+        else:
+            log.info("   📥 Загрузка модели MDX23C из интернета...")
+            separator.load_model(model_filename="MDX23C-8KFFT-InstVoc_HQ.ckpt")
     else:
-        log.info("   📥 Загрузка модели MDX23C из интернета...")
-        separator.load_model(model_filename="MDX23C-8KFFT-InstVoc_HQ.ckpt")
+        # AMD/CPU — Kim_Vocal_1 ONNX (быстрее на CPU через ONNX Runtime)
+        local_model = os.path.join(sep_model_dir, "Kim_Vocal_1.onnx")
+        separator = Separator(
+            model_file_dir=sep_model_dir,
+            output_dir=basedir,
+            output_format="MP3",
+            normalization_threshold=0.9,
+        )
+        if os.path.exists(local_model):
+            log.info("   📦 Используем локальную модель Kim_Vocal_1 ONNX (офлайн)")
+            separator.load_model(model_filename="Kim_Vocal_1.onnx")
+        else:
+            log.info("   📥 Загрузка модели Kim_Vocal_1 ONNX из интернета...")
+            separator.load_model(model_filename="Kim_Vocal_1.onnx")
     log.info("   ⏱️ Загрузка модели: %.1fс", time.time() - t_model)
 
     t_infer = time.time()

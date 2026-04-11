@@ -142,6 +142,16 @@ def bootstrap_models():
         except OSError:
             pass
 
+    # Kim_Vocal_1 ONNX — быстрая модель для AMD/CPU (3-5x быстрее MDX23C)
+    kim_src = os.path.join(appimage_models, "audio_separator", "Kim_Vocal_1.onnx")
+    kim_dst = os.path.join(writable_models, "audio_separator", "Kim_Vocal_1.onnx")
+    if os.path.exists(kim_src) and not os.path.exists(kim_dst):
+        try:
+            shutil.copy2(kim_src, kim_dst)
+            log.info("   ✅ Kim_Vocal_1 ONNX скопирована")
+        except OSError:
+            pass
+
     # Копируем Whisper модель
     whisper_src = os.path.join(appimage_models, "whisper", "medium.pt")
     whisper_dst = os.path.join(writable_models, "whisper", "medium.pt")

@@ -369,6 +369,23 @@ else
     echo "   ⚠️  download_checks.json not found — model validation may fail offline"
 fi
 
+# Kim_Vocal_1 ONNX модель для AMD/CPU (3-5x быстрее MDX23C на CPU)
+KIM_ONNX="$CACHE_DIR/models/Kim_Vocal_1.onnx"
+if [ ! -f "$KIM_ONNX" ]; then
+    echo "   📥 Downloading Kim_Vocal_1 ONNX model (~80 MB, one-time, fast CPU separation)..."
+    download_cached \
+        "https://github.com/TRvlvr/model_repo/releases/download/all_public_uvr_models/Kim_Vocal_1.onnx" \
+        "$KIM_ONNX"
+    echo "   ✅ Kim_Vocal_1 ONNX ready"
+else
+    echo "   ✅ Kim_Vocal_1 ONNX cached"
+fi
+if [ -f "$KIM_ONNX" ]; then
+    cp "$KIM_ONNX" "$APPDIR/usr/share/ai-karaoke/models/audio_separator/"
+    KIM_SIZE=$(du -sh "$KIM_ONNX" | cut -f1)
+    echo "   ✅ Kim_Vocal_1 ONNX bundled ($KIM_SIZE, fast CPU separation)"
+fi
+
 # Copy ffmpeg
 echo "   Copying ffmpeg..."
 cp "$CACHE_DIR/ffmpeg/ffmpeg" "$APPDIR/usr/bin/ffmpeg"
