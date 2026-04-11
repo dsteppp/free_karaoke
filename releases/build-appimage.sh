@@ -341,7 +341,7 @@ else
 fi
 
 # Copy MDX23C vocal separation model + YAML config + download_checks (bundled for offline use)
-MDX_CKPT="$CACHE_DIR/models/MDX23C-8KFFT-InstVoc_HQ.ckpt"
+MDX_CKPT="$CACHE_DIR/models/audio_separator/MDX23C-8KFFT-InstVoc_HQ.ckpt"
 MDX_YAML="$CORE_DIR/models/audio_separator/MDX23C-8KFFT-InstVoc_HQ.yaml"
 MDX_CHECKS="$CORE_DIR/models/audio_separator/download_checks.json"
 
