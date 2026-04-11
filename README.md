@@ -1,4 +1,4 @@
-<!-- 🌐 Этот документ двуязычный. English version is below. -->
+<!-- 🌐 Bilingual document. 🇬 English version: [scroll down](#-english-version) -->
 
 # 🎤 Free Karaoke
 
@@ -53,12 +53,48 @@ bash run.sh         # запуск приложения
 
 ## Сборка AppImage (Linux)
 
+### Подготовка
+
+Убедитесь что в `core/models/` лежат ML-модели:
+- `whisper/medium.pt`
+- `MDX23C-8KFFT-InstVoc_HQ.ckpt`
+
+Если нет — запустите `cd core && bash reinstall.sh` для их загрузки.
+
+### Запуск сборки
+
 ```bash
 cd releases/
 bash build-appimage.sh
 ```
 
-Результат — полностью самодостаточный `.AppImage` файл (~9-10 ГБ), запускаемый на любом Linux без установки зависимостей. Внутри два venv (AMD ROCm + NVIDIA CUDA), CUDA runtime библиотеки, Qt6 и все системные зависимости.
+### Что происходит при первой сборке
+
+Скрипт всегда собирает **оба venv** (AMD + NVIDIA), независимо от GPU системы сборки:
+
+| Что скачивается | Размер | Назначение |
+|-----------------|--------|-----------|
+| CUDA 12.4.1 installer | ~3.6 ГБ | Извлечение CUDA runtime .so для NVIDIA venv |
+| appimagetool | ~3 МБ | Упаковка AppImage |
+| ffmpeg static | ~40 МБ | Конвертация аудио внутри AppImage |
+
+Всё сохраняется в `releases/_build-cache/` и **не скачивается повторно** при следующих сборках.
+
+### Результат
+
+`FreeKaraoke-x86_64.AppImage` (~9-10 ГБ) — один файл, содержит:
+- `.venv_amd` — PyTorch ROCm 6.2 + onnxruntime (CPU)
+- `.venv_nvidia` — PyTorch CUDA 12.4 + onnxruntime-gpu + CUDA runtime libs
+- Qt6 + ~100 системных библиотек
+- ML-модели + ffmpeg
+
+При запуске автоматически определяет GPU и выбирает правильный venv. Fallback на CPU.
+
+### Требования для сборки
+
+- Linux (Ubuntu 20.04+, Fedora 36+, Arch)
+- Python 3.11
+- rsync, curl
 
 ## Лицензия
 
@@ -71,8 +107,7 @@ bash build-appimage.sh
 ---
 
 <!-- 🇬🇧 ENGLISH VERSION -->
-
-# 🎤 Free Karaoke
+# 🇬🇧 English Version
 
 **Cross-platform karaoke application** — creates karaoke from any audio file using neural networks.
 
@@ -125,12 +160,48 @@ Requires: **Python 3.11**, Genius and HuggingFace tokens (`.env` file).
 
 ## Building AppImage (Linux)
 
+### Preparation
+
+Make sure ML models are in `core/models/`:
+- `whisper/medium.pt`
+- `MDX23C-8KFFT-InstVoc_HQ.ckpt`
+
+If missing, run `cd core && bash reinstall.sh` to download them.
+
+### Running the Build
+
 ```bash
 cd releases/
 bash build-appimage.sh
 ```
 
-Output — a fully self-contained `.AppImage` file (~9-10 GB), runnable on any Linux without installing dependencies. Contains two venvs (AMD ROCm + NVIDIA CUDA), CUDA runtime libraries, Qt6, and all system dependencies.
+### First Build Downloads
+
+The script always builds **both venvs** (AMD + NVIDIA), regardless of the build system's GPU:
+
+| Downloaded | Size | Purpose |
+|------------|------|---------|
+| CUDA 12.4.1 installer | ~3.6 GB | Extract CUDA runtime .so for NVIDIA venv |
+| appimagetool | ~3 MB | AppImage packaging |
+| ffmpeg static | ~40 MB | Audio conversion inside AppImage |
+
+All saved to `releases/_build-cache/` and **not re-downloaded** on subsequent builds.
+
+### Output
+
+`FreeKaraoke-x86_64.AppImage` (~9-10 GB) — one file containing:
+- `.venv_amd` — PyTorch ROCm 6.2 + onnxruntime (CPU)
+- `.venv_nvidia` — PyTorch CUDA 12.4 + onnxruntime-gpu + CUDA runtime libs
+- Qt6 + ~100 system libraries
+- ML models + ffmpeg
+
+On launch, auto-detects GPU and selects the correct venv. CPU fallback.
+
+### Build Requirements
+
+- Linux (Ubuntu 20.04+, Fedora 36+, Arch)
+- Python 3.11
+- rsync, curl
 
 ## License
 
