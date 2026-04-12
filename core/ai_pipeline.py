@@ -673,14 +673,16 @@ def separate_vocals(mp3_path: str) -> tuple[str, str]:
     except Exception:
         log.info("Запуск сепарации аудио (CPU, модель Kim ONNX)...")
 
-    # ── Временно скрываем GPU от audio-separator ────────────────────────
-    # audio-separator использует PyTorch для пред/пост-обработки аудио
-    # даже с ONNX моделями. ROCm PyTorch → HIP kernel error.
-    # Скрываем GPU только для Separator, потом восстанавливаем.
-    saved_cuda_visible = os.environ.get("CUDA_VISIBLE_DEVICES")
-    if not is_nvidia:
-        os.environ["CUDA_VISIBLE_DEVICES"] = ""
-        log.info("   🔧 GPU скрыт для audio-separator (избегаем HIP error)")
+    # ── Принудительно CPU для audio-separator на AMD ──────────────────────
+    # audio-separator использует PyTorch для пред/пост-обработки даже с ONNX.
+    # ROCm PyTorch → HIP kernel error. Патчим torch.cuda.is_available() чтобы
+    # separator думал что GPU нет.
+    import torch as _torch
+    _orig_cuda_available = None
+    if not is_nvidia and _torch.cuda.is_available():
+        _orig_cuda_available = _torch.cuda.is_available
+        _torch.cuda.is_available = lambda: False
+        log.info("   🔧 torch.cuda скрыт от audio-separator (избегаем HIP error)")
 
     try:
         if use_mdx23c:
@@ -720,11 +722,9 @@ def separate_vocals(mp3_path: str) -> tuple[str, str]:
         output_files = separator.separate(mp3_path)
         log.info("   ⏱ Inference: %.1fс", time.time() - t_infer)
     finally:
-        # Восстанавливаем GPU для остальных процессов (Whisper и т.д.)
-        if saved_cuda_visible is not None:
-            os.environ["CUDA_VISIBLE_DEVICES"] = saved_cuda_visible
-        elif not is_nvidia:
-            os.environ.pop("CUDA_VISIBLE_DEVICES", None)
+        # Восстанавливаем torch.cuda.is_available() для Whisper и остальных
+        if _orig_cuda_available is not None:
+            _torch.cuda.is_available = _orig_cuda_available
 
     del separator
     gc.collect()
