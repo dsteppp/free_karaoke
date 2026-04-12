@@ -281,13 +281,13 @@ qtpy
 psutil
 '
 
-# AMD venv: ROCm + CPU + onnxruntime (CPU)
+# AMD venv: ROCm + onnxruntime-rocm (GPU acceleration)
 cat > "$BUILD_DIR/requirements-amd.txt" << EOF
 --extra-index-url https://download.pytorch.org/whl/rocm6.2
 torch==2.5.1+rocm6.2
 torchvision==0.20.1+rocm6.2
 torchaudio==2.5.1+rocm6.2
-onnxruntime
+onnxruntime-rocm
 $COMMON_PACKAGES
 EOF
 echo "   ✅ requirements-amd.txt"
@@ -659,6 +659,19 @@ case "$GPU_TYPE" in
         ;;
     amd)
         VENV="$KARAOKE_DIR/.venv_amd"
+        # ROCm libs needed for PyTorch ROCm (audio-separator, Whisper)
+        for rocm_path in /opt/rocm /opt/rocm-*/ ; do
+            if [ -d "$rocm_path/lib" ]; then
+                export LD_LIBRARY_PATH="$rocm_path/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+                echo "   📂 ROCm libs added: $rocm_path/lib"
+            fi
+            if [ -d "$rocm_path/bin" ]; then
+                export PATH="$rocm_path/bin:$PATH"
+            fi
+            if [ -d "$rocm_path/hip/bin" ]; then
+                export PATH="$rocm_path/hip/bin:$PATH"
+            fi
+        done
         ;;
     *)
         # Fallback to AMD venv (has CPU PyTorch too)

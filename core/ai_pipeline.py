@@ -651,10 +651,10 @@ def separate_vocals(mp3_path: str) -> tuple[str, str]:
 
     # ── Выбираем модель по GPU ─────────────────────────────────────────
     # NVIDIA GPU  → MDX23C .ckpt (лучшее качество, CUDA ускорение)
-    # AMD/CPU     → Kim_Vocal_1 ONNX (быстрее на CPU через ONNX Runtime)
+    # AMD ROCm    → Kim_Vocal_1 ONNX (ONNX Runtime ROCm GPU ускорение)
+    # CPU         → Kim_Vocal_1 ONNX (CPU)
     #
-    # MDX23C на CPU через PyTorch = 10+ минут на трек.
-    # Kim_Vocal_1 ONNX через ONNX Runtime CPU = 2-3 минуты (3-5x быстрее).
+    # С onnxruntime-rocm AMD GPU работает быстро (~30 сек на 4-мин песню).
     is_nvidia = False
     use_mdx23c = False
 
@@ -667,64 +667,48 @@ def separate_vocals(mp3_path: str) -> tuple[str, str]:
                 use_mdx23c = True
                 log.info("Запуск сепарации аудио (NVIDIA GPU: %s, модель MDX23C)...", device_name)
             else:
-                log.info("Запуск сепарации аудио (ROCm/AMD → CPU, модель Kim ONNX)...")
+                log.info("Запуск сепарации аудио (AMD GPU: %s, модель Kim ONNX)...", device_name)
         else:
             log.info("Запуск сепарации аудио (CPU, модель Kim ONNX)...")
     except Exception:
         log.info("Запуск сепарации аудио (CPU, модель Kim ONNX)...")
 
-    # ── Принудительно CPU для audio-separator на AMD ──────────────────────
-    # audio-separator использует PyTorch для пред/пост-обработки даже с ONNX.
-    # ROCm PyTorch → HIP kernel error. Патчим torch.cuda.is_available() чтобы
-    # separator думал что GPU нет.
-    import torch as _torch
-    _orig_cuda_available = None
-    if not is_nvidia and _torch.cuda.is_available():
-        _orig_cuda_available = _torch.cuda.is_available
-        _torch.cuda.is_available = lambda: False
-        log.info("   🔧 torch.cuda скрыт от audio-separator (избегаем HIP error)")
-
-    try:
-        if use_mdx23c:
-            # NVIDIA — MDX23C (лучшее качество)
-            local_model = os.path.join(sep_model_dir, "MDX23C-8KFFT-InstVoc_HQ.ckpt")
-            separator = Separator(
-                model_file_dir=sep_model_dir,
-                output_dir=basedir,
-                output_format="MP3",
-                normalization_threshold=0.9,
-            )
-            if os.path.exists(local_model):
-                log.info("   📦 Используем локальную модель MDX23C (офлайн)")
-                separator.load_model(model_filename="MDX23C-8KFFT-InstVoc_HQ.ckpt")
-            else:
-                log.info("   📥 Загрузка модели MDX23C из интернета...")
-                separator.load_model(model_filename="MDX23C-8KFFT-InstVoc_HQ.ckpt")
+    if use_mdx23c:
+        # NVIDIA — MDX23C (лучшее качество)
+        local_model = os.path.join(sep_model_dir, "MDX23C-8KFFT-InstVoc_HQ.ckpt")
+        separator = Separator(
+            model_file_dir=sep_model_dir,
+            output_dir=basedir,
+            output_format="MP3",
+            normalization_threshold=0.9,
+        )
+        if os.path.exists(local_model):
+            log.info("   📦 Используем локальную модель MDX23C (офлайн)")
+            separator.load_model(model_filename="MDX23C-8KFFT-InstVoc_HQ.ckpt")
         else:
-            # AMD/CPU — Kim_Vocal_1 ONNX (быстрее на CPU через ONNX Runtime)
-            local_model = os.path.join(sep_model_dir, "Kim_Vocal_1.onnx")
-            separator = Separator(
-                model_file_dir=sep_model_dir,
-                output_dir=basedir,
-                output_format="MP3",
-                normalization_threshold=0.9,
-            )
-            if os.path.exists(local_model):
-                log.info("   📦 Используем локальную модель Kim_Vocal_1 ONNX (офлайн)")
-                separator.load_model(model_filename="Kim_Vocal_1.onnx")
-            else:
-                log.info("   📥 Загрузка модели Kim_Vocal_1 ONNX из интернета...")
-                separator.load_model(model_filename="Kim_Vocal_1.onnx")
+            log.info("   📥 Загрузка модели MDX23C из интернета...")
+            separator.load_model(model_filename="MDX23C-8KFFT-InstVoc_HQ.ckpt")
+    else:
+        # AMD/CPU — Kim_Vocal_1 ONNX (GPU через onnxruntime-rocm)
+        local_model = os.path.join(sep_model_dir, "Kim_Vocal_1.onnx")
+        separator = Separator(
+            model_file_dir=sep_model_dir,
+            output_dir=basedir,
+            output_format="MP3",
+            normalization_threshold=0.9,
+        )
+        if os.path.exists(local_model):
+            log.info("   📦 Используем локальную модель Kim_Vocal_1 ONNX (офлайн)")
+            separator.load_model(model_filename="Kim_Vocal_1.onnx")
+        else:
+            log.info("   📥 Загрузка модели Kim_Vocal_1 ONNX из интернета...")
+            separator.load_model(model_filename="Kim_Vocal_1.onnx")
 
-        log.info("   ⏱ Загрузка модели: %.1fс", time.time() - t_model)
+    log.info("   ⏱ Загрузка модели: %.1fс", time.time() - t_model)
 
-        t_infer = time.time()
-        output_files = separator.separate(mp3_path)
-        log.info("   ⏱ Inference: %.1fс", time.time() - t_infer)
-    finally:
-        # Восстанавливаем torch.cuda.is_available() для Whisper и остальных
-        if _orig_cuda_available is not None:
-            _torch.cuda.is_available = _orig_cuda_available
+    t_infer = time.time()
+    output_files = separator.separate(mp3_path)
+    log.info("   ⏱ Inference: %.1fс", time.time() - t_infer)
 
     del separator
     gc.collect()

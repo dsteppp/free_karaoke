@@ -20,26 +20,7 @@ class KaraokeAligner:
     
     def __init__(self, model_name="medium"):
         self.model_name = model_name
-
-        # ── Выбор устройства ─────────────────────────────────────────────
-        # NVIDIA CUDA  → GPU (работает стабильно)
-        # AMD ROCm     → CPU (HIP kernel error с Whisper encoder)
-        # CPU          → CPU
-        self.device = "cpu"  # default
-        try:
-            if torch.cuda.is_available():
-                # Проверяем ROCm (hip) — Whisper encoder вызывает HIP error
-                is_rocm = hasattr(torch.version, "hip") and torch.version.hip is not None
-                if is_rocm:
-                    device_name = torch.cuda.get_device_name(0)
-                    log.info("🎤 Whisper: ROCm detected (%s) — используем CPU (избегаем HIP error)", device_name)
-                    self.device = "cpu"
-                else:
-                    device_name = torch.cuda.get_device_name(0)
-                    log.info("🎤 Whisper: NVIDIA GPU (%s) — используем CUDA", device_name)
-                    self.device = "cuda"
-        except Exception:
-            pass
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
 
         base_dir = os.path.dirname(os.path.abspath(__file__))
         models_dir = os.environ.get("FK_MODELS_DIR") or os.path.join(base_dir, "models")
