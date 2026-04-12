@@ -820,18 +820,19 @@ fi
 # ── ffmpeg ───────────────────────────────────────────────────────────
 export PATH="$APPDIR/usr/bin:$PATH"
 
-# ── Activate venv ────────────────────────────────────────────────────
+# ── Python venv: явный запуск БЕЗ source activate ───────────────────
+# source activate ненадёжен в AppImage (squashfs, noexec, отсутствие
+# системного python той же версии). Вместо этого явно указываем путь
+# к python внутри venv и VIRTUAL_ENV переменную.
 echo "📦 Using venv: $(basename "$VENV") ($GPU_TYPE mode)"
-source "$VENV/bin/activate"
-
-# ── Python path isolation ───────────────────────────────────────────
-# Жёстко указываем PYTHONPATH только на venv site-packages.
-# Это предотвращает импорт из системного Python (/usr/lib/python3.14/...).
-export PYTHONPATH="$VENV/lib/python3.11/site-packages"
+export VIRTUAL_ENV="$VENV"
+export PATH="$VENV/bin:$PATH"
+# PYTHONPATH НЕ устанавливаем — venv/bin/python сам настроит sys.path
+# через pyvenv.cfg. PYTHONNOUSERSITE=1 уже установлен выше.
 
 # ── Verify GPU actually works (torch.cuda check) ─────────────────────
 if [ "$GPU_TYPE" != "cpu" ]; then
-    GPU_OK=$(python -c "
+    GPU_OK=$("$VENV/bin/python" -c "
 import torch
 try:
     ok = torch.cuda.is_available()
@@ -844,7 +845,7 @@ except:
         echo "⚠️  $GPU_TYPE GPU detected but torch.cuda not available → CPU fallback"
         GPU_TYPE="cpu"
     else
-        echo "✅ GPU verified: $(python -c "import torch; print(torch.cuda.get_device_name(0))" 2>/dev/null || echo "$GPU_TYPE")"
+        echo "✅ GPU verified: $(""$VENV/bin/python" -c "import torch; print(torch.cuda.get_device_name(0))" 2>/dev/null || echo "$GPU_TYPE")"
     fi
 fi
 
@@ -853,7 +854,7 @@ echo ""
 
 # ── Run the application ─────────────────────────────────────────────
 cd "$KARAOKE_DIR"
-exec python launcher.py "$@"
+exec "$VENV/bin/python" launcher.py "$@"
 APPRUN_SCRIPT
 
 chmod +x "$APPDIR/AppRun"
