@@ -480,6 +480,18 @@ for link in "$AMD_VENV/bin/python" "$AMD_VENV/bin/python3" "$AMD_VENV/bin/python
         chmod +x "$link"
     fi
 done
+
+# ── Критично: бандлим libpython3.11.so.1.0 ───────────────────────
+# Копированный python binary динамически линкуется с libpython3.11.so.1.0
+# которой нет на чужих системах. Копируем её в venv/lib/.
+LIBPYTHON_SRC="/usr/lib/libpython3.11.so.1.0"
+if [ -f "$LIBPYTHON_SRC" ]; then
+    cp "$LIBPYTHON_SRC" "$AMD_VENV/lib/"
+    # Создаём симлинки для совместимости
+    ln -sf libpython3.11.so.1.0 "$AMD_VENV/lib/libpython3.11.so.1" 2>/dev/null || true
+    ln -sf libpython3.11.so.1.0 "$AMD_VENV/lib/libpython3.11.so" 2>/dev/null || true
+fi
+
 # lib64 → lib тоже симлинк — заменяем
 if [ -L "$AMD_VENV/lib64" ]; then
     rm -f "$AMD_VENV/lib64"
@@ -529,6 +541,15 @@ for link in "$NVIDIA_VENV/bin/python" "$NVIDIA_VENV/bin/python3" "$NVIDIA_VENV/b
         chmod +x "$link"
     fi
 done
+
+# ── Критично: бандлим libpython3.11.so.1.0 ───────────────────────
+LIBPYTHON_SRC="/usr/lib/libpython3.11.so.1.0"
+if [ -f "$LIBPYTHON_SRC" ]; then
+    cp "$LIBPYTHON_SRC" "$NVIDIA_VENV/lib/"
+    ln -sf libpython3.11.so.1.0 "$NVIDIA_VENV/lib/libpython3.11.so.1" 2>/dev/null || true
+    ln -sf libpython3.11.so.1.0 "$NVIDIA_VENV/lib/libpython3.11.so" 2>/dev/null || true
+fi
+
 # lib64 → lib тоже симлинк — заменяем
 if [ -L "$NVIDIA_VENV/lib64" ]; then
     rm -f "$NVIDIA_VENV/lib64"
@@ -860,6 +881,9 @@ export PATH="$APPDIR/usr/bin:$PATH"
 echo "📦 Using venv: $(basename "$VENV") ($GPU_TYPE mode)"
 export VIRTUAL_ENV="$VENV"
 export PATH="$VENV/bin:$PATH"
+# LD_LIBRARY_PATH: venv/lib содержит бандлы libpython3.11.so.1.0
+# и другие .so которые нужны копированному python binary
+export LD_LIBRARY_PATH="$VENV/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 # PYTHONPATH НЕ устанавливаем — venv/bin/python сам настроит sys.path
 # через pyvenv.cfg. PYTHONNOUSERSITE=1 уже установлен выше.
 
