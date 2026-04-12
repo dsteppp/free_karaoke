@@ -487,9 +487,21 @@ done
 LIBPYTHON_SRC="/usr/lib/libpython3.11.so.1.0"
 if [ -f "$LIBPYTHON_SRC" ]; then
     cp "$LIBPYTHON_SRC" "$AMD_VENV/lib/"
-    # Создаём симлинки для совместимости
     ln -sf libpython3.11.so.1.0 "$AMD_VENV/lib/libpython3.11.so.1" 2>/dev/null || true
     ln -sf libpython3.11.so.1.0 "$AMD_VENV/lib/libpython3.11.so" 2>/dev/null || true
+fi
+
+# ── Критично: бандлим Python stdlib ──────────────────────────────
+# Копированный python binary ищет stdlib в prefix/lib/python3.11/
+# venv не копирует stdlib — нужно вручную для полной автономности
+PYTHON_STDLIB_SRC="/usr/lib/python3.11"
+PYTHON_STDLIB_DST="$AMD_VENV/lib/python3.11"
+if [ -d "$PYTHON_STDLIB_SRC" ]; then
+    mkdir -p "$PYTHON_STDLIB_DST"
+    rsync -a --exclude='site-packages' "$PYTHON_STDLIB_SRC/" "$PYTHON_STDLIB_DST/"
+    echo "   ✅ Python stdlib bundled (~50 MB)"
+else
+    echo "   ⚠️  Python stdlib not found at $PYTHON_STDLIB_SRC"
 fi
 
 # lib64 → lib тоже симлинк — заменяем
@@ -548,6 +560,14 @@ if [ -f "$LIBPYTHON_SRC" ]; then
     cp "$LIBPYTHON_SRC" "$NVIDIA_VENV/lib/"
     ln -sf libpython3.11.so.1.0 "$NVIDIA_VENV/lib/libpython3.11.so.1" 2>/dev/null || true
     ln -sf libpython3.11.so.1.0 "$NVIDIA_VENV/lib/libpython3.11.so" 2>/dev/null || true
+fi
+
+# ── Критично: бандлим Python stdlib ──────────────────────────────
+PYTHON_STDLIB_SRC="/usr/lib/python3.11"
+PYTHON_STDLIB_DST="$NVIDIA_VENV/lib/python3.11"
+if [ -d "$PYTHON_STDLIB_SRC" ]; then
+    mkdir -p "$PYTHON_STDLIB_DST"
+    rsync -a --exclude='site-packages' "$PYTHON_STDLIB_SRC/" "$PYTHON_STDLIB_DST/"
 fi
 
 # lib64 → lib тоже симлинк — заменяем
@@ -881,8 +901,10 @@ export PATH="$APPDIR/usr/bin:$PATH"
 echo "📦 Using venv: $(basename "$VENV") ($GPU_TYPE mode)"
 export VIRTUAL_ENV="$VENV"
 export PATH="$VENV/bin:$PATH"
+# PYTHONHOME нужен чтобы скопированный python binary нашёл stdlib внутри venv
+# а не в /usr/lib/python3.11 машины сборки
+export PYTHONHOME="$VENV"
 # LD_LIBRARY_PATH: venv/lib содержит бандлы libpython3.11.so.1.0
-# и другие .so которые нужны копированному python binary
 export LD_LIBRARY_PATH="$VENV/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 # PYTHONPATH НЕ устанавливаем — venv/bin/python сам настроит sys.path
 # через pyvenv.cfg. PYTHONNOUSERSITE=1 уже установлен выше.
