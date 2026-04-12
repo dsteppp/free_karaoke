@@ -673,41 +673,58 @@ def separate_vocals(mp3_path: str) -> tuple[str, str]:
     except Exception:
         log.info("Запуск сепарации аудио (CPU, модель Kim ONNX)...")
 
-    if use_mdx23c:
-        # NVIDIA — MDX23C (лучшее качество)
-        local_model = os.path.join(sep_model_dir, "MDX23C-8KFFT-InstVoc_HQ.ckpt")
-        separator = Separator(
-            model_file_dir=sep_model_dir,
-            output_dir=basedir,
-            output_format="MP3",
-            normalization_threshold=0.9,
-        )
-        if os.path.exists(local_model):
-            log.info("   📦 Используем локальную модель MDX23C (офлайн)")
-            separator.load_model(model_filename="MDX23C-8KFFT-InstVoc_HQ.ckpt")
-        else:
-            log.info("   📥 Загрузка модели MDX23C из интернета...")
-            separator.load_model(model_filename="MDX23C-8KFFT-InstVoc_HQ.ckpt")
-    else:
-        # AMD/CPU — Kim_Vocal_1 ONNX (быстрее на CPU через ONNX Runtime)
-        local_model = os.path.join(sep_model_dir, "Kim_Vocal_1.onnx")
-        separator = Separator(
-            model_file_dir=sep_model_dir,
-            output_dir=basedir,
-            output_format="MP3",
-            normalization_threshold=0.9,
-        )
-        if os.path.exists(local_model):
-            log.info("   📦 Используем локальную модель Kim_Vocal_1 ONNX (офлайн)")
-            separator.load_model(model_filename="Kim_Vocal_1.onnx")
-        else:
-            log.info("   📥 Загрузка модели Kim_Vocal_1 ONNX из интернета...")
-            separator.load_model(model_filename="Kim_Vocal_1.onnx")
-    log.info("   ⏱️ Загрузка модели: %.1fс", time.time() - t_model)
+    # ── Временно скрываем GPU от audio-separator ────────────────────────
+    # audio-separator использует PyTorch для пред/пост-обработки аудио
+    # даже с ONNX моделями. ROCm PyTorch → HIP kernel error.
+    # Скрываем GPU только для Separator, потом восстанавливаем.
+    saved_cuda_visible = os.environ.get("CUDA_VISIBLE_DEVICES")
+    if not is_nvidia:
+        os.environ["CUDA_VISIBLE_DEVICES"] = ""
+        log.info("   🔧 GPU скрыт для audio-separator (избегаем HIP error)")
 
-    t_infer = time.time()
-    output_files = separator.separate(mp3_path)
-    log.info("   ⏱️ Inference: %.1fс", time.time() - t_infer)
+    try:
+        if use_mdx23c:
+            # NVIDIA — MDX23C (лучшее качество)
+            local_model = os.path.join(sep_model_dir, "MDX23C-8KFFT-InstVoc_HQ.ckpt")
+            separator = Separator(
+                model_file_dir=sep_model_dir,
+                output_dir=basedir,
+                output_format="MP3",
+                normalization_threshold=0.9,
+            )
+            if os.path.exists(local_model):
+                log.info("   📦 Используем локальную модель MDX23C (офлайн)")
+                separator.load_model(model_filename="MDX23C-8KFFT-InstVoc_HQ.ckpt")
+            else:
+                log.info("   📥 Загрузка модели MDX23C из интернета...")
+                separator.load_model(model_filename="MDX23C-8KFFT-InstVoc_HQ.ckpt")
+        else:
+            # AMD/CPU — Kim_Vocal_1 ONNX (быстрее на CPU через ONNX Runtime)
+            local_model = os.path.join(sep_model_dir, "Kim_Vocal_1.onnx")
+            separator = Separator(
+                model_file_dir=sep_model_dir,
+                output_dir=basedir,
+                output_format="MP3",
+                normalization_threshold=0.9,
+            )
+            if os.path.exists(local_model):
+                log.info("   📦 Используем локальную модель Kim_Vocal_1 ONNX (офлайн)")
+                separator.load_model(model_filename="Kim_Vocal_1.onnx")
+            else:
+                log.info("   📥 Загрузка модели Kim_Vocal_1 ONNX из интернета...")
+                separator.load_model(model_filename="Kim_Vocal_1.onnx")
+
+        log.info("   ⏱ Загрузка модели: %.1fс", time.time() - t_model)
+
+        t_infer = time.time()
+        output_files = separator.separate(mp3_path)
+        log.info("   ⏱ Inference: %.1fс", time.time() - t_infer)
+    finally:
+        # Восстанавливаем GPU для остальных процессов (Whisper и т.д.)
+        if saved_cuda_visible is not None:
+            os.environ["CUDA_VISIBLE_DEVICES"] = saved_cuda_visible
+        elif not is_nvidia:
+            os.environ.pop("CUDA_VISIBLE_DEVICES", None)
 
     del separator
     gc.collect()
