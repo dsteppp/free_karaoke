@@ -281,13 +281,13 @@ qtpy
 psutil
 '
 
-# AMD venv: ROCm + onnxruntime-rocm (GPU acceleration)
+# AMD venv: ROCm + onnxruntime (CPU import only, MDX23C uses PyTorch ROCm)
 cat > "$BUILD_DIR/requirements-amd.txt" << EOF
 --extra-index-url https://download.pytorch.org/whl/rocm6.2
 torch==2.5.1+rocm6.2
 torchvision==0.20.1+rocm6.2
 torchaudio==2.5.1+rocm6.2
-onnxruntime-rocm
+onnxruntime
 $COMMON_PACKAGES
 EOF
 echo "   ✅ requirements-amd.txt"
