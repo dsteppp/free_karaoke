@@ -186,6 +186,7 @@ fi
 
 # Silero VAD — модель для VAD в stable_whisper
 # Скачиваем репозиторий целиком (torch.hub требует весь репо, не только .pt)
+# Важно: torch.hub ищет папку snakers4_silero-vad_master (имя_владельца_имя_репо_ветка)
 SILERO_ZIP="$CACHE_DIR/models/silero-vad-master.zip"
 SILERO_HUB_DIR="$CACHE_DIR/models/torch_hub/snakers4_silero-vad_master"
 if [ ! -d "$SILERO_HUB_DIR" ]; then
@@ -196,7 +197,9 @@ if [ ! -d "$SILERO_HUB_DIR" ]; then
             "https://github.com/snakers4/silero-vad/archive/refs/heads/master.zip" \
             -o "$SILERO_ZIP"
     fi
+    # unzip создаёт папку silero-vad-master — переименовываем в snakers4_silero-vad_master
     unzip -qo "$SILERO_ZIP" -d "$CACHE_DIR/models/torch_hub/"
+    mv "$CACHE_DIR/models/torch_hub/silero-vad-master" "$SILERO_HUB_DIR"
     echo "   ✅ Silero VAD model ready"
 else
     echo "   ✅ Silero VAD model cached"
