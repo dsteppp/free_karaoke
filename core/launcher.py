@@ -255,9 +255,39 @@ def _get_start_dir() -> str:
     return start
 
 
-# ── Файловый диалог через yad (работает 100% офлайн) ─────────────────────────
+# ── Файловый диалог через QFileDialog (PyQt6 уже бандлится в AppImage) ─────
+def _open_file_dialog_qt(multiple: bool = True, file_filter: str = None) -> list[str]:
+    """Открывает QFileDialog. PyQt6 уже внутри AppImage — работает на любой системе."""
+    from PyQt6.QtWidgets import QFileDialog, QApplication
+    from PyQt6.QtCore import QDir
+
+    # QApplication должен быть создан — если нет, создаём временный
+    app = QApplication.instance()
+    was_none = app is None
+    if was_none:
+        app = QApplication([])
+
+    start_dir = _get_start_dir()
+    if file_filter:
+        filter_str = file_filter
+    else:
+        filter_str = "Audio (*.mp3 *.flac *.m4a *.wav *.ogg *.aac *.alac *.wma);;All Files (*)"
+
+    if multiple:
+        paths, _ = QFileDialog.getOpenFileNames(None, "Выберите файлы", start_dir, filter_str)
+    else:
+        path, _ = QFileDialog.getOpenFileName(None, "Выберите файл", start_dir, filter_str)
+        paths = [path] if path else []
+
+    if was_none:
+        app.quit()
+        app = None
+
+    return [p for p in paths if os.path.isfile(p)]
+
+
 def _open_file_dialog_yad(multiple: bool = True, file_filter: str = None) -> list[str]:
-    """Открывает yad --file диалог. Работает офлайн, не зависит от Qt."""
+    """Fallback: yad --file диалог. Работает офлайн, не зависит от Qt."""
     start_dir = _get_start_dir()
     cmd = [
         "yad", "--file",
@@ -299,14 +329,23 @@ class FileDialogAPI:
     """API для pywebview: файловые диалоги и работа с файлами."""
 
     def open_file_dialog(self, multiple=True, file_filter=None):
-        """Открывает диалог выбора файлов. yad → fallback на kdialog."""
+        """Открывает диалог выбора файлов. QFileDialog (PyQt6) → yad → kdialog."""
+        # 1. Пробуем PyQt6 QFileDialog — уже бандлится в AppImage
+        try:
+            result = _open_file_dialog_qt(multiple, file_filter)
+            if result:
+                return result if multiple else result[0]
+        except Exception as e:
+            log.debug("QFileDialog недоступен: %s", e)
+
+        # 2. Fallback: yad
         if _YAD_AVAILABLE:
             result = _open_file_dialog_yad(multiple, file_filter)
             if multiple:
                 return result
             return result[0] if result else None
 
-        # Fallback: kdialog
+        # 3. Fallback: kdialog
         start_dir = _get_start_dir()
         if file_filter:
             filter_str = file_filter
@@ -330,7 +369,30 @@ class FileDialogAPI:
         return [] if multiple else None
 
     def save_file_dialog(self, title="Сохранить файл", default_filename=""):
-        """Открывает диалог сохранения файла. Возвращает путь или None."""
+        """Открывает диалог сохранения файла. QFileDialog → yad → kdialog."""
+        # 1. Пробуем PyQt6 QFileDialog
+        try:
+            from PyQt6.QtWidgets import QFileDialog, QApplication
+            app = QApplication.instance()
+            was_none = app is None
+            if was_none:
+                app = QApplication([])
+
+            start_dir = _get_start_dir()
+            path, _ = QFileDialog.getSaveFileName(
+                None, title,
+                os.path.join(start_dir, default_filename),
+                "ZIP Files (*.zip);;All Files (*)"
+            )
+
+            if was_none:
+                app.quit()
+
+            return path if path else None
+        except Exception as e:
+            log.debug("QFileDialog save недоступен: %s", e)
+
+        # 2. Fallback: yad
         start_dir = _get_start_dir()
 
         if _YAD_AVAILABLE:
