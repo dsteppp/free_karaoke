@@ -14,6 +14,10 @@ import os
 import shutil
 import logging
 
+# ── PyTorch ROCm fix: gfx1102 → gfx1100 для TensileLibrary ────────────
+# Устанавливаем ДО импорта torch в других модулях
+os.environ.setdefault("HSA_OVERRIDE_GFX_VERSION", "11.0.0")
+
 log = logging.getLogger("karaoke.bootstrap")
 
 

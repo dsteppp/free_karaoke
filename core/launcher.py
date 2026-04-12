@@ -13,6 +13,11 @@ import time
 import subprocess
 import json
 
+# ── PyTorch ROCm fix: маппим gfx1102 (RX 7600 XT) → gfx1100 для TensileLibrary ─
+# Без этого rocBLAS падает с "Illegal seek for GPU arch : gfx1102"
+# Должно быть установлено ДО первого импорта torch
+os.environ.setdefault("HSA_OVERRIDE_GFX_VERSION", "11.0.0")
+
 # ── Portable-режим: переменные окружения FK_* ────────────────────────────────
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 

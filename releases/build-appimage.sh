@@ -562,6 +562,10 @@ set -e
 APPDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 KARAOKE_DIR="$APPDIR/usr/share/ai-karaoke"
 
+# ── PyTorch ROCm fix: gfx1102 (RX 7600 XT) → gfx1100 для TensileLibrary ──
+# Без этого rocBLAS падает с "Illegal seek for GPU arch : gfx1102"
+export HSA_OVERRIDE_GFX_VERSION=11.0.0
+
 # ── Determine base directory ──────────────────────────────────────────
 if [ -n "$APPIMAGE" ]; then
     BASE_DIR="$(dirname "$APPIMAGE")"
@@ -595,6 +599,10 @@ export TMPDIR="$PORTABLE_DIR/cache/tmp"
 export PYTORCH_TMPDIR="$PORTABLE_DIR/cache/tmp"
 
 # ── PyTorch ROCm fixes for AppImage ─────────────────────────────────
+# HSA_OVERRIDE_GFX_VERSION: PyTorch ROCm 2.5.1 не поддерживает gfx1102 (RX 7600 XT)
+# напрямую. Маппим на gfx1100 (RX 7900 XTX) для которого есть TensileLibrary.
+# Без этого rocBLAS падает с "Illegal seek for GPU arch : gfx1102".
+export HSA_OVERRIDE_GFX_VERSION=11.0.0
 # Отключаем HIP memory caching (проблемы с tmpfs в AppImage)
 export PYTORCH_NO_HIP_MEMORY_CACHING=1
 # Фиксируем HIP kernel cache в writable директории
