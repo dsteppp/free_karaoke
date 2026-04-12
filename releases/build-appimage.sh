@@ -409,16 +409,22 @@ if [ -f "$KIM_ONNX" ]; then
     echo "   ✅ Kim_Vocal_1 ONNX bundled ($KIM_SIZE, AMD/CPU fallback)"
 fi
 
-# Silero VAD — копируем в AppDir чтобы torch.hub нашёл офлайн
-# torch.hub ищет в $TORCH_HOME/hub/<repo_dir> — кладём в models/torch_hub
-SILERO_SRC="$CACHE_DIR/models/torch_hub/snakers4_silero-vad_master"
-SILERO_DST="$APPDIR/usr/share/ai-karaoke/models/torch_hub/snakers4_silero-vad_master"
-if [ -d "$SILERO_SRC" ]; then
-    mkdir -p "$SILERO_DST"
-    rsync -a "$SILERO_SRC/" "$SILERO_DST/"
-    echo "   ✅ Silero VAD bundled (офлайн VAD для stable_whisper)"
+# ── Бандлим yad для файловых диалогов ─────────────────────────────
+# yad используется для файловых диалогов. Копируем бинарник и все
+# его .so зависимости чтобы работал на системах без yad.
+YAD_DST="$APPDIR/usr/share/ai-karaoke/yad"
+mkdir -p "$YAD_DST/bin" "$YAD_DST/lib"
+
+if [ -f "/usr/bin/yad" ]; then
+    cp /usr/bin/yad "$YAD_DST/bin/"
+    # Копируем .so зависимости (исключая libc, ld-linux, libstdc++)
+    for lib in $(ldd /usr/bin/yad 2>/dev/null | grep "=>" | awk '{print $3}' | grep -v "libc\|ld-linux\|libstdc++"); do
+        [ -f "$lib" ] && cp -L "$lib" "$YAD_DST/lib/" 2>/dev/null || true
+    done
+    chmod +x "$YAD_DST/bin/yad"
+    echo "   ✅ yad bundled ($(ls "$YAD_DST/lib/" | wc -l) libs)"
 else
-    echo "   ⚠️  Silero VAD not found — VAD потребует интернет"
+    echo "   ⚠️  yad not found on build system — will not be bundled"
 fi
 
 # Copy ffmpeg
@@ -893,6 +899,15 @@ fi
 
 # ── ffmpeg ───────────────────────────────────────────────────────────
 export PATH="$APPDIR/usr/bin:$PATH"
+
+# ── Bundled yad для файловых диалогов ──────────────────────────────
+# yad бандлится в AppImage для работы на системах без установленного yad
+YAD_BIN="$KARAOKE_DIR/yad/bin"
+YAD_LIB="$KARAOKE_DIR/yad/lib"
+if [ -d "$YAD_BIN" ] && [ -f "$YAD_BIN/yad" ]; then
+    export PATH="$YAD_BIN:$PATH"
+    export LD_LIBRARY_PATH="$YAD_LIB${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+fi
 
 # ── Python venv: явный запуск БЕЗ source activate ───────────────────
 # source activate ненадёжен в AppImage (squashfs, noexec, отсутствие
