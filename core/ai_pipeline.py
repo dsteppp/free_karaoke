@@ -650,59 +650,38 @@ def separate_vocals(mp3_path: str) -> tuple[str, str]:
     sep_model_dir = os.path.join(MODELS_DIR, "audio_separator")
 
     # ── Выбираем модель по GPU ─────────────────────────────────────────
-    # NVIDIA GPU  → MDX23C .ckpt (лучшее качество, CUDA ускорение)
-    # AMD ROCm    → Kim_Vocal_1 ONNX (ONNX Runtime ROCm GPU ускорение)
-    # CPU         → Kim_Vocal_1 ONNX (CPU)
-    #
-    # С onnxruntime-rocm AMD GPU работает быстро (~30 сек на 4-мин песню).
-    is_nvidia = False
-    use_mdx23c = False
+    # NVIDIA / AMD GPU → MDX23C .ckpt (PyTorch ROCm/CUDA GPU ускорение)
+    # CPU              → MDX23C .ckpt (CPU, медленнее)
+    is_gpu = False
+    device_name = "CPU"
 
     try:
         import torch as _torch
         if _torch.cuda.is_available():
             device_name = _torch.cuda.get_device_name(0)
-            if any(name in device_name for name in ["NVIDIA", "GeForce", "Tesla", "Quadro", "RTX"]):
-                is_nvidia = True
-                use_mdx23c = True
-                log.info("Запуск сепарации аудио (NVIDIA GPU: %s, модель MDX23C)...", device_name)
-            else:
-                log.info("Запуск сепарации аудио (AMD GPU: %s, модель Kim ONNX)...", device_name)
-        else:
-            log.info("Запуск сепарации аудио (CPU, модель Kim ONNX)...")
+            is_gpu = True
     except Exception:
-        log.info("Запуск сепарации аудио (CPU, модель Kim ONNX)...")
+        pass
 
-    if use_mdx23c:
-        # NVIDIA — MDX23C (лучшее качество)
-        local_model = os.path.join(sep_model_dir, "MDX23C-8KFFT-InstVoc_HQ.ckpt")
-        separator = Separator(
-            model_file_dir=sep_model_dir,
-            output_dir=basedir,
-            output_format="MP3",
-            normalization_threshold=0.9,
-        )
-        if os.path.exists(local_model):
-            log.info("   📦 Используем локальную модель MDX23C (офлайн)")
-            separator.load_model(model_filename="MDX23C-8KFFT-InstVoc_HQ.ckpt")
-        else:
-            log.info("   📥 Загрузка модели MDX23C из интернета...")
-            separator.load_model(model_filename="MDX23C-8KFFT-InstVoc_HQ.ckpt")
+    if is_gpu:
+        log.info("Запуск сепарации аудио (GPU: %s, модель MDX23C)...", device_name)
     else:
-        # AMD/CPU — Kim_Vocal_1 ONNX (GPU через onnxruntime-rocm)
-        local_model = os.path.join(sep_model_dir, "Kim_Vocal_1.onnx")
-        separator = Separator(
-            model_file_dir=sep_model_dir,
-            output_dir=basedir,
-            output_format="MP3",
-            normalization_threshold=0.9,
-        )
-        if os.path.exists(local_model):
-            log.info("   📦 Используем локальную модель Kim_Vocal_1 ONNX (офлайн)")
-            separator.load_model(model_filename="Kim_Vocal_1.onnx")
-        else:
-            log.info("   📥 Загрузка модели Kim_Vocal_1 ONNX из интернета...")
-            separator.load_model(model_filename="Kim_Vocal_1.onnx")
+        log.info("Запуск сепарации аудио (CPU, модель MDX23C)...")
+
+    # MDX23C — лучшая модель для всех платформ
+    local_model = os.path.join(sep_model_dir, "MDX23C-8KFFT-InstVoc_HQ.ckpt")
+    separator = Separator(
+        model_file_dir=sep_model_dir,
+        output_dir=basedir,
+        output_format="MP3",
+        normalization_threshold=0.9,
+    )
+    if os.path.exists(local_model):
+        log.info("   📦 Используем локальную модель MDX23C (офлайн)")
+        separator.load_model(model_filename="MDX23C-8KFFT-InstVoc_HQ.ckpt")
+    else:
+        log.info("   📥 Загрузка модели MDX23C из интернета...")
+        separator.load_model(model_filename="MDX23C-8KFFT-InstVoc_HQ.ckpt")
 
     log.info("   ⏱ Загрузка модели: %.1fс", time.time() - t_model)
 
