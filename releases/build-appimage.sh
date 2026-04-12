@@ -184,6 +184,24 @@ else
     echo "   ✅ Whisper medium model found in core/"
 fi
 
+# Silero VAD — модель для VAD в stable_whisper
+# Скачиваем репозиторий целиком (torch.hub требует весь репо, не только .pt)
+SILERO_ZIP="$CACHE_DIR/models/silero-vad-master.zip"
+SILERO_HUB_DIR="$CACHE_DIR/models/torch_hub/snakers4_silero-vad_master"
+if [ ! -d "$SILERO_HUB_DIR" ]; then
+    echo "   📥 Downloading Silero VAD model (~2 MB)..."
+    mkdir -p "$CACHE_DIR/models/torch_hub"
+    if [ ! -f "$SILERO_ZIP" ]; then
+        curl -fSL \
+            "https://github.com/snakers4/silero-vad/archive/refs/heads/master.zip" \
+            -o "$SILERO_ZIP"
+    fi
+    unzip -qo "$SILERO_ZIP" -d "$CACHE_DIR/models/torch_hub/"
+    echo "   ✅ Silero VAD model ready"
+else
+    echo "   ✅ Silero VAD model cached"
+fi
+
 # ═══════════════════════════════════════════════════════════════════════
 # STEP 2: Generate requirements files
 # ═══════════════════════════════════════════════════════════════════════
@@ -386,6 +404,18 @@ if [ -f "$KIM_ONNX" ]; then
     cp "$KIM_ONNX" "$APPDIR/usr/share/ai-karaoke/models/audio_separator/"
     KIM_SIZE=$(du -sh "$KIM_ONNX" | cut -f1)
     echo "   ✅ Kim_Vocal_1 ONNX bundled ($KIM_SIZE, AMD/CPU fallback)"
+fi
+
+# Silero VAD — копируем в AppDir чтобы torch.hub нашёл офлайн
+# torch.hub ищет в $TORCH_HOME/hub/<repo_dir> — кладём в models/torch_hub
+SILERO_SRC="$CACHE_DIR/models/torch_hub/snakers4_silero-vad_master"
+SILERO_DST="$APPDIR/usr/share/ai-karaoke/models/torch_hub/snakers4_silero-vad_master"
+if [ -d "$SILERO_SRC" ]; then
+    mkdir -p "$SILERO_DST"
+    rsync -a "$SILERO_SRC/" "$SILERO_DST/"
+    echo "   ✅ Silero VAD bundled (офлайн VAD для stable_whisper)"
+else
+    echo "   ⚠️  Silero VAD not found — VAD потребует интернет"
 fi
 
 # Copy ffmpeg
@@ -627,6 +657,16 @@ fi
 
 # Create user data directories
 mkdir -p "$PORTABLE_DIR"/{library,config,logs,cache}
+mkdir -p "$PORTABLE_DIR/cache/torch/hub"  # torch.hub cache dir
+
+# ── Silero VAD: copy from bundled to writable torch hub cache ────────
+# torch.hub.load() ищет репозиторий в $TORCH_HOME/hub/<repo_dir>
+# Копируем один раз при первом запуске — дальше работает офлайн
+SILERO_BUNDLED="$KARAOKE_DIR/models/torch_hub/snakers4_silero-vad_master"
+SILERO_CACHE="$PORTABLE_DIR/cache/torch/hub/snakers4_silero-vad_master"
+if [ -d "$SILERO_BUNDLED" ] && [ ! -d "$SILERO_CACHE" ]; then
+    cp -r "$SILERO_BUNDLED" "$SILERO_CACHE"
+fi
 
 # ── User data paths ───────────────────────────────────────────────────
 export FK_LIBRARY_DIR="$PORTABLE_DIR/library"
