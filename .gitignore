@@ -10,6 +10,7 @@ core/models/
 core/*.db
 core/*.db-shm
 core/*.db-wal
+core/requirements.txt
 core/huey_queue.db
 core/huey_queue.db-*
 core/__pycache__/
