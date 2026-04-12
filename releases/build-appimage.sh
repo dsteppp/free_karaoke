@@ -370,7 +370,7 @@ else
 fi
 
 # Kim_Vocal_1 ONNX модель для AMD/CPU (3-5x быстрее MDX23C на CPU)
-KIM_ONNX="$CACHE_DIR/models/Kim_Vocal_1.onnx"
+KIM_ONNX="$CACHE_DIR/models/audio_separator/Kim_Vocal_1.onnx"
 if [ ! -f "$KIM_ONNX" ]; then
     echo "   📥 Downloading Kim_Vocal_1 ONNX model (~80 MB, one-time, fast CPU separation)..."
     download_cached \
