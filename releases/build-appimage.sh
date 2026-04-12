@@ -594,6 +594,13 @@ mkdir -p "$PORTABLE_DIR/cache/tmp"
 export TMPDIR="$PORTABLE_DIR/cache/tmp"
 export PYTORCH_TMPDIR="$PORTABLE_DIR/cache/tmp"
 
+# ── PyTorch ROCm fixes for AppImage ─────────────────────────────────
+# Отключаем HIP memory caching (проблемы с tmpfs в AppImage)
+export PYTORCH_NO_HIP_MEMORY_CACHING=1
+# Фиксируем HIP kernel cache в writable директории
+export TORCH_EXTENSIONS_DIR="$PORTABLE_DIR/cache/torch_extensions"
+mkdir -p "$TORCH_EXTENSIONS_DIR"
+
 # ── Load portable.env ────────────────────────────────────────────────
 ENV_FILE="$PORTABLE_DIR/config/portable.env"
 if [ -f "$ENV_FILE" ]; then
