@@ -49,7 +49,19 @@ bash reinstall.sh   # установка зависимостей + автооп
 bash run.sh         # запуск приложения
 ```
 
-Требуется: **Python 3.11**, токены Genius и HuggingFace (файл `.env`).
+Требуется: **Python 3.11**, токен Genius (файл `.env`).
+
+### Токены и модели
+
+| Токен | Зачем | Где взять |
+|-------|-------|-----------|
+| `GENIUS_ACCESS_TOKEN` | Поиск текстов песен для треков | [genius.com/api-clients/new](https://genius.com/api-clients/new) |
+| `HF_TOKEN` | Опционально — для некоторых HuggingFace-моделей | [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens) |
+
+> **Whisper medium** (~1.5 ГБ) скачивается автоматически с серверов OpenAI — токен **не нужен**.
+> **MDX23C** (~428 МБ) и **Kim_Vocal_1** (~63 МБ) скачиваются с GitHub — токен **не нужен**.
+>
+> Все модели загружаются автоматически при запуске `reinstall.sh`.
 
 ## Сборка AppImage (Linux)
 
@@ -157,7 +169,19 @@ bash reinstall.sh   # install dependencies + auto-detect GPU
 bash run.sh         # launch application
 ```
 
-Requires: **Python 3.11**, Genius and HuggingFace tokens (`.env` file).
+Requires: **Python 3.11**, Genius token (`.env` file).
+
+### Tokens & Models
+
+| Token | Purpose | Where to get |
+|-------|---------|--------------|
+| `GENIUS_ACCESS_TOKEN` | Lyrics lookup for tracks | [genius.com/api-clients/new](https://genius.com/api-clients/new) |
+| `HF_TOKEN` | Optional — for some HuggingFace models | [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens) |
+
+> **Whisper medium** (~1.5 GB) downloads automatically from OpenAI servers — **no token needed**.
+> **MDX23C** (~428 MB) and **Kim_Vocal_1** (~63 MB) download from GitHub — **no token needed**.
+>
+> All models are downloaded automatically when running `reinstall.sh`.
 
 ## Building AppImage (Linux)
 

@@ -333,7 +333,82 @@ echo "   ✓ PyTorch $TORCH_VERSION — torchaudio импортируется к
 echo ""
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 8. Финальная проверка работоспособности
+# 8. Загрузка ML-моделей (сепарация + транскрипция)
+# ─────────────────────────────────────────────────────────────────────────────
+echo "🧠 Проверка и загрузка ML-моделей..."
+
+# Создаём дирекории для моделей
+mkdir -p "$DIR/models/audio_separator"
+mkdir -p "$DIR/models/whisper"
+
+# Функция безопасной загрузки с проверкой размера
+# $1 — URL, $2 — путь назначения, $3 — имя для вывода, $4 — мин. размер (байты)
+download_model() {
+    local url="$1" dest="$2" name="$3" min_size="$4"
+
+    # Пропускаем если файл уже есть и достаточного размера
+    if [ -f "$dest" ]; then
+        local actual_size
+        actual_size=$(stat -c%s "$dest" 2>/dev/null || echo 0)
+        if [ "$actual_size" -ge "$min_size" ]; then
+            local size_mb
+            size_mb=$(awk "BEGIN {printf \"%.1f\", $actual_size / 1048576}")
+            echo "   ✅ $name — уже есть (${size_mb} MB)"
+            return 0
+        else
+            echo "   ⚠️  $name — повреждён — перезагрузка..."
+            rm -f "$dest"
+        fi
+    fi
+
+    echo "   📥 Загрузка $name..."
+    if curl -fSL --connect-timeout 15 --retry 3 --retry-delay 5 "$url" -o "$dest"; then
+        local final_size
+        final_size=$(stat -c%s "$dest" 2>/dev/null || echo 0)
+        local final_mb
+        final_mb=$(awk "BEGIN {printf \"%.1f\", $final_size / 1048576}")
+        echo "   ✅ $name готова (${final_mb} MB)"
+    else
+        echo "   ⚠️  $name — ошибка загрузки (будет скачана при первом использовании)"
+        rm -f "$dest"
+        return 1
+    fi
+}
+
+# MDX23C-8KFFT-InstVoc_HQ.ckpt — основная GPU-модель сепарации (~428 MB)
+download_model \
+    "https://github.com/TRvlvr/model_repo/releases/download/all_public_uvr_models/MDX23C-8KFFT-InstVoc_HQ.ckpt" \
+    "$DIR/models/audio_separator/MDX23C-8KFFT-InstVoc_HQ.ckpt" \
+    "MDX23C GPU (сепарация)" \
+    200000000
+
+# model_2_stem_full_band_8k.yaml — конфиг для MDX23C
+if [ ! -f "$DIR/models/audio_separator/MDX23C-8KFFT-InstVoc_HQ.yaml" ]; then
+    download_model \
+        "https://raw.githubusercontent.com/TRvlvr/application_data/main/mdx_model_data/mdx_c_configs/model_2_stem_full_band_8k.yaml" \
+        "$DIR/models/audio_separator/MDX23C-8KFFT-InstVoc_HQ.yaml" \
+        "MDX23C YAML (конфиг)" \
+        100
+fi
+
+# Kim_Vocal_1.onnx — fallback модель для CPU (~63 MB)
+download_model \
+    "https://github.com/TRvlvr/model_repo/releases/download/all_public_uvr_models/Kim_Vocal_1.onnx" \
+    "$DIR/models/audio_separator/Kim_Vocal_1.onnx" \
+    "Kim_Vocal_1 ONNX (CPU fallback)" \
+    50000000
+
+# Whisper medium.pt — модель транскрипции (~1.5 GB)
+download_model \
+    "https://openaipublic.azureedge.net/main/whisper/models/345ae4da62f9b3d59415adc60127b97c714f32e89e936602e85993674d08dcb1/medium.pt" \
+    "$DIR/models/whisper/medium.pt" \
+    "Whisper medium (транскрипция)" \
+    500000000
+
+echo ""
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 9. Финальная проверка работоспособности
 # ─────────────────────────────────────────────────────────────────────────────
 echo "🎮 Финальный тест системы..."
 python -c "
