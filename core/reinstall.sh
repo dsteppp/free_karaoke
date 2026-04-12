@@ -382,13 +382,18 @@ download_model \
     "MDX23C GPU (сепарация)" \
     200000000
 
-# model_2_stem_full_band_8k.yaml — конфиг для MDX23C
+# ── Файлы конфигурации сепаратора (уже есть в репозитории) ─────────
+# MDX23C YAML и download_checks.json лежат в git.
+# Просто проверяем их наличие — если вдруг отсутствуют, предупреждаем.
+
 if [ ! -f "$DIR/models/audio_separator/MDX23C-8KFFT-InstVoc_HQ.yaml" ]; then
-    download_model \
-        "https://raw.githubusercontent.com/TRvlvr/application_data/main/mdx_model_data/mdx_c_configs/model_2_stem_full_band_8k.yaml" \
-        "$DIR/models/audio_separator/MDX23C-8KFFT-InstVoc_HQ.yaml" \
-        "MDX23C YAML (конфиг)" \
-        100
+    echo "   ⚠️  MDX23C YAML конфиг отсутствует — модель может не работать"
+    echo "      Выполните: git pull или восстановите файл из репозитория"
+fi
+
+if [ ! -f "$DIR/models/audio_separator/download_checks.json" ]; then
+    echo "   ⚠️  download_checks.json отсутствует — офлайн-валидация отключена"
+    echo "      Выполните: git pull или восстановите файл из репозитория"
 fi
 
 # Kim_Vocal_1.onnx — fallback модель для CPU (~63 MB)
