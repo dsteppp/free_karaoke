@@ -598,14 +598,7 @@ mkdir -p "$PORTABLE_DIR/cache/tmp"
 export TMPDIR="$PORTABLE_DIR/cache/tmp"
 export PYTORCH_TMPDIR="$PORTABLE_DIR/cache/tmp"
 
-# ── PyTorch ROCm fixes for AppImage ─────────────────────────────────
-# HSA_OVERRIDE_GFX_VERSION: PyTorch ROCm 2.5.1 не поддерживает gfx1102 (RX 7600 XT)
-# напрямую. Маппим на gfx1100 (RX 7900 XTX) для которого есть TensileLibrary.
-# Без этого rocBLAS падает с "Illegal seek for GPU arch : gfx1102".
-export HSA_OVERRIDE_GFX_VERSION=11.0.0
-# Отключаем HIP memory caching (проблемы с tmpfs в AppImage)
-export PYTORCH_NO_HIP_MEMORY_CACHING=1
-# Фиксируем HIP kernel cache в writable директории
+# ── PyTorch ROCm: фиксируем HIP kernel cache в writable директории ────
 export TORCH_EXTENSIONS_DIR="$PORTABLE_DIR/cache/torch_extensions"
 mkdir -p "$TORCH_EXTENSIONS_DIR"
 
