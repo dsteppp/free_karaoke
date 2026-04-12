@@ -387,8 +387,8 @@ class FileDialogAPI:
 
 
 def main():
-    # Очищаем старые логи
-    debug_logs_dir = os.path.join(BASE_DIR, "debug_logs")
+    # Очищаем старые логи (используем FK_LOGS_DIR для AppImage compatibility)
+    debug_logs_dir = os.environ.get("FK_LOGS_DIR") or os.path.join(BASE_DIR, "debug_logs")
     if os.path.exists(debug_logs_dir):
         for fname in os.listdir(debug_logs_dir):
             fpath = os.path.join(debug_logs_dir, fname)
