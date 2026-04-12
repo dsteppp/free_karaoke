@@ -845,7 +845,7 @@ except:
         echo "⚠️  $GPU_TYPE GPU detected but torch.cuda not available → CPU fallback"
         GPU_TYPE="cpu"
     else
-        echo "✅ GPU verified: $(""$VENV/bin/python" -c "import torch; print(torch.cuda.get_device_name(0))" 2>/dev/null || echo "$GPU_TYPE")"
+        echo "✅ GPU verified: $($VENV/bin/python -c 'import torch; print(torch.cuda.get_device_name(0))' 2>/dev/null || echo "$GPU_TYPE")"
     fi
 fi
 
