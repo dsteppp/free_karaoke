@@ -589,6 +589,11 @@ export TRANSFORMERS_CACHE="$PORTABLE_DIR/cache/huggingface/hub"
 export UV_CACHE_DIR="$PORTABLE_DIR/cache/uv"
 export XDG_CACHE_HOME="$PORTABLE_DIR/cache"
 
+# ── Writable temp dirs for PyTorch ROCm (avoid /tmp squashfs conflicts)
+mkdir -p "$PORTABLE_DIR/cache/tmp"
+export TMPDIR="$PORTABLE_DIR/cache/tmp"
+export PYTORCH_TMPDIR="$PORTABLE_DIR/cache/tmp"
+
 # ── Load portable.env ────────────────────────────────────────────────
 ENV_FILE="$PORTABLE_DIR/config/portable.env"
 if [ -f "$ENV_FILE" ]; then
