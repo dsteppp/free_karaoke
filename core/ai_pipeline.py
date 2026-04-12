@@ -632,7 +632,7 @@ def compress_stem_mp3(file_path: str) -> None:
     os.replace(temp, file_path)
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Сепарация вокала (audio-separator, NVIDIA GPU / CPU)
+# Сепарация вокала (audio-separator, GPU с fallback на CPU)
 # ──────────────────────────────────────────────────────────────────────────────
 def separate_vocals(mp3_path: str) -> tuple[str, str]:
     import time
@@ -644,84 +644,92 @@ def separate_vocals(mp3_path: str) -> tuple[str, str]:
     vocals_final       = os.path.join(basedir, f"{basename}_(Vocals).mp3")
     instrumental_final = os.path.join(basedir, f"{basename}_(Instrumental).mp3")
 
-    t_model = time.time()
-
-    # Определяем директорию с моделями audio-separator
     sep_model_dir = os.path.join(MODELS_DIR, "audio_separator")
 
-    # ── Выбираем модель по GPU ─────────────────────────────────────────
-    # NVIDIA / AMD GPU → MDX23C .ckpt (PyTorch ROCm/CUDA GPU ускорение)
-    # CPU              → MDX23C .ckpt (CPU, медленнее)
-    is_gpu = False
-    device_name = "CPU"
+    def _run_separation(model_filename: str, label: str) -> tuple:
+        """Запускает сепарацию с указанной моделью."""
+        log.info("   📦 Модель: %s", label)
+        t_load = time.time()
+        separator = Separator(
+            model_file_dir=sep_model_dir,
+            output_dir=basedir,
+            output_format="MP3",
+            normalization_threshold=0.9,
+        )
+        separator.load_model(model_filename=model_filename)
+        log.info("   ⏱ Загрузка модели: %.1fс", time.time() - t_load)
 
-    try:
-        import torch as _torch
-        if _torch.cuda.is_available():
-            device_name = _torch.cuda.get_device_name(0)
-            is_gpu = True
-    except Exception:
-        pass
+        t_infer = time.time()
+        output_files = separator.separate(mp3_path)
+        log.info("   ⏱ Inference: %.1fс", time.time() - t_infer)
 
-    if is_gpu:
-        log.info("Запуск сепарации аудио (GPU: %s, модель MDX23C)...", device_name)
+        del separator
+        gc.collect()
+
+        found_vocals = None
+        found_instrumental = None
+        for item in output_files:
+            out_path = item if os.path.isabs(item) else os.path.join(basedir, item)
+            name_lc = out_path.lower()
+            if "vocals" in name_lc: found_vocals = out_path
+            elif "instrumental" in name_lc or "no_vocals" in name_lc: found_instrumental = out_path
+
+        if not found_vocals or not found_instrumental:
+            raise RuntimeError("audio-separator не вернул нужные файлы.")
+
+        if found_vocals != vocals_final:
+            if os.path.exists(vocals_final): os.remove(vocals_final)
+            os.rename(found_vocals, vocals_final)
+        if found_instrumental != instrumental_final:
+            if os.path.exists(instrumental_final): os.remove(instrumental_final)
+            os.rename(found_instrumental, instrumental_final)
+
+        t_compress = time.time()
+        log.info("   Сжатие стемов...")
+        compress_stem_mp3(vocals_final)
+        compress_stem_mp3(instrumental_final)
+        log.info("   ⏱️ Сжатие: %.1fс", time.time() - t_compress)
+
+        return vocals_final, instrumental_final
+
+    # ── Попытка 1: MDX23C GPU ──────────────────────────────────────────
+    mdx_model = os.path.join(sep_model_dir, "MDX23C-8KFFT-InstVoc_HQ.ckpt")
+    if os.path.exists(mdx_model):
+        try:
+            device_name = "GPU"
+            try:
+                import torch as _t
+                if _t.cuda.is_available():
+                    device_name = f"GPU: {_t.cuda.get_device_name(0)}"
+            except Exception:
+                pass
+            log.info("Запуск сепарации аудио (%s, модель MDX23C)...", device_name)
+            return _run_separation("MDX23C-8KFFT-InstVoc_HQ.ckpt", "MDX23C (офлайн)")
+        except RuntimeError as e:
+            err_msg = str(e)
+            # Детектируем HIP/ROCm ошибки
+            if "HIP" in err_msg or "rocBLAS" in err_msg or "invalid device" in err_msg.lower():
+                log.warning("   ⚠️  MDX23C GPU сбой (%s) — fallback на Kim_Vocal_1 CPU...", err_msg[:120])
+            else:
+                raise  # Не HIP ошибка — пробрасываем дальше
     else:
-        log.info("Запуск сепарации аудио (CPU, модель MDX23C)...")
+        log.info("   📥 MDX23C модель не найдена — загрузка из интернета...")
 
-    # MDX23C — лучшая модель для всех платформ
-    local_model = os.path.join(sep_model_dir, "MDX23C-8KFFT-InstVoc_HQ.ckpt")
-    separator = Separator(
-        model_file_dir=sep_model_dir,
-        output_dir=basedir,
-        output_format="MP3",
-        normalization_threshold=0.9,
-    )
-    if os.path.exists(local_model):
-        log.info("   📦 Используем локальную модель MDX23C (офлайн)")
-        separator.load_model(model_filename="MDX23C-8KFFT-InstVoc_HQ.ckpt")
+    # ── Попытка 2: Kim_Vocal_1 ONNX CPU (fallback) ─────────────────────
+    kim_model = os.path.join(sep_model_dir, "Kim_Vocal_1.onnx")
+    if os.path.exists(kim_model):
+        log.info("Запуск сепарации аудио (CPU, модель Kim_Vocal_1 ONNX — fallback)...")
+        return _run_separation("Kim_Vocal_1.onnx", "Kim_Vocal_1 ONNX (CPU fallback)")
     else:
-        log.info("   📥 Загрузка модели MDX23C из интернета...")
-        separator.load_model(model_filename="MDX23C-8KFFT-InstVoc_HQ.ckpt")
+        log.info("   📥 Kim_Vocal_1 ONNX не найдена — загрузка из интернета...")
+        # Последняя попытка: загрузить Kim_Vocal_1 из интернета
+        try:
+            log.info("Запуск сепарации аудио (CPU, модель Kim_Vocal_1 ONNX — скачивание)...")
+            return _run_separation("Kim_Vocal_1.onnx", "Kim_Vocal_1 ONNX (download + CPU)")
+        except Exception:
+            pass
 
-    log.info("   ⏱ Загрузка модели: %.1fс", time.time() - t_model)
-
-    t_infer = time.time()
-    output_files = separator.separate(mp3_path)
-    log.info("   ⏱ Inference: %.1fс", time.time() - t_infer)
-
-    del separator
-    gc.collect()
-
-    found_vocals = None
-    found_instrumental = None
-
-    for item in output_files:
-        out_path = item if os.path.isabs(item) else os.path.join(basedir, item)
-        name_lc  = out_path.lower()
-        if "vocals" in name_lc: found_vocals = out_path
-        elif "instrumental" in name_lc or "no_vocals" in name_lc: found_instrumental = out_path
-
-    if not found_vocals or not found_instrumental:
-        raise RuntimeError("audio-separator не вернул нужные файлы.")
-
-    if found_vocals != vocals_final:
-        if os.path.exists(vocals_final): os.remove(vocals_final)
-        os.rename(found_vocals, vocals_final)
-
-    if found_instrumental != instrumental_final:
-        if os.path.exists(instrumental_final): os.remove(instrumental_final)
-        os.rename(found_instrumental, instrumental_final)
-
-    t_compress = time.time()
-    log.info("Сжатие стемов...")
-    compress_stem_mp3(vocals_final)
-    compress_stem_mp3(instrumental_final)
-    log.info("   ⏱️ Сжатие: %.1fс", time.time() - t_compress)
-
-    total = time.time() - t_start
-    log.info("   ⏱️ СЕПАРАЦИЯ ЗАВЕРШЕНА: %.1fс", total)
-
-    return vocals_final, instrumental_final
+    raise RuntimeError("Сепарация не удалась: ни MDX23C GPU, ни Kim_Vocal_1 CPU не сработали.")
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Метаданные (mutagen: artist, title, lyrics, cover)

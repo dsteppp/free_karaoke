@@ -146,6 +146,17 @@ def bootstrap_models():
         except OSError:
             pass
 
+    # Kim_Vocal_1 ONNX — fallback модель для AMD/CPU
+    kim_src = os.path.join(appimage_models, "audio_separator", "Kim_Vocal_1.onnx")
+    kim_dst = os.path.join(writable_models, "audio_separator", "Kim_Vocal_1.onnx")
+    if os.path.exists(kim_src) and not os.path.exists(kim_dst):
+        try:
+            os.makedirs(os.path.dirname(kim_dst), exist_ok=True)
+            shutil.copy2(kim_src, kim_dst)
+            log.info("   ✅ Kim_Vocal_1 ONNX скопирована (AMD/CPU fallback)")
+        except OSError:
+            pass
+
     # Копируем Whisper модель
     whisper_src = os.path.join(appimage_models, "whisper", "medium.pt")
     whisper_dst = os.path.join(writable_models, "whisper", "medium.pt")

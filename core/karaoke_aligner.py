@@ -69,15 +69,33 @@ class KaraokeAligner:
                 log.warning(f"   ⚠️ Не удалось сохранить VAD-кэш: {e}")
             # ------------------------------------------------------------------
 
-            # 3. Слух Нейросети
-            log.info("🧠 Транскрибация Stable-Whisper...")
-            model = stable_whisper.load_model(self.model_name, download_root=self.whisper_model_dir, device=self.device)
-            
+            # 3. Слух Нейросети — попытка с GPU, fallback на CPU
+            log.info("🧠 Транскрибация Stable-Whisper (device=%s)...", self.device)
+            model = None
+
+            # Попытка 1: GPU (если доступен)
+            if self.device == "cuda":
+                try:
+                    model = stable_whisper.load_model(self.model_name, download_root=self.whisper_model_dir, device="cuda")
+                    log.info("   ✅ Whisper загружен на GPU")
+                except RuntimeError as e:
+                    err_msg = str(e)
+                    if "HIP" in err_msg or "rocBLAS" in err_msg or "invalid device" in err_msg.lower() or "cuda" in err_msg.lower():
+                        log.warning("   ⚠️  Whisper GPU сбой — fallback на CPU...")
+                    else:
+                        raise
+
+            # Попытка 2: CPU fallback
+            if model is None:
+                log.info("   🔄 Загрузка Whisper на CPU (fallback)...")
+                model = stable_whisper.load_model(self.model_name, download_root=self.whisper_model_dir, device="cpu")
+                log.info("   ✅ Whisper загружен на CPU")
+
             result = model.transcribe(
-                audio_data, 
-                language=lang, 
+                audio_data,
+                language=lang,
                 word_timestamps=True,
-                vad=True 
+                vad=True
             )
             
             raw_heard_words = []

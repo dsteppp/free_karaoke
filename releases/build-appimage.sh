@@ -369,6 +369,24 @@ else
     echo "   ⚠️  download_checks.json not found — model validation may fail offline"
 fi
 
+# Kim_Vocal_1 ONNX — fallback модель для AMD/CPU когда MDX23C ROCm падает
+KIM_ONNX="$CACHE_DIR/models/audio_separator/Kim_Vocal_1.onnx"
+if [ ! -f "$KIM_ONNX" ]; then
+    echo "   📥 Downloading Kim_Vocal_1 ONNX (~63 MB, fallback for AMD/CPU)..."
+    mkdir -p "$CACHE_DIR/models/audio_separator"
+    download_cached \
+        "https://github.com/TRvlvr/model_repo/releases/download/all_public_uvr_models/Kim_Vocal_1.onnx" \
+        "$KIM_ONNX"
+    echo "   ✅ Kim_Vocal_1 ONNX ready"
+else
+    echo "   ✅ Kim_Vocal_1 ONNX cached"
+fi
+if [ -f "$KIM_ONNX" ]; then
+    cp "$KIM_ONNX" "$APPDIR/usr/share/ai-karaoke/models/audio_separator/"
+    KIM_SIZE=$(du -sh "$KIM_ONNX" | cut -f1)
+    echo "   ✅ Kim_Vocal_1 ONNX bundled ($KIM_SIZE, AMD/CPU fallback)"
+fi
+
 # Copy ffmpeg
 echo "   Copying ffmpeg..."
 cp "$CACHE_DIR/ffmpeg/ffmpeg" "$APPDIR/usr/bin/ffmpeg"
