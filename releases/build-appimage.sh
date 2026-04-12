@@ -474,6 +474,20 @@ pip install --cache-dir="$CACHE_DIR/pip" -r "$BUILD_DIR/requirements-amd.txt" ||
     exit 1
 }
 deactivate || true
+
+# ── Критическая проверка: PyQt6 действительно установлен ──────────
+echo "   🔍 Проверка PyQt6..."
+if ! "$AMD_VENV/bin/python" -c "from PyQt6.QtWidgets import QApplication" 2>/dev/null; then
+    echo "   ❌ PyQt6 НЕ установлен в AMD venv!"
+    echo "   Попробуйте переустановить принудительно..."
+    source "$AMD_VENV/bin/activate"
+    pip install --cache-dir="$CACHE_DIR/pip" --force-reinstall PyQt6==6.7.0 PyQt6-WebEngine==6.7.0 || {
+        echo "   ❌ КРИТИЧЕСКАЯ ОШИБКА: PyQt6 не удалось установить!"
+        exit 1
+    }
+    deactivate || true
+fi
+
 AMD_SIZE=$(du -sh "$AMD_VENV" | cut -f1)
 echo "   ✅ AMD venv built ($AMD_SIZE)"
 
@@ -494,6 +508,20 @@ pip install --cache-dir="$CACHE_DIR/pip" -r "$BUILD_DIR/requirements-nvidia.txt"
     exit 1
 }
 deactivate || true
+
+# ── Критическая проверка: PyQt6 действительно установлен ──────────
+echo "   🔍 Проверка PyQt6..."
+if ! "$NVIDIA_VENV/bin/python" -c "from PyQt6.QtWidgets import QApplication" 2>/dev/null; then
+    echo "   ❌ PyQt6 НЕ установлен в NVIDIA venv!"
+    echo "   Принудительная переустановка..."
+    source "$NVIDIA_VENV/bin/activate"
+    pip install --cache-dir="$CACHE_DIR/pip" --force-reinstall PyQt6==6.7.0 PyQt6-WebEngine==6.7.0 || {
+        echo "   ❌ КРИТИЧЕСКАЯ ОШИБКА: PyQt6 не удалось установить в NVIDIA venv!"
+        exit 1
+    }
+    deactivate || true
+fi
+
 NVIDIA_SIZE=$(du -sh "$NVIDIA_VENV" | cut -f1)
 echo "   ✅ NVIDIA venv built ($NVIDIA_SIZE)"
 
@@ -796,6 +824,11 @@ export PATH="$APPDIR/usr/bin:$PATH"
 echo "📦 Using venv: $(basename "$VENV") ($GPU_TYPE mode)"
 source "$VENV/bin/activate"
 
+# ── Python path isolation ───────────────────────────────────────────
+# Жёстко указываем PYTHONPATH только на venv site-packages.
+# Это предотвращает импорт из системного Python (/usr/lib/python3.14/...).
+export PYTHONPATH="$VENV/lib/python3.11/site-packages"
+
 # ── Verify GPU actually works (torch.cuda check) ─────────────────────
 if [ "$GPU_TYPE" != "cpu" ]; then
     GPU_OK=$(python -c "
@@ -839,6 +872,56 @@ Keywords=karaoke;audio;music;whisper;ai;
 Terminal=false
 MimeType=audio/mpeg;audio/flac;audio/wav;audio/x-wav;audio/ogg;
 DESKTOP
+
+# ═══════════════════════════════════════════════════════════════════════
+# STEP 8.5: Final PyQt6 verification in both venvs
+# ═══════════════════════════════════════════════════════════════════════
+echo ""
+echo "────────────────────────────────────────────────────────────────"
+echo "🔒 STEP 8.5: Final PyQt6 verification"
+echo "────────────────────────────────────────────────────────────────"
+
+PYQT_OK=true
+
+echo "   Проверка AMD venv..."
+if ! "$AMD_VENV/bin/python" -c "from PyQt6.QtWidgets import QApplication" 2>/dev/null; then
+    echo "   ❌ PyQt6 отсутствует в AMD venv!"
+    PYQT_OK=false
+else
+    echo "   ✅ AMD venv: PyQt6 OK"
+fi
+
+echo "   Проверка NVIDIA venv..."
+if ! "$NVIDIA_VENV/bin/python" -c "from PyQt6.QtWidgets import QApplication" 2>/dev/null; then
+    echo "   ❌ PyQt6 отсутствует в NVIDIA venv!"
+    PYQT_OK=false
+else
+    echo "   ✅ NVIDIA venv: PyQt6 OK"
+fi
+
+if [ "$PYQT_OK" = false ]; then
+    echo ""
+    echo "   ⚠️  PyQt6 не найден в одном или обоих venv."
+    echo "   Принудительная переустановка в оба venv..."
+    echo ""
+
+    for venv_path in "$AMD_VENV" "$NVIDIA_VENV"; do
+        venv_name=$(basename "$venv_path")
+        echo "   🔄 Переустановка PyQt6 в $venv_name..."
+        if ! "$venv_path/bin/python" -c "from PyQt6.QtWidgets import QApplication" 2>/dev/null; then
+            "$venv_path/bin/pip" install --cache-dir="$CACHE_DIR/pip" --force-reinstall --no-cache-dir \
+                PyQt6==6.7.0 PyQt6-WebEngine==6.7.0 || {
+                echo "   ❌ КРИТИЧЕСКАЯ ОШИБКА: PyQt6 не удалось установить в $venv_name!"
+                echo "   Сборка прервана."
+                exit 1
+            }
+        fi
+        echo "   ✅ $venv_name: PyQt6 установлен"
+    done
+fi
+
+echo ""
+echo "   ✅ PyQt6 верификация пройдена"
 
 # ═══════════════════════════════════════════════════════════════════════
 # STEP 9: Build AppImage
