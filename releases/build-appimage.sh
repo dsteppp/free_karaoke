@@ -466,7 +466,7 @@ echo "🐍 STEP 4: Building AMD venv (ROCm 6.2 + CPU)"
 echo "────────────────────────────────────────────────────────────────"
 
 AMD_VENV="$APPDIR/usr/share/ai-karaoke/.venv_amd"
-python3.11 -m venv "$AMD_VENV"
+python3.11 -m venv --copies "$AMD_VENV"
 source "$AMD_VENV/bin/activate"
 pip install --upgrade pip -q
 pip install --cache-dir="$CACHE_DIR/pip" -r "$BUILD_DIR/requirements-amd.txt" || {
@@ -500,7 +500,7 @@ echo "🐍 STEP 5: Building NVIDIA venv (CUDA 12.4 + CPU)"
 echo "────────────────────────────────────────────────────────────────"
 
 NVIDIA_VENV="$APPDIR/usr/share/ai-karaoke/.venv_nvidia"
-python3.11 -m venv "$NVIDIA_VENV"
+python3.11 -m venv --copies "$NVIDIA_VENV"
 source "$NVIDIA_VENV/bin/activate"
 pip install --upgrade pip -q
 pip install --cache-dir="$CACHE_DIR/pip" -r "$BUILD_DIR/requirements-nvidia.txt" || {
