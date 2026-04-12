@@ -123,13 +123,17 @@ cat > "$DIR/requirements.txt" << EOF
 EOF
 
 if [ "$GPU_TYPE" = "NVIDIA" ]; then
+    # CUDA 12.4 — стабильная, проверенная связка
+    # ВАЖНО: версии torch/torchvision/torchaudio ДОЛЖНЫ быть зафиксированы
+    # и иметь одинаковый мажорный номер, иначе — ошибка загрузки библиотек
     echo "--extra-index-url https://download.pytorch.org/whl/cu124" >> "$DIR/requirements.txt"
-    echo "torch" >> "$DIR/requirements.txt"
-    echo "torchvision" >> "$DIR/requirements.txt"
-    echo "torchaudio" >> "$DIR/requirements.txt"
+    echo "torch==2.6.0+cu124" >> "$DIR/requirements.txt"
+    echo "torchvision==0.21.0+cu124" >> "$DIR/requirements.txt"
+    echo "torchaudio==2.6.0+cu124" >> "$DIR/requirements.txt"
     echo "onnxruntime" >> "$DIR/requirements.txt"
 
 elif [ "$GPU_TYPE" = "AMD" ]; then
+    # ROCm 6.2 — для AMD GPU
     echo "--extra-index-url https://download.pytorch.org/whl/rocm6.2" >> "$DIR/requirements.txt"
     echo "torch==2.5.1+rocm6.2" >> "$DIR/requirements.txt"
     echo "torchvision==0.20.1+rocm6.2" >> "$DIR/requirements.txt"
@@ -137,16 +141,19 @@ elif [ "$GPU_TYPE" = "AMD" ]; then
     echo "onnxruntime" >> "$DIR/requirements.txt"
 
 elif [ "$GPU_TYPE" = "APPLE" ]; then
-    echo "torch" >> "$DIR/requirements.txt"
-    echo "torchvision" >> "$DIR/requirements.txt"
-    echo "torchaudio" >> "$DIR/requirements.txt"
-    echo "onnxruntime-silicon; sys_platform == 'darwin' and platform_machine == 'arm64'" >> "$DIR/requirements.txt"
+    # Apple Silicon — без суффикса, но версии зафиксированы
+    # Чтобы torchaudio не разошёлся с torch по версиям
+    echo "torch==2.6.0" >> "$DIR/requirements.txt"
+    echo "torchvision==0.21.0" >> "$DIR/requirements.txt"
+    echo "torchaudio==2.6.0" >> "$DIR/requirements.txt"
+    echo "onnxruntime" >> "$DIR/requirements.txt"
 
 else
+    # CPU-only — без GPU ускорения
     echo "--extra-index-url https://download.pytorch.org/whl/cpu" >> "$DIR/requirements.txt"
-    echo "torch==2.5.1+cpu" >> "$DIR/requirements.txt"
-    echo "torchvision==0.20.1+cpu" >> "$DIR/requirements.txt"
-    echo "torchaudio==2.5.1+cpu" >> "$DIR/requirements.txt"
+    echo "torch==2.6.0+cpu" >> "$DIR/requirements.txt"
+    echo "torchvision==0.21.0+cpu" >> "$DIR/requirements.txt"
+    echo "torchaudio==2.6.0+cpu" >> "$DIR/requirements.txt"
     echo "onnxruntime" >> "$DIR/requirements.txt"
 fi
 
@@ -281,22 +288,72 @@ fi
 
 source "$DIR/.venv/bin/activate"
 
-echo "📦 Проверка и доустановка зависимостей (инкрементно)..."
-uv pip install --index-strategy unsafe-best-match -r "$DIR/requirements.txt"
+echo "📦 Установка зависимостей..."
+echo "   (это может занять несколько минут при первой установке)"
+echo ""
+
+if ! uv pip install --index-strategy unsafe-best-match -r "$DIR/requirements.txt"; then
+    echo ""
+    echo "❌ Ошибка установки зависимостей!"
+    echo "   Возможные причины:"
+    echo "   - Проблемы с интернет-соединением"
+    echo "   - Недостаточно места на диске"
+    echo "   - Временная недоступимость PyPI"
+    echo ""
+    echo "   Попробуйте запустить reinstall.sh ещё раз."
+    exit 1
+fi
+
+echo ""
+echo "✅ Все зависимости установлены"
+echo ""
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 7.5. Критическая проверка: torch и torchaudio одной версии
+# ─────────────────────────────────────────────────────────────────────────────
+echo "🔍 Проверка совместимости PyTorch и torchaudio..."
+TORCH_VERSION=$(python -c "import torch; print(torch.__version__.split('+')[0])" 2>/dev/null || echo "NOT_INSTALLED")
+TORCHAUDIO_OK=true
+if ! python -c "import torchaudio" 2>/dev/null; then
+    TORCHAUDIO_OK=false
+fi
+
+if [ "$TORCH_VERSION" = "NOT_INSTALLED" ]; then
+    echo "❌ PyTorch не установлен!"
+    exit 1
+fi
+
+if [ "$TORCHAUDIO_OK" = false ]; then
+    echo "❌ torchaudio не удалось импортировать!"
+    echo "   Версии PyTorch и torchaudio несовместимы."
+    exit 1
+fi
+
+echo "   ✓ PyTorch $TORCH_VERSION — torchaudio импортируется корректно"
 echo ""
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 8. Финальная проверка работоспособности
 # ─────────────────────────────────────────────────────────────────────────────
-echo "🎮 Тест аппаратного ускорения PyTorch..."
+echo "🎮 Финальный тест системы..."
 python -c "
 import torch
+import torchaudio
+
+print(f'   PyTorch:    {torch.__version__}')
+print(f'   torchaudio: {torchaudio.__version__}')
+
 if torch.cuda.is_available():
-    print(f'   ✓ Движок подключен: {torch.cuda.get_device_name(0)} (CUDA/ROCm)')
+    device_name = torch.cuda.get_device_name(0)
+    print(f'   ✓ GPU: {device_name} (CUDA)')
+    print(f'   ✓ CUDA устройств: {torch.cuda.device_count()}')
 elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
-    print('   ✓ Движок подключен: Apple Silicon (MPS)')
+    print('   ✓ GPU: Apple Silicon (MPS)')
 else:
-    print('   ⚠️  Ускоритель не найден — fallback на CPU')
+    print('   ⚠️  GPU не найден — работа на CPU')
+
+print()
+print('   ✓ Все библиотеки загружаются без ошибок')
 "
 echo ""
 echo "╔══════════════════════════════════════════════════════╗"
