@@ -329,21 +329,23 @@ class FileDialogAPI:
     """API для pywebview: файловые диалоги и работа с файлами."""
 
     def open_file_dialog(self, multiple=True, file_filter=None):
-        """Открывает диалог выбора файлов. QFileDialog (PyQt6) → yad → kdialog."""
-        # 1. Пробуем PyQt6 QFileDialog — уже бандлится в AppImage
+        """Открывает диалог выбора файлов. yad → QFileDialog → kdialog."""
+        # 1. yad — стабильно работает офлайн, без проблем с NFS/squashfs
+        if _YAD_AVAILABLE:
+            try:
+                result = _open_file_dialog_yad(multiple, file_filter)
+                if result:
+                    return result if multiple else result[0]
+            except Exception as e:
+                log.warning("yad ошибка: %s", e)
+
+        # 2. Fallback: PyQt6 QFileDialog
         try:
             result = _open_file_dialog_qt(multiple, file_filter)
             if result:
                 return result if multiple else result[0]
         except Exception as e:
             log.debug("QFileDialog недоступен: %s", e)
-
-        # 2. Fallback: yad
-        if _YAD_AVAILABLE:
-            result = _open_file_dialog_yad(multiple, file_filter)
-            if multiple:
-                return result
-            return result[0] if result else None
 
         # 3. Fallback: kdialog
         start_dir = _get_start_dir()
@@ -369,32 +371,10 @@ class FileDialogAPI:
         return [] if multiple else None
 
     def save_file_dialog(self, title="Сохранить файл", default_filename=""):
-        """Открывает диалог сохранения файла. QFileDialog → yad → kdialog."""
-        # 1. Пробуем PyQt6 QFileDialog
-        try:
-            from PyQt6.QtWidgets import QFileDialog, QApplication
-            app = QApplication.instance()
-            was_none = app is None
-            if was_none:
-                app = QApplication([])
-
-            start_dir = _get_start_dir()
-            path, _ = QFileDialog.getSaveFileName(
-                None, title,
-                os.path.join(start_dir, default_filename),
-                "ZIP Files (*.zip);;All Files (*)"
-            )
-
-            if was_none:
-                app.quit()
-
-            return path if path else None
-        except Exception as e:
-            log.debug("QFileDialog save недоступен: %s", e)
-
-        # 2. Fallback: yad
+        """Открывает диалог сохранения файла. yad → QFileDialog → kdialog."""
         start_dir = _get_start_dir()
 
+        # 1. yad — стабильно работает офлайн, без проблем с NFS/squashfs
         if _YAD_AVAILABLE:
             cmd = [
                 "yad", "--file", "--save",
@@ -416,9 +396,29 @@ class FileDialogAPI:
                 log.warning("yad save диалог: timeout")
             except Exception as e:
                 log.warning("yad save диалог ошибка: %s", e)
-            return None
 
-        # Fallback: kdialog (только если yad недоступен)
+        # 2. Fallback: PyQt6 QFileDialog
+        try:
+            from PyQt6.QtWidgets import QFileDialog, QApplication
+            app = QApplication.instance()
+            was_none = app is None
+            if was_none:
+                app = QApplication([])
+
+            path, _ = QFileDialog.getSaveFileName(
+                None, title,
+                os.path.join(start_dir, default_filename),
+                "ZIP Files (*.zip);;All Files (*)"
+            )
+
+            if was_none:
+                app.quit()
+
+            return path if path else None
+        except Exception as e:
+            log.debug("QFileDialog save недоступен: %s", e)
+
+        # 3. Fallback: kdialog
         try:
             cmd = ["kdialog", "--title", title,
                    "--getsavefilename", os.path.join(start_dir, default_filename)]
