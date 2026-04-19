@@ -26,6 +26,7 @@ core/portable.env
 # ── Скрипты сборки — временная директория ─────────────
 releases/_build/
 releases/_build-cache/
+releases/_build-installer
 releases/*.AppImage
 releases/*.apk
 releases/FreeKaraoke-*/
