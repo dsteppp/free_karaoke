@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ═══════════════════════════════════════════════════════════════════════════
-# Free Karaoke — Build Smart Installer AppImage
+# Free Karaoke — Build Smart Installer AppImage 
 # ═══════════════════════════════════════════════════════════════════════════
 # AppImage that acts as a smart installer with bundled AI models
 # On launch: opens terminal and runs installation process
