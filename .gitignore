@@ -1,1 +1,1 @@
-(release/app_install.sh is a shell script file, which is source code/config file type, and there are no build artifacts, dependencies, or temp files in the changes)
+Nothing should be ignored based on the provided file changes, as they only include source/config files (.py, .sh) without any build artifacts, dependencies, or temporary files.

@@ -732,9 +732,6 @@ HF_HOME=$INSTALL_DIR/core/cache/huggingface
 HUGGINGFACE_HUB_CACHE=$INSTALL_DIR/core/cache/huggingface/hub
 TRANSFORMERS_CACHE=$INSTALL_DIR/core/cache/huggingface/hub
 XDG_CACHE_HOME=$INSTALL_DIR/core/cache
-# QtWebEngine / Chromium кэш — изоляция для стабильной работы интерфейса
-QTWEBENGINE_CHROMIUM_FLAGS=--no-sandbox --disable-gpu-sandbox --disable-dev-shm-usage --disable-http-cache --disk-cache-dir=$INSTALL_DIR/core/cache/chromium --disk-cache-size=0
-QT_QPA_PLATFORM=xcb
 # Переменные для совместимости с launcher.py (FK_* переменные)
 FK_CACHE_DIR=$INSTALL_DIR/core/cache
 FK_LOGS_DIR=$INSTALL_DIR/core/debug_logs
@@ -766,6 +763,10 @@ if [ -f "\$DIR/core/.env.cache" ]; then
     source "\$DIR/core/.env.cache"
     set +a
 fi
+
+# QtWebEngine/Chromium: изоляция кэша и отключение проблемных функций
+export QTWEBENGINE_CHROMIUM_FLAGS="--no-sandbox --disable-gpu-sandbox --disable-dev-shm-usage --disable-http-cache --disk-cache-dir=\$DIR/core/cache/chromium --disk-cache-size=0"
+export QT_QPA_PLATFORM=xcb
 
 exec "\$DIR/core/run.sh" "\$@"
 RUNSCRIPT

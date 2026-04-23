@@ -36,7 +36,13 @@ else
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 2.5. PyTorch ROCm: маппим gfx1102 (RX 7600 XT) → gfx1100 для TensileLibrary
+# 2.5. QtWebEngine/Chromium: принудительная настройка для стабильности UI
+# ─────────────────────────────────────────────────────────────────────────────
+export QTWEBENGINE_CHROMIUM_FLAGS="--no-sandbox --disable-gpu-sandbox --disable-dev-shm-usage --disable-http-cache --disk-cache-dir=$DIR/cache/chromium --disk-cache-size=0"
+export QT_QPA_PLATFORM=xcb
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 2.6. PyTorch ROCm: маппим gfx1102 (RX 7600 XT) → gfx1100 для TensileLibrary
 # ─────────────────────────────────────────────────────────────────────────────
 export HSA_OVERRIDE_GFX_VERSION=11.0.0
 
@@ -69,6 +75,8 @@ mkdir -p "$DIR/models/whisper"
 mkdir -p "$DIR/cache/uv"
 mkdir -p "$DIR/cache/torch"
 mkdir -p "$DIR/cache/huggingface"
+mkdir -p "$DIR/cache/chromium"
+mkdir -p "$DIR/cache/webview"
 mkdir -p "$DIR/debug_logs"
 
 # ─────────────────────────────────────────────────────────────────────────────

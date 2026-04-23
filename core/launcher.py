@@ -44,22 +44,25 @@ elif sys.argv[0] == "":
 # ── Настройки Chromium ────────────────────────────────────────────────────────
 _webview_cache = os.path.join(CACHE_DIR, "webview")
 os.makedirs(_webview_cache, exist_ok=True)
-os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = (
-    "--no-sandbox "
-    "--disable-gpu-sandbox "
-    "--disable-dev-shm-usage "
-    "--disable-http-cache "
-    f"--disk-cache-dir={_webview_cache} "
-    "--disk-cache-size=0"
-)
+
+# Если переменная не задана извне (из run.sh), используем значения по умолчанию
+if "QTWEBENGINE_CHROMIUM_FLAGS" not in os.environ:
+    os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = (
+        "--no-sandbox "
+        "--disable-gpu-sandbox "
+        "--disable-dev-shm-usage "
+        "--disable-http-cache "
+        f"--disk-cache-dir={_webview_cache} "
+        "--disk-cache-size=0"
+    )
 
 if sys.platform.startswith("linux"):
-    os.environ["QT_QPA_PLATFORM"] = "xcb"
+    os.environ.setdefault("QT_QPA_PLATFORM", "xcb")
 
 # ── Chromium кэш внутри проекта ───────────────────────────────────────────────
 chromium_cache = os.path.join(CACHE_DIR, "chromium")
 os.makedirs(chromium_cache, exist_ok=True)
-os.environ["QTWEBENGINE_DICTIONARIES_PATH"] = chromium_cache
+os.environ.setdefault("QTWEBENGINE_DICTIONARIES_PATH", chromium_cache)
 
 # ── Monkey-patch: совместимость с PyQt6.7+ ───────────────────────────────────
 try:
