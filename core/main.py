@@ -20,6 +20,7 @@ from ai_pipeline import get_audio_metadata, url_to_base64
 from app_status import read_status
 from app_logger import get_logger
 from library_io import export_library, import_library, IMPORT_LOG_PATH
+from tasks import process_audio_task, partial_rescan_task, export_library_task, import_library_task
 
 # --- ВРЕЗКА РЕДАКТОРА ---
 from editor_backend import router as editor_router
@@ -985,76 +986,134 @@ async def partial_rescan_endpoint(
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# POST /api/library/export  — экспорт библиотеки в ZIP
+# POST /api/library/export  — экспорт библиотеки в ZIP (фоновая задача)
 # ──────────────────────────────────────────────────────────────────────────────
+class ExportRequest(BaseModel):
+    output_path: str
+
+
+# Глобальный словарь активных задач для отмены: {task_id: cancel_flag}
+_active_io_tasks: Dict[str, threading.Event] = {}
+
+
 @app.post("/api/library/export")
-async def export_library_endpoint():
-    """Экспорт всей библиотеки в ZIP-архив."""
+async def start_export(request: ExportRequest):
+    """Запускает экспорт в фоне, возвращает task_id."""
+    if not request.output_path:
+        raise HTTPException(status_code=400, detail="Требуется output_path")
+    
+    # Запускаем задачу
+    task = export_library_task(request.output_path)
+    
+    # Сохраняем cancel_flag для возможной отмены
+    _active_io_tasks[task.id] = threading.Event()
+    
+    return {
+        "task_id": task.id,
+        "status": "queued",
+        "output_path": request.output_path,
+    }
+
+
+@app.get("/api/library/export/status/{task_id}")
+async def get_export_status(task_id: str):
+    """Поллинг статуса задачи экспорта."""
+    from huey.exceptions import TaskNotFoundException
+    
     try:
-        zip_bytes = export_library(LIBRARY_DIR)
-        return Response(
-            content=zip_bytes,
-            media_type="application/zip",
-            headers={
-                "Content-Disposition": f'attachment; filename="karaoke_library_{datetime.now().strftime("%Y%m%d_%H%M")}.zip"',
-            },
-        )
-    except Exception as e:
-        log.error("Ошибка экспорта: %s", e, exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        result = huey.result(task_id, peek=True)
+        if result is None:
+            # Задача ещё выполняется — возвращаем прогресс из app_status
+            status = read_status()
+            return {
+                "task_id": task_id,
+                "status": "running",
+                "message": status.get("message"),
+                "progress": status.get("progress"),
+            }
+        else:
+            # Задача завершена
+            if task_id in _active_io_tasks:
+                del _active_io_tasks[task_id]
+            return {
+                "task_id": task_id,
+                "status": "done",
+                "result": result,
+            }
+    except TaskNotFoundException:
+        return {"task_id": task_id, "status": "not_found"}
+
+
+@app.post("/api/library/export/cancel/{task_id}")
+async def cancel_export(task_id: str):
+    """Отменяет задачу экспорта."""
+    if task_id in _active_io_tasks:
+        _active_io_tasks[task_id].set()  # Сигнал отмены
+        return {"status": "cancelling"}
+    raise HTTPException(status_code=404, detail="Задача не найдена")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# POST /api/library/import  — импорт библиотеки из ZIP
+# POST /api/library/import  — импорт библиотеки из ZIP (фоновая задача)
 # ──────────────────────────────────────────────────────────────────────────────
-@app.post("/api/library/import")
-async def import_library_endpoint(
-    file: UploadFile = File(...),
-    db: Session = Depends(get_db),
-):
-    """Импорт библиотеки из ZIP-архива."""
-    if not file.filename or not file.filename.endswith('.zip'):
-        raise HTTPException(status_code=400, detail="Требуется ZIP-файл")
-
-    try:
-        zip_bytes = await file.read()
-        result = import_library(zip_bytes, LIBRARY_DIR, db, Track)
-        return result
-    except RuntimeError as e:
-        raise HTTPException(status_code=409, detail=str(e))
-    except Exception as e:
-        log.error("Ошибка импорта: %s", e, exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# POST /api/library/import-from-path  — импорт по пути к файлу (без передачи bytes через JS)
-# ──────────────────────────────────────────────────────────────────────────────
-class ImportFromPathRequest(BaseModel):
+class ImportRequest(BaseModel):
     path: str
 
 
-@app.post("/api/library/import-from-path")
-async def import_library_from_path(
-    req: ImportFromPathRequest,
-    db: Session = Depends(get_db),
-):
-    """Импорт библиотеки из ZIP по пути к файлу. Python сам читает файл."""
-    if not os.path.exists(req.path):
-        raise HTTPException(status_code=404, detail="Файл не найден")
-    if not req.path.endswith('.zip'):
+@app.post("/api/library/import")
+async def start_import(request: ImportRequest):
+    """Запускает импорт в фоне по пути к файлу."""
+    if not request.path or not os.path.exists(request.path):
+        raise HTTPException(status_code=400, detail="Неверный путь к файлу")
+    if not request.path.endswith('.zip'):
         raise HTTPException(status_code=400, detail="Требуется ZIP-файл")
+    
+    task = import_library_task(request.path)
+    _active_io_tasks[task.id] = threading.Event()
+    
+    return {
+        "task_id": task.id,
+        "status": "queued",
+        "zip_path": request.path,
+    }
 
+
+@app.get("/api/library/import/status/{task_id}")
+async def get_import_status(task_id: str):
+    """Поллинг статуса задачи импорта."""
+    from huey.exceptions import TaskNotFoundException
+    
     try:
-        with open(req.path, 'rb') as f:
-            zip_bytes = f.read()
-        result = import_library(zip_bytes, LIBRARY_DIR, db, Track)
-        return result
-    except RuntimeError as e:
-        raise HTTPException(status_code=409, detail=str(e))
-    except Exception as e:
-        log.error("Ошибка импорта: %s", e, exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        result = huey.result(task_id, peek=True)
+        if result is None:
+            # Задача ещё выполняется — возвращаем прогресс из app_status
+            status = read_status()
+            return {
+                "task_id": task_id,
+                "status": "running",
+                "message": status.get("message"),
+                "progress": status.get("progress"),
+            }
+        else:
+            # Задача завершена
+            if task_id in _active_io_tasks:
+                del _active_io_tasks[task_id]
+            return {
+                "task_id": task_id,
+                "status": "done",
+                "result": result,
+            }
+    except TaskNotFoundException:
+        return {"task_id": task_id, "status": "not_found"}
+
+
+@app.post("/api/library/import/cancel/{task_id}")
+async def cancel_import(task_id: str):
+    """Отменяет задачу импорта."""
+    if task_id in _active_io_tasks:
+        _active_io_tasks[task_id].set()  # Сигнал отмены
+        return {"status": "cancelling"}
+    raise HTTPException(status_code=404, detail="Задача не найдена")
 
 
 # ──────────────────────────────────────────────────────────────────────────────

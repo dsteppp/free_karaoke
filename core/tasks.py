@@ -767,3 +767,68 @@ def partial_rescan_task(track_id: str, start_word_index: int, anchor_time: float
             torch.cuda.ipc_collect()
 
         log.info("GPU память сброшена (finally partial rescan).")
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Export Library Task: фоновая задача экспорта библиотеки в ZIP
+# ──────────────────────────────────────────────────────────────────────────────
+@huey.task()
+def export_library_task(output_path: str, library_dir: str = LIBRARY_DIR):
+    """Фоновая задача экспорта библиотеки."""
+    from library_io import export_library
+    
+    cancel_flag = threading.Event()
+    
+    def progress_cb(processed: int, total: int, filename: str):
+        pct = int(100 * processed / total) if total > 0 else 0
+        set_status(f"💾 Экспорт: {filename} ({processed}/{total})", pct)
+    
+    try:
+        result = export_library(
+            library_dir=library_dir,
+            output_path=output_path,
+            progress_callback=progress_cb,
+            cancel_flag=cancel_flag,
+        )
+        clear_status()
+        return result
+    except Exception as e:
+        log.error("Ошибка экспорта: %s", e, exc_info=True)
+        clear_status()
+        raise
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Import Library Task: фоновая задача импорта библиотеки из ZIP
+# ──────────────────────────────────────────────────────────────────────────────
+@huey.task()
+def import_library_task(zip_path: str, library_dir: str = LIBRARY_DIR):
+    """Фоновая задача импорта библиотеки."""
+    from library_io import import_library
+    
+    db = SessionLocal()
+    cancel_flag = threading.Event()
+    
+    def progress_cb(processed: int, total: int, filename: str):
+        pct = int(100 * processed / total) if total > 0 else 0
+        set_status(f"📦 Импорт: {filename} ({processed}/{total})", pct)
+    
+    try:
+        result = import_library(
+            zip_path=zip_path,
+            library_dir=library_dir,
+            db_session=db,
+            Track_model=Track,
+            progress_callback=progress_cb,
+            cancel_flag=cancel_flag,
+        )
+        db.commit()
+        clear_status()
+        return result
+    except Exception as e:
+        db.rollback()
+        log.error("Ошибка импорта: %s", e, exc_info=True)
+        clear_status()
+        raise
+    finally:
+        db.close()
