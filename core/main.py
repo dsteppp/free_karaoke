@@ -1,6 +1,6 @@
 from fastapi import FastAPI, Depends, UploadFile, File, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi import Response
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -12,14 +12,17 @@ import traceback
 import gc
 import torch
 from datetime import datetime
+import tempfile
+import shutil
 
 from database import get_db, Track
-from tasks import process_audio_task, partial_rescan_task
+from tasks import process_audio_task, partial_rescan_task, import_library_task
 from huey_config import huey
 from ai_pipeline import get_audio_metadata, url_to_base64
 from app_status import read_status
 from app_logger import get_logger
 from library_io import export_library, import_library, IMPORT_LOG_PATH
+from library_streaming import stream_library_export
 
 # --- ВРЕЗКА РЕДАКТОРА ---
 from editor_backend import router as editor_router
@@ -985,15 +988,15 @@ async def partial_rescan_endpoint(
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# POST /api/library/export  — экспорт библиотеки в ZIP
+# POST /api/library/export  — экспорт библиотеки в ZIP (потоковый)
 # ──────────────────────────────────────────────────────────────────────────────
 @app.post("/api/library/export")
 async def export_library_endpoint():
-    """Экспорт всей библиотеки в ZIP-архив."""
+    """Потоковый экспорт всей библиотеки в ZIP-архив."""
     try:
-        zip_bytes = export_library(LIBRARY_DIR)
-        return Response(
-            content=zip_bytes,
+        # Создаём StreamingResponse с генератором
+        return StreamingResponse(
+            stream_library_export(LIBRARY_DIR, chunk_size=64 * 1024),
             media_type="application/zip",
             headers={
                 "Content-Disposition": f'attachment; filename="karaoke_library_{datetime.now().strftime("%Y%m%d_%H%M")}.zip"',
@@ -1005,21 +1008,49 @@ async def export_library_endpoint():
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# POST /api/library/import  — импорт библиотеки из ZIP
+# GET /api/library/export/status/{task_id}  — статус задачи экспорта
+# ──────────────────────────────────────────────────────────────────────────────
+@app.get("/api/library/export/status")
+async def get_export_status():
+    """Получить статус текущего экспорта из app_status."""
+    return read_status()
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# POST /api/library/import  — импорт библиотеки из ZIP (фоновая задача)
 # ──────────────────────────────────────────────────────────────────────────────
 @app.post("/api/library/import")
 async def import_library_endpoint(
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
 ):
-    """Импорт библиотеки из ZIP-архива."""
+    """Импорт библиотеки из ZIP-архива через фоновую задачу Huey."""
     if not file.filename or not file.filename.endswith('.zip'):
         raise HTTPException(status_code=400, detail="Требуется ZIP-файл")
 
     try:
-        zip_bytes = await file.read()
-        result = import_library(zip_bytes, LIBRARY_DIR, db, Track)
-        return result
+        # Сохраняем ZIP во временный файл для фоновой обработки
+        tmp_fd, tmp_zip_path = tempfile.mkstemp(suffix='.zip', prefix='karaoke_import_')
+        os.close(tmp_fd)
+        
+        async with aiofiles.open(tmp_zip_path, "wb") as out_file:
+            while chunk := await file.read(1024 * 1024):
+                await out_file.write(chunk)
+        
+        log.info("ZIP сохранён во временный файл: %s", tmp_zip_path)
+        
+        # Запускаем фоновую задачу
+        task = import_library_task(tmp_zip_path, LIBRARY_DIR)
+        task_id = task.id
+        
+        log.info("Задача импорта запущена: task_id=%s", task_id)
+        
+        return {
+            "status": "queued",
+            "task_id": str(task_id),
+            "message": "Импорт запущен в фоновом режиме"
+        }
+    
     except RuntimeError as e:
         raise HTTPException(status_code=409, detail=str(e))
     except Exception as e:
@@ -1028,7 +1059,7 @@ async def import_library_endpoint(
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# POST /api/library/import-from-path  — импорт по пути к файлу (без передачи bytes через JS)
+# POST /api/library/import-from-path  — импорт по пути к файлу (фоновая задача)
 # ──────────────────────────────────────────────────────────────────────────────
 class ImportFromPathRequest(BaseModel):
     path: str
@@ -1039,22 +1070,66 @@ async def import_library_from_path(
     req: ImportFromPathRequest,
     db: Session = Depends(get_db),
 ):
-    """Импорт библиотеки из ZIP по пути к файлу. Python сам читает файл."""
+    """Импорт библиотеки из ZIP по пути к файлу через фоновую задачу Huey."""
     if not os.path.exists(req.path):
         raise HTTPException(status_code=404, detail="Файл не найден")
     if not req.path.endswith('.zip'):
         raise HTTPException(status_code=400, detail="Требуется ZIP-файл")
 
     try:
-        with open(req.path, 'rb') as f:
-            zip_bytes = f.read()
-        result = import_library(zip_bytes, LIBRARY_DIR, db, Track)
-        return result
+        # Копируем файл во временную директорию чтобы избежать блокировок
+        tmp_fd, tmp_zip_path = tempfile.mkstemp(suffix='.zip', prefix='karaoke_import_')
+        os.close(tmp_fd)
+        
+        shutil.copy2(req.path, tmp_zip_path)
+        log.info("ZIP скопирован во временный файл: %s", tmp_zip_path)
+        
+        # Запускаем фоновую задачу
+        task = import_library_task(tmp_zip_path, LIBRARY_DIR)
+        task_id = task.id
+        
+        log.info("Задача импорта запущена: task_id=%s", task_id)
+        
+        return {
+            "status": "queued",
+            "task_id": str(task_id),
+            "message": "Импорт запущен в фоновом режиме"
+        }
+    
     except RuntimeError as e:
         raise HTTPException(status_code=409, detail=str(e))
     except Exception as e:
         log.error("Ошибка импорта: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# GET /api/library/import/status/{task_id}  — статус задачи импорта
+# ──────────────────────────────────────────────────────────────────────────────
+@app.get("/api/library/import/status")
+async def get_import_status():
+    """Получить статус текущего импорта и результат если готов."""
+    status = read_status()
+    
+    # Проверяем кэш результатов импорта
+    from app_status import _ensure_dir
+    cache_file = os.path.join(
+        os.environ.get("FK_CACHE_DIR") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "cache"),
+        "import_result.json"
+    )
+    
+    result = None
+    if os.path.exists(cache_file):
+        try:
+            with open(cache_file, 'r', encoding='utf-8') as f:
+                result = json.load(f)
+        except:
+            pass
+    
+    return {
+        **status,
+        "result": result
+    }
 
 
 # ──────────────────────────────────────────────────────────────────────────────

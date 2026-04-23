@@ -19,6 +19,10 @@ import torch
 import json
 import librosa
 import numpy as np
+import zipfile
+import tempfile
+import shutil
+from datetime import datetime
 
 log = get_logger("worker")
 
@@ -269,6 +273,356 @@ def _process_track(track_id: str):
             torch.cuda.ipc_collect()
 
         log.info("GPU память сброшена.")
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# TASK: Импорт библиотеки (фоновая задача с потоковой обработкой)
+# ──────────────────────────────────────────────────────────────────────────────
+@huey.task()
+def import_library_task(zip_path: str, library_dir: str):
+    """
+    Фоновая задача для импорта библиотеки из ZIP файла.
+    
+    Обрабатывает файлы пакетно, не загружая весь архив в память.
+    Поддерживает прерывание и прогресс через app_status.
+    
+    Args:
+        zip_path: Путь к ZIP файлу
+        library_dir: Целевая директория библиотеки
+    """
+    from library_streaming import normalize_string, _import_log
+    from database import Track
+    
+    db = SessionLocal()
+    tmp_dir = None
+    
+    # Глобальный результат
+    result = {
+        "added": 0,
+        "skipped": 0,
+        "errors": [],
+        "artists": [],
+        "tracks": [],
+    }
+    
+    try:
+        log.info("=" * 60)
+        log.info("ИМПОРТ БИБЛИОТЕКИ (фоновая задача)")
+        log.info("ZIP: %s", zip_path)
+        log.info("Цель: %s", library_dir)
+        log.info("=" * 60)
+        
+        # Очистка лога
+        try:
+            os.makedirs(os.path.dirname(_import_log.__globals__['IMPORT_LOG_PATH']), exist_ok=True)
+            with open(_import_log.__globals__['IMPORT_LOG_PATH'], 'w', encoding='utf-8') as f:
+                f.write(f"=== Импорт библиотеки {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ===\n")
+        except Exception:
+            pass
+        
+        _import_log(f"Распаковка ZIP: {zip_path}")
+        
+        # 1. Распаковка во временную директорию
+        tmp_dir = tempfile.mkdtemp(prefix="karaoke_import_")
+        log.info("Временная директория: %s", tmp_dir)
+        
+        with zipfile.ZipFile(zip_path, 'r') as zf:
+            zf.extractall(tmp_dir)
+        
+        # 2. Группировка файлов по base_name
+        file_groups: Dict[str, dict] = {}
+        all_files = os.listdir(tmp_dir)
+        
+        for fname in all_files:
+            fpath = os.path.join(tmp_dir, fname)
+            if not os.path.isfile(fpath):
+                continue
+            
+            base = None
+            ftype = None
+            
+            if fname.endswith("_(Vocals).mp3"):
+                base = fname.replace("_(Vocals).mp3", "")
+                ftype = "vocals"
+            elif fname.endswith("_(Instrumental).mp3"):
+                base = fname.replace("_(Instrumental).mp3", "")
+                ftype = "inst"
+            elif fname.endswith("_(Genius Lyrics).txt"):
+                base = fname.replace("_(Genius Lyrics).txt", "")
+                ftype = "lyrics"
+            elif fname.endswith("_(Karaoke Lyrics).json"):
+                base = fname.replace("_(Karaoke Lyrics).json", "")
+                ftype = "json"
+            elif fname.endswith("_library.json"):
+                base = fname.replace("_library.json", "")
+                ftype = "meta"
+            else:
+                continue  # Пропускаем неизвестные файлы
+            
+            if base not in file_groups:
+                file_groups[base] = {}
+            file_groups[base][ftype] = fpath
+        
+        log.info("Найдено %d групп файлов", len(file_groups))
+        _import_log(f"Найдено {len(file_groups)} потенциальных треков")
+        
+        # 3. Загрузка существующих треков из БД для дедупликации
+        # Используем итеративный подход для больших БД
+        existing_keys = set()
+        
+        # Загружаем пакеты по 1000 записей
+        offset = 0
+        batch_size = 1000
+        
+        while True:
+            batch = db.query(Track).offset(offset).limit(batch_size).all()
+            if not batch:
+                break
+            
+            for t in batch:
+                if t.artist and t.title:
+                    key = f"{normalize_string(t.artist)}|||{normalize_string(t.title)}"
+                    existing_keys.add(key)
+                base_from_filename = os.path.splitext(t.filename)[0] if t.filename else ""
+                if base_from_filename:
+                    existing_keys.add(f"FILENAME|||{base_from_filename.lower()}")
+            
+            offset += batch_size
+            log.debug("Загружено %d записей для дедупликации", offset)
+        
+        log.info("Существующих треков: %d", len(existing_keys))
+        _import_log(f"Существующих треков в БД: {len(existing_keys)}")
+        
+        # 4. Обработка файлов пакетными батчами
+        sorted_groups = sorted(file_groups.items())
+        total = len(sorted_groups)
+        batch_size_import = 50  # Треков на один коммит
+        
+        current_batch = {}
+        batch_count = 0
+        
+        for idx, (base_name, files) in enumerate(sorted_groups, 1):
+            current_batch[base_name] = files
+            
+            # Обновляем статус
+            progress = (idx / total) * 100 if total > 0 else 0
+            set_status(f"📦 Импорт: {base_name} ({idx}/{total})", progress)
+            _import_log(f"[{idx}/{total}] Обработка: {base_name}")
+            
+            # Когда набрали батч — обрабатываем
+            if len(current_batch) >= batch_size_import or idx == total:
+                batch_count += 1
+                log.info("Обработка батча %d (%d треков)", batch_count, len(current_batch))
+                
+                # Обработка батча
+                batch_result = _process_import_batch(
+                    current_batch, library_dir, db, Track, existing_keys, tmp_dir
+                )
+                
+                result["added"] += batch_result["added"]
+                result["skipped"] += batch_result["skipped"]
+                result["errors"].extend(batch_result["errors"])
+                
+                # Собираем артистов и треки
+                for base, files in current_batch.items():
+                    if "meta" in files:
+                        try:
+                            with open(files["meta"], 'r', encoding='utf-8') as f:
+                                meta = json.load(f)
+                            artist = meta.get("artist", "") or ""
+                            title = meta.get("title", "") or ""
+                        except:
+                            artist, title = "", ""
+                    else:
+                        artist, title = base, ""
+                    
+                    display_name = f"{artist} — {title}" if artist and title else base
+                    if artist and artist not in result["artists"]:
+                        result["artists"].append(artist)
+                    if display_name not in result["tracks"]:
+                        result["tracks"].append(display_name)
+                
+                # Коммит батча
+                db.commit()
+                log.info("Батч %d завершён: добавлено=%d, пропущено=%d", 
+                        batch_count, batch_result["added"], batch_result["skipped"])
+                
+                # Очищаем текущий батч
+                current_batch = {}
+        
+        log.info("Импорт завершён: добавлено=%d, пропущено=%d, ошибки=%d", 
+                result["added"], result["skipped"], len(result["errors"]))
+        _import_log(f"\n=== ИТОГО: добавлено={result['added']}, пропущено={result['skipped']}, ошибки={len(result['errors'])} ===")
+        
+        # Сохраняем результат в кэш для получения через API
+        from app_status import _ensure_dir
+        import json as json_mod
+        _ensure_dir()
+        cache_file = os.path.join(
+            os.environ.get("FK_CACHE_DIR") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "cache"),
+            "import_result.json"
+        )
+        with open(cache_file, 'w', encoding='utf-8') as f:
+            json_mod.dump(result, f, ensure_ascii=False)
+        
+    except Exception as e:
+        db.rollback()
+        log.error("Ошибка импорта: %s", e, exc_info=True)
+        _import_log(f"❌ КРИТИЧЕСКАЯ ОШИБКА: {e}")
+        result["errors"].append(f"Критическая ошибка: {e}")
+        
+        # Сохраняем ошибку в кэш
+        from app_status import _ensure_dir
+        import json as json_mod
+        _ensure_dir()
+        cache_file = os.path.join(
+            os.environ.get("FK_CACHE_DIR") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "cache"),
+            "import_result.json"
+        )
+        with open(cache_file, 'w', encoding='utf-8') as f:
+            json_mod.dump(result, f, ensure_ascii=False)
+    
+    finally:
+        # Очистка временной директории
+        if tmp_dir and os.path.exists(tmp_dir):
+            try:
+                shutil.rmtree(tmp_dir)
+                log.debug("Временная директория удалена: %s", tmp_dir)
+            except Exception:
+                pass
+        
+        # Удаляем ZIP после обработки
+        if os.path.exists(zip_path):
+            try:
+                os.remove(zip_path)
+                log.debug("ZIP файл удалён: %s", zip_path)
+            except Exception:
+                pass
+        
+        db.close()
+        clear_status()
+        
+        log.info("Импорт библиотеки завершён")
+
+
+def _process_import_batch(
+    batch_files: dict,
+    library_dir: str,
+    db_session,
+    Track_model,
+    existing_keys: set,
+    tmp_dir: str,
+) -> dict:
+    """
+    Внутренняя функция для обработки батча импорта.
+    Дублирует логику из library_streaming для автономности задачи.
+    """
+    from library_streaming import normalize_string, _import_log
+    
+    result = {"added": 0, "skipped": 0, "errors": []}
+    
+    for base_name, files in batch_files.items():
+        has_vocals = "vocals" in files
+        has_inst = "inst" in files
+        
+        # Обязательно нужны ОБЕ аудио-дорожки
+        if not has_vocals or not has_inst:
+            reason = "Нет Vocal и/или Instrumental"
+            log.warning("  Пропуск %s: %s", base_name, reason)
+            _import_log(f"  ⏭ Пропуск: {reason}")
+            result["skipped"] += 1
+            result["errors"].append(f"{base_name}: {reason}")
+            continue
+        
+        # Проверка дубликатов
+        artist = ""
+        title = ""
+        
+        # Пытаемся прочитать artist/title из _library.json
+        if "meta" in files:
+            try:
+                with open(files["meta"], 'r', encoding='utf-8') as f:
+                    meta = json.load(f)
+                artist = meta.get("artist", "") or ""
+                title = meta.get("title", "") or ""
+            except Exception as e:
+                log.warning("  Не удалось прочитать meta для %s: %s", base_name, e)
+        
+        # Если нет artist/title — используем base_name
+        if not artist or not title:
+            artist = base_name
+            title = ""
+        
+        # Формируем ключ для проверки дубликата
+        norm_artist = normalize_string(artist)
+        norm_title = normalize_string(title)
+        
+        is_duplicate = False
+        
+        if norm_artist and norm_title:
+            key = f"{norm_artist}|||{norm_title}"
+            if key in existing_keys:
+                is_duplicate = True
+                log.info("  Дубликат: %s — %s", artist, title)
+                _import_log(f"  ⏭ Дубликат: {artist} — {title}")
+        
+        # Также проверяем по filename
+        if not is_duplicate:
+            fname_key = f"FILENAME|||{base_name.lower()}"
+            if fname_key in existing_keys:
+                is_duplicate = True
+                log.info("  Дубликат по filename: %s", base_name)
+                _import_log(f"  ⏭ Дубликат по filename: {base_name}")
+        
+        if is_duplicate:
+            result["skipped"] += 1
+            continue
+        
+        # Копирование файлов в library/
+        log.info("  Добавление: %s (artist=%s, title=%s)", base_name, artist, title)
+        _import_log(f"  ✅ Добавление: {artist} — {title}")
+        
+        files_copied = 0
+        for ftype, src_path in files.items():
+            dest_path = os.path.join(library_dir, os.path.basename(src_path))
+            try:
+                shutil.copy2(src_path, dest_path)
+                files_copied += 1
+            except Exception as e:
+                log.error("  Ошибка копирования %s: %s", src_path, e)
+                _import_log(f"  ❌ Ошибка копирования: {e}")
+                result["errors"].append(f"{base_name}/{os.path.basename(src_path)}: {e}")
+        
+        if files_copied == 0:
+            result["errors"].append(f"{base_name}: не скопировано ни одного файла")
+            continue
+        
+        # Добавление записи в БД
+        first_audio = files.get("vocals") or files.get("inst")
+        orig_name = os.path.basename(first_audio).replace("_(Vocals).mp3", ".mp3").replace("_(Instrumental).mp3", ".mp3") if first_audio else f"{base_name}.mp3"
+        
+        new_track = Track_model(
+            filename=f"{base_name}.mp3",
+            original_name=orig_name,
+            original_path=None,
+            vocals_path=os.path.join(library_dir, f"{base_name}_(Vocals).mp3"),
+            instrumental_path=os.path.join(library_dir, f"{base_name}_(Instrumental).mp3"),
+            lyrics_path=os.path.join(library_dir, f"{base_name}_(Genius Lyrics).txt") if "lyrics" in files else None,
+            karaoke_json_path=os.path.join(library_dir, f"{base_name}_(Karaoke Lyrics).json") if "json" in files else None,
+            artist=artist or None,
+            title=title or None,
+            status="done",
+        )
+        db_session.add(new_track)
+        
+        # Добавляем в existing_keys чтобы не добавить дубли в рамках одного импорта
+        if norm_artist and norm_title:
+            existing_keys.add(f"{norm_artist}|||{norm_title}")
+        existing_keys.add(f"FILENAME|||{base_name.lower()}")
+        
+        result["added"] += 1
+    
+    return result
 
 
 # ──────────────────────────────────────────────────────────────────────────────
