@@ -42,24 +42,12 @@ elif sys.argv[0] == "":
     sys.argv[0] = "ai-karaoke-pro"
 
 # ── Настройки Chromium ────────────────────────────────────────────────────────
+# Примечание: QTWEBENGINE_CHROMIUM_FLAGS и QT_QPA_PLATFORM должны быть
+# установлены в run.sh ДО запуска Python. Здесь только проверка.
 _webview_cache = os.path.join(CACHE_DIR, "webview")
 os.makedirs(_webview_cache, exist_ok=True)
 
-# Если переменная не задана извне (из run.sh), используем значения по умолчанию
-if "QTWEBENGINE_CHROMIUM_FLAGS" not in os.environ:
-    os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = (
-        "--no-sandbox "
-        "--disable-gpu-sandbox "
-        "--disable-dev-shm-usage "
-        "--disable-http-cache "
-        f"--disk-cache-dir={_webview_cache} "
-        "--disk-cache-size=0"
-    )
-
-if sys.platform.startswith("linux"):
-    os.environ.setdefault("QT_QPA_PLATFORM", "xcb")
-
-# ── Chromium кэш внутри проекта ───────────────────────────────────────────────
+# Chromium кэш внутри проекта ──────────────────────────────────────────────────
 chromium_cache = os.path.join(CACHE_DIR, "chromium")
 os.makedirs(chromium_cache, exist_ok=True)
 os.environ.setdefault("QTWEBENGINE_DICTIONARIES_PATH", chromium_cache)

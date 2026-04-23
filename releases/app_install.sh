@@ -765,8 +765,14 @@ if [ -f "\$DIR/core/.env.cache" ]; then
 fi
 
 # QtWebEngine/Chromium: изоляция кэша и отключение проблемных функций
-export QTWEBENGINE_CHROMIUM_FLAGS="--no-sandbox --disable-gpu-sandbox --disable-dev-shm-usage --disable-http-cache --disk-cache-dir=\$DIR/core/cache/chromium --disk-cache-size=0"
+# Должно быть ДО активации venv и ДО запуска Python
+_webview_cache="\$DIR/core/cache/webview"
+_chromium_cache="\$DIR/core/cache/chromium"
+mkdir -p "\$_webview_cache" "\$_chromium_cache"
+
+export QTWEBENGINE_CHROMIUM_FLAGS="--no-sandbox --disable-gpu-sandbox --disable-dev-shm-usage --disable-http-cache --disk-cache-dir=\$_chromium_cache --disk-cache-size=0 --disable-gl-drawing-for-tests"
 export QT_QPA_PLATFORM=xcb
+export QTWEBENGINE_DICTIONARIES_PATH="\$_chromium_cache"
 
 exec "\$DIR/core/run.sh" "\$@"
 RUNSCRIPT

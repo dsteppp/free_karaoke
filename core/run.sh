@@ -37,9 +37,15 @@ fi
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 2.5. QtWebEngine/Chromium: принудительная настройка для стабильности UI
+# ВАЖНО: Должно быть ДО активации venv и ДО запуска Python
 # ─────────────────────────────────────────────────────────────────────────────
-export QTWEBENGINE_CHROMIUM_FLAGS="--no-sandbox --disable-gpu-sandbox --disable-dev-shm-usage --disable-http-cache --disk-cache-dir=$DIR/cache/chromium --disk-cache-size=0"
+_webview_cache="$DIR/cache/webview"
+_chromium_cache="$DIR/cache/chromium"
+mkdir -p "$_webview_cache" "$_chromium_cache"
+
+export QTWEBENGINE_CHROMIUM_FLAGS="--no-sandbox --disable-gpu-sandbox --disable-dev-shm-usage --disable-http-cache --disk-cache-dir=$_chromium_cache --disk-cache-size=0 --disable-gl-drawing-for-tests"
 export QT_QPA_PLATFORM=xcb
+export QTWEBENGINE_DICTIONARIES_PATH="$_chromium_cache"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 2.6. PyTorch ROCm: маппим gfx1102 (RX 7600 XT) → gfx1100 для TensileLibrary
