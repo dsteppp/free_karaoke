@@ -17,6 +17,7 @@ core/__pycache__/
 core/*.pyc
 core/.venv/
 core/venv/
+core/reinstall.sh
 
 # ── Секреты пользователя ───────────────────────────────
 core/.env
