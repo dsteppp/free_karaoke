@@ -278,7 +278,7 @@ echo ""
 log_step "Установка системных зависимостей"
 echo ""
 
-# Список пакетов для разных дистрибутивов
+# Списки пакетов
 APT_PACKAGES="python3-venv python3-pip curl git ffmpeg libsndfile1 portaudio19-dev yad"
 DNF_PACKAGES="python3-devel python3-virtualenv curl git ffmpeg libsndfile portaudio-devel yad"
 PACMAN_PACKAGES="python-virtualenv python-pip curl git ffmpeg libsndfile portaudio yad"
@@ -293,8 +293,29 @@ install_dnf() {
     sudo dnf install -y $DNF_PACKAGES
 }
 
+# Умная установка для pacman: проверяем наличие пакетов перед установкой
 install_pacman() {
-    sudo pacman -Sy --noconfirm $PACMAN_PACKAGES
+    local packages_to_install=()
+    local all_packages=($PACMAN_PACKAGES)
+    
+    log_info "Проверка установленных пакетов..."
+    
+    for pkg in "${all_packages[@]}"; do
+        if ! pacman -Q "$pkg" &> /dev/null; then
+            log_info "Пакет $pkg не найден, будет установлен."
+            packages_to_install+=("$pkg")
+        else
+            log_info "Пакет $pkg уже установлен."
+        fi
+    done
+    
+    if [ ${#packages_to_install[@]} -eq 0 ]; then
+        log_success "Все системные пакеты уже установлены."
+        return 0
+    fi
+    
+    log_info "Установка отсутствующих пакетов: ${packages_to_install[*]}"
+    sudo pacman -Sy --noconfirm "${packages_to_install[@]}"
 }
 
 install_zypper() {
@@ -559,15 +580,15 @@ echo "$GPU_TYPE" > "$VENV_DIR/.gpu_arch"
 
 log_step "Установка Python-пакетов"
 echo ""
-log_info "Устанавливаем пакеты через uv (это может занять несколько минут)..."
-echo ""
+log_info "Проверяем наличие ключевых пакетов..."
 
-# Проверяем, установлены ли уже пакеты
+# Проверяем, установлены ли уже основные пакеты
 PACKAGES_INSTALLED=false
-if python -c "import torch; import torchaudio; import lyricsgenius" 2>/dev/null; then
+if python -c "import torch; import torchaudio; import lyricsgenius; import fastapi" 2>/dev/null; then
     PACKAGES_INSTALLED=true
-    log_info "Python-пакеты уже установлены. Пропускаем установку."
+    log_success "Python-пакеты уже установлены. Пропускаем установку."
 else
+    log_info "Устанавливаем пакеты через uv (это может занять несколько минут)..."
     if ! uv pip install --index-strategy unsafe-best-match -r "$INSTALL_DIR/core/requirements.txt"; then
         log_error "Ошибка установки Python-пакетов!"
         exit 1
@@ -612,7 +633,6 @@ download_model() {
             log_success "$name загружен (${final_mb} MB)"
         else
             log_warn "Файл $name слишком мал, возможна ошибка загрузки"
-            # Не удаляем файл, чтобы пользователь мог проверить
         fi
     else
         log_error "Ошибка загрузки $name"
@@ -717,81 +737,16 @@ log_success "Изоляция кэшей настроена"
 echo ""
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 13. Создание run.sh скрипта
+# 13. Создание run.sh скрипта (обертка)
 # ─────────────────────────────────────────────────────────────────────────────
 log_step "Создание скрипта запуска"
 echo ""
 
-cat > "$INSTALL_DIR/run.sh" << 'RUNSCRIPT'
+cat > "$INSTALL_DIR/run.sh" << RUNSCRIPT
 #!/bin/bash
-# Запуск Free Karaoke
-
-DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
-cd "$DIR"
-
-# Загружаем переменные окружения
-if [ -f "$DIR/core/.env.cache" ]; then
-    set -a
-    source "$DIR/core/.env.cache"
-    set +a
-fi
-
-if [ -f "$DIR/core/.env" ]; then
-    set -a
-    source "$DIR/core/.env"
-    set +a
-fi
-
-# Проверяем наличие токена Genius
-if [ -z "$GENIUS_ACCESS_TOKEN" ] || [[ "$GENIUS_ACCESS_TOKEN" == "ваш_токен_здесь" ]]; then
-    echo ""
-    echo "╔══════════════════════════════════════════════════════╗"
-    echo "║       Free Karaoke — Требуется токен Genius         ║"
-    echo "╚══════════════════════════════════════════════════════╝"
-    echo ""
-    echo "Для работы с текстами песен необходим токен Genius API."
-    echo ""
-    echo "Как получить токен:"
-    echo "  1. Откройте: https://genius.com/api-clients/new"
-    echo "  2. Войдите в аккаунт (или зарегистрируйтесь)"
-    echo "  3. Заполните форму и создайте клиент"
-    echo "  4. Скопируйте 'Client Access Token'"
-    echo ""
-    
-    while true; do
-        read -p "Вставьте токен и нажмите Enter (или нажмите Ctrl+C для выхода): " GENIUS_TOKEN
-        
-        if [ -n "$GENIUS_TOKEN" ] && [[ "$GENIUS_TOKEN" =~ ^[A-Za-z0-9_-]+$ ]]; then
-            # Сохраняем токен в .env
-            echo "GENIUS_ACCESS_TOKEN=$GENIUS_TOKEN" > "$DIR/core/.env"
-            export GENIUS_ACCESS_TOKEN="$GENIUS_TOKEN"
-            echo ""
-            echo "✅ Токен сохранён в $DIR/core/.env"
-            echo ""
-            break
-        else
-            echo "❌ Неверный формат токена. Попробуйте ещё раз."
-        fi
-    done
-fi
-
-# Активируем venv
-if [ -f "$DIR/.venv/bin/activate" ]; then
-    source "$DIR/.venv/bin/activate"
-else
-    echo "❌ Виртуальное окружение не найдено!"
-    echo "Запустите установку заново."
-    exit 1
-fi
-
-# PyTorch ROCm fix для AMD
-if [ "$HSA_OVERRIDE_GFX_VERSION" ]; then
-    export HSA_OVERRIDE_GFX_VERSION="$HSA_OVERRIDE_GFX_VERSION"
-fi
-
-# Запускаем приложение
-echo "🚀 Запуск Free Karaoke..."
-python "$DIR/core/main.py"
+# Обертка для запуска Free Karaoke
+DIR="\$( cd "\$( dirname "\${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
+exec "\$DIR/core/run.sh" "\$@"
 RUNSCRIPT
 
 chmod +x "$INSTALL_DIR/run.sh"
