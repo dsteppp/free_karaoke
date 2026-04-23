@@ -1,10 +1,9 @@
-```
 # Environment
 .env
 .env.local
 *.env.*
 
-# Logs and temporary files
+# Logs and temp files
 *.log
 *.tmp
 *.swp
@@ -15,8 +14,8 @@
 
 # Dependencies
 node_modules/
-venv/
 .venv/
+venv/
 __pycache__/
 .mypy_cache/
 .pytest_cache/
@@ -24,6 +23,10 @@ dist/
 build/
 target/
 .gradle/
+
+# OS generated files
+.DS_Store
+Thumbs.db
 
 # Compiled files
 *.pyc
@@ -35,10 +38,6 @@ target/
 *.a
 *.obj
 *.out
-
-# System files
-.DS_Store
-Thumbs.db
 
 # Coverage
 coverage/
@@ -68,4 +67,3 @@ htmlcov/
 *.tar.bz2
 *.tar.xz
 *.tar.zst
-```
