@@ -394,33 +394,46 @@ log_step "Загрузка файлов программы"
 echo ""
 
 CODE_INSTALLED=false
-if [ -d "$INSTALL_DIR/core" ] && [ -f "$INSTALL_DIR/core/main.py" ]; then
+# Проверяем наличие основных файлов программы
+if [ -d "$INSTALL_DIR/core" ] && \
+   [ -f "$INSTALL_DIR/core/main.py" ] && \
+   [ -f "$INSTALL_DIR/core/api.py" ]; then
     log_info "Файлы программы уже установлены. Пропускаем загрузку."
     CODE_INSTALLED=true
+else
+    # Если папка core есть, но файлов не хватает — пробуем доустановить
+    if [ -d "$INSTALL_DIR/core" ]; then
+        log_warn "Папка core существует, но файлы повреждены или отсутствуют. Доустанавливаем..."
+    fi
 fi
 
 if [ "$CODE_INSTALLED" = false ]; then
+    # Создаём папку core если её нет
+    mkdir -p "$INSTALL_DIR/core"
+    
     # Если скрипт лежит в репозитории — копируем локально
     SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     if [ -d "$SCRIPT_DIR/core" ] && [ -f "$SCRIPT_DIR/core/main.py" ]; then
         log_info "Копируем файлы из локального репозитория..."
-        cp -r "$SCRIPT_DIR/core/"* "$INSTALL_DIR/core/"
-        cp -r "$SCRIPT_DIR/shared/"* "$INSTALL_DIR/shared/" 2>/dev/null || true
+        cp -rn "$SCRIPT_DIR/core/"* "$INSTALL_DIR/core/" 2>/dev/null || true
+        cp -rn "$SCRIPT_DIR/shared/"* "$INSTALL_DIR/shared/" 2>/dev/null || true
         log_success "Файлы скопированы"
     else
         # Клонируем из публичного репозитория
         log_info "Клонируем репозиторий ($REPO_URL)..."
         if command -v git &> /dev/null; then
+            # Клонируем во временную папку
+            rm -rf "$INSTALL_DIR/tmp_clone"
             git clone --depth 1 --branch "$REPO_BRANCH" "$REPO_URL" "$INSTALL_DIR/tmp_clone"
-            cp -r "$INSTALL_DIR/tmp_clone/core/"* "$INSTALL_DIR/core/"
-            cp -r "$INSTALL_DIR/tmp_clone/shared/"* "$INSTALL_DIR/shared/" 2>/dev/null || true
+            
+            # Копируем только недостающие файлы (флаг -n для no-clobber)
+            cp -rn "$INSTALL_DIR/tmp_clone/core/"* "$INSTALL_DIR/core/" 2>/dev/null || true
+            cp -rn "$INSTALL_DIR/tmp_clone/shared/"* "$INSTALL_DIR/shared/" 2>/dev/null || true
+            
             rm -rf "$INSTALL_DIR/tmp_clone"
             log_success "Файлы загружены из репозитория"
         else
-            log_error "git не найден. Установите git или поместите файлы программы рядом со скриптом."
-            echo ""
-            read -p "Нажмите Enter для закрытия окна..."
-            exit 1
+            handle_error "git не найден. Установите git или поместите файлы программы рядом со скриптом." 6
         fi
     fi
 fi
@@ -510,13 +523,22 @@ echo ""
 
 VENV_INSTALLED=false
 if [ -f "$INSTALL_DIR/.venv/bin/activate" ]; then
-    log_info "Виртуальное окружение уже существует. Пропускаем создание."
-    VENV_INSTALLED=true
+    # Проверяем, что венв не битый
+    if "$INSTALL_DIR/.venv/bin/python" -c "import sys" &>/dev/null; then
+        log_info "Виртуальное окружение уже существует и работает. Пропускаем создание."
+        VENV_INSTALLED=true
+    else
+        log_warn "Виртуальное окружение повреждено. Пересоздаём..."
+        rm -rf "$INSTALL_DIR/.venv"
+    fi
 fi
 
 if [ "$VENV_INSTALLED" = false ]; then
     log_info "Создаём виртуальное окружение..."
     "$PYTHON_CMD" -m venv "$INSTALL_DIR/.venv"
+    if [ $? -ne 0 ]; then
+        handle_error "Не удалось создать виртуальное окружение" 4
+    fi
     log_success "Виртуальное окружение создано"
 fi
 
@@ -534,15 +556,26 @@ log_step "Установка Python-пакетов"
 echo ""
 
 PACKAGES_INSTALLED=false
-if [ -f "$INSTALL_DIR/.venv/lib/python*/site-packages/torch/__init__.py" ]; then
+# Проверяем наличие ключевых пакетов в виртуальном окружении
+if [ -f "$INSTALL_DIR/.venv/bin/python" ] && \
+   "$INSTALL_DIR/.venv/bin/python" -c "import torch; import audio_separator; import whisper" &>/dev/null; then
     log_info "Python-пакеты уже установлены. Пропускаем установку."
     PACKAGES_INSTALLED=true
 fi
 
 if [ "$PACKAGES_INSTALLED" = false ]; then
     log_info "Устанавливаем пакеты через uv (это может занять несколько минут)..."
+    
+    # Экспортируем переменные для работы с виртуальным окружением
+    export VIRTUAL_ENV="$INSTALL_DIR/.venv"
+    export PATH="$VIRTUAL_ENV/bin:$PATH"
+    
     cd "$INSTALL_DIR/core"
-    uv pip install --system -r requirements.txt
+    # Убираем --system, используем явный путь к Python из venv
+    if ! uv pip install -r requirements.txt --python "$VIRTUAL_ENV/bin/python"; then
+        handle_error "Не удалось установить Python-пакеты. Проверьте логи выше." 5
+    fi
+    
     log_success "Python-пакеты установлены"
 fi
 
