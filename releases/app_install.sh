@@ -2,13 +2,13 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # app_install.sh — Универсальный установщик AI-Karaoke Pro
 # Работает на любом Linux, определяет конфигурацию, создаёт portable-установку
-# Репозиторий: https://github.com/ai-karaoke-pro/ai-karaoke-pro
+# Репозиторий: https://github.com/dsteppp/free_karaoke.git
 # ─────────────────────────────────────────────────────────────────────────────
 
-set -e
+# НЕ используем set -e — обрабатываем ошибки вручную для показа пользователю
 
 # Публичный URL репозитория
-REPO_URL="https://github.com/ai-karaoke-pro/ai-karaoke-pro.git"
+REPO_URL="https://github.com/dsteppp/free_karaoke.git"
 REPO_BRANCH="main"
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -26,6 +26,31 @@ log_success() { echo -e "${GREEN}✅ $1${NC}"; }
 log_warn()    { echo -e "${YELLOW}⚠️  $1${NC}"; }
 log_error()   { echo -e "${RED}❌ $1${NC}"; }
 log_step()    { echo -e "${CYAN}📍 $1${NC}"; }
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Обработчик ошибок — не даём окну закрыться
+# ─────────────────────────────────────────────────────────────────────────────
+error_handler() {
+    local exit_code=$?
+    local line_number=$1
+    echo ""
+    log_error "═══════════════════════════════════════════════════════"
+    log_error "ОШИБКА! Скрипт не может продолжить работу."
+    log_error "Код ошибки: $exit_code"
+    log_error "Строка: $line_number"
+    log_error "═══════════════════════════════════════════════════════"
+    echo ""
+    log_error "Возможные причины:"
+    log_error "  • Нет подключения к интернету"
+    log_error "  • Недостаточно прав доступа"
+    log_error "  • Не установлены системные зависимости"
+    log_error "  • Неподдерживаемая конфигурация системы"
+    echo ""
+    read -p "Нажмите Enter, чтобы закрыть окно (или изучите ошибку выше)..."
+    exit $exit_code
+}
+
+trap 'error_handler $LINENO' ERR
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 0. Проверка: запущены ли в терминале
@@ -66,6 +91,8 @@ if [ ! -t 0 ]; then
         exit 0
     else
         log_error "Не удалось определить терминал. Запустите скрипт вручную из терминала."
+        echo ""
+        read -p "Нажмите Enter для закрытия окна..."
         exit 1
     fi
 fi
@@ -100,12 +127,16 @@ if command -v zenity &> /dev/null; then
     INSTALL_DIR=$(zenity --file-selection --directory --title="Выберите директорию установки" 2>/dev/null)
     if [ -z "$INSTALL_DIR" ]; then
         log_error "Директория не выбрана. Установка отменена."
+        echo ""
+        read -p "Нажмите Enter для закрытия окна..."
         exit 1
     fi
 elif command -v kdialog &> /dev/null; then
     INSTALL_DIR=$(kdialog --title "Выберите директорию установки" --getexistingdirectory ~ 2>/dev/null)
     if [ -z "$INSTALL_DIR" ]; then
         log_error "Директория не выбрана. Установка отменена."
+        echo ""
+        read -p "Нажмите Enter для закрытия окна..."
         exit 1
     fi
 else
@@ -217,6 +248,8 @@ if [ -n "$PYTHON_VERSION" ]; then
     log_success "Python: $PYTHON_VERSION ($PYTHON_CMD)"
 else
     log_error "Python 3 не найден! Установите Python 3.10-3.12"
+    echo ""
+    read -p "Нажмите Enter для закрытия окна..."
     exit 1
 fi
 
@@ -243,6 +276,8 @@ fi
 read -p "Продолжить установку? (y/n): " CONFIRM
 if [ "$CONFIRM" != "y" ] && [ "$CONFIRM" != "Y" ]; then
     log_error "Установка отменена пользователем"
+    echo ""
+    read -p "Нажмите Enter для закрытия окна..."
     exit 1
 fi
 
@@ -372,6 +407,8 @@ else
         log_success "Файлы загружены из репозитория"
     else
         log_error "git не найден. Установите git или поместите файлы программы рядом со скриптом."
+        echo ""
+        read -p "Нажмите Enter для закрытия окна..."
         exit 1
     fi
 fi
