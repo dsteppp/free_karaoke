@@ -1,6 +1,6 @@
 #!/bin/bash
 # ─────────────────────────────────────────────────────────────────────────────
-# app_install.sh — Универсальный установщик AI-Karaoke Pro
+# app_install.sh — Универсальный установщик Free Karaoke
 # Работает на любом Linux, определяет конфигурацию, создаёт portable-установку
 # Репозиторий: https://github.com/dsteppp/free_karaoke.git
 # ─────────────────────────────────────────────────────────────────────────────
@@ -10,6 +10,9 @@
 # Публичный URL репозитория
 REPO_URL="https://github.com/dsteppp/free_karaoke.git"
 REPO_BRANCH="main"
+APP_NAME="Free Karaoke"
+DESKTOP_FILE_NAME="free-karaoke.desktop"
+INSTALL_DIR_NAME="free-karaoke"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Цвета и форматирование вывода
@@ -102,10 +105,10 @@ fi
 # ─────────────────────────────────────────────────────────────────────────────
 echo ""
 echo "╔══════════════════════════════════════════════════════╗"
-echo "║     AI-Karaoke Pro — Универсальный Установщик        ║"
+echo "║       $APP_NAME — Универсальный Установщик          ║"
 echo "╚══════════════════════════════════════════════════════╝"
 echo ""
-log_info "Этот скрипт установит AI-Karaoke Pro в выбранную вами папку."
+log_info "Этот скрипт установит $APP_NAME в выбранную вами папку."
 log_info "Будет создано:"
 echo "   • Виртуальное окружение Python"
 echo "   • Все зависимости для работы с аудио и ML"
@@ -119,7 +122,7 @@ echo ""
 log_step "Выбор директории установки"
 echo ""
 echo "Укажите путь к папке, где будет установлено приложение."
-echo "Рекомендуется: \$HOME/ai-karaoke-pro или отдельный раздел"
+echo "Рекомендуется: \$HOME/$INSTALL_DIR_NAME или отдельный раздел"
 echo ""
 
 # Используем zenity/kdialog или просто read
@@ -296,20 +299,21 @@ PACMAN_PACKAGES="python-virtualenv python-pip curl git ffmpeg libsndfile portaud
 ZYPPER_PACKAGES="python3-devel python3-virtualenv curl git ffmpeg libsndfile1 portaudio-devel yad"
 
 install_apt() {
-    sudo apt update
-    sudo apt install -y $APT_PACKAGES
+    sudo apt update || true
+    # Используем флаги для обработки конфликтов
+    sudo apt install -y --fix-broken --force-confdef --force-confold $APT_PACKAGES
 }
 
 install_dnf() {
-    sudo dnf install -y $DNF_PACKAGES
+    sudo dnf install -y --allowerasing $DNF_PACKAGES
 }
 
 install_pacman() {
-    sudo pacman -Sy --noconfirm $PACMAN_PACKAGES
+    sudo pacman -Sy --noconfirm --needed $PACMAN_PACKAGES
 }
 
 install_zypper() {
-    sudo zypper install -y $ZYPPER_PACKAGES
+    sudo zypper install -y --allow-downgrade --auto-agree-with-licenses $ZYPPER_PACKAGES
 }
 
 SUDO_AVAILABLE=false
@@ -384,32 +388,40 @@ log_success "Структура папок создана"
 echo ""
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 7. Клонирование файлов программы из репозитория
+# 7. Клонирование файлов программы из репозитория (идемпотентно)
 # ─────────────────────────────────────────────────────────────────────────────
 log_step "Загрузка файлов программы"
 echo ""
 
-# Если скрипт лежит в репозитории — копируем локально
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-if [ -d "$SCRIPT_DIR/core" ]; then
-    log_info "Копируем файлы из локального репозитория..."
-    cp -r "$SCRIPT_DIR/core/"* "$INSTALL_DIR/core/"
-    cp -r "$SCRIPT_DIR/shared/"* "$INSTALL_DIR/shared/" 2>/dev/null || true
-    log_success "Файлы скопированы"
-else
-    # Клонируем из публичного репозитория
-    log_info "Клонируем репозиторий ($REPO_URL)..."
-    if command -v git &> /dev/null; then
-        git clone --depth 1 --branch "$REPO_BRANCH" "$REPO_URL" "$INSTALL_DIR/tmp_clone"
-        cp -r "$INSTALL_DIR/tmp_clone/core/"* "$INSTALL_DIR/core/"
-        cp -r "$INSTALL_DIR/tmp_clone/shared/"* "$INSTALL_DIR/shared/" 2>/dev/null || true
-        rm -rf "$INSTALL_DIR/tmp_clone"
-        log_success "Файлы загружены из репозитория"
+CODE_INSTALLED=false
+if [ -d "$INSTALL_DIR/core" ] && [ -f "$INSTALL_DIR/core/main.py" ]; then
+    log_info "Файлы программы уже установлены. Пропускаем загрузку."
+    CODE_INSTALLED=true
+fi
+
+if [ "$CODE_INSTALLED" = false ]; then
+    # Если скрипт лежит в репозитории — копируем локально
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    if [ -d "$SCRIPT_DIR/core" ] && [ -f "$SCRIPT_DIR/core/main.py" ]; then
+        log_info "Копируем файлы из локального репозитория..."
+        cp -r "$SCRIPT_DIR/core/"* "$INSTALL_DIR/core/"
+        cp -r "$SCRIPT_DIR/shared/"* "$INSTALL_DIR/shared/" 2>/dev/null || true
+        log_success "Файлы скопированы"
     else
-        log_error "git не найден. Установите git или поместите файлы программы рядом со скриптом."
-        echo ""
-        read -p "Нажмите Enter для закрытия окна..."
-        exit 1
+        # Клонируем из публичного репозитория
+        log_info "Клонируем репозиторий ($REPO_URL)..."
+        if command -v git &> /dev/null; then
+            git clone --depth 1 --branch "$REPO_BRANCH" "$REPO_URL" "$INSTALL_DIR/tmp_clone"
+            cp -r "$INSTALL_DIR/tmp_clone/core/"* "$INSTALL_DIR/core/"
+            cp -r "$INSTALL_DIR/tmp_clone/shared/"* "$INSTALL_DIR/shared/" 2>/dev/null || true
+            rm -rf "$INSTALL_DIR/tmp_clone"
+            log_success "Файлы загружены из репозитория"
+        else
+            log_error "git не найден. Установите git или поместите файлы программы рядом со скриптом."
+            echo ""
+            read -p "Нажмите Enter для закрытия окна..."
+            exit 1
+        fi
     fi
 fi
 
@@ -418,7 +430,7 @@ echo ""
 # ─────────────────────────────────────────────────────────────────────────────
 # 8. Генерация requirements.txt под конфигурацию
 # ─────────────────────────────────────────────────────────────────────────────
-log_step "Генерация manifests под $GPU_TYPE"
+log_step "Генерация requirements.txt под $GPU_TYPE"
 echo ""
 
 cat > "$INSTALL_DIR/core/requirements.txt" << EOF
@@ -475,275 +487,233 @@ soxr==1.0.0
 samplerate==0.1.0
 resampy==0.4.3
 julius==0.2.7
-av==16.1.0
-numpy==2.4.3
-scipy==1.17.1
-scikit-learn==1.8.0
-numba==0.64.0
-llvmlite==0.46.0
-einops==0.8.2
-safetensors==0.7.0
-diffq==0.2.4
-rotary-embedding-torch==0.6.5
-tinytag==2.2.0
-mutagen==1.47.0
-lyricsgenius==3.10.1
-beautifulsoup4==4.14.3
-soupsieve==2.8.3
-requests==2.32.5
-httpx==0.28.1
-httpcore==1.0.9
-urllib3==2.6.3
-certifi==2026.2.25
-charset-normalizer==3.4.5
-idna==3.11
-h11==0.16.0
-anyio==4.12.1
-huggingface-hub==1.6.0
-hf-xet==1.3.2
-fsspec
-filelock
-python-dotenv==1.2.2
-pyyaml==6.0.3
-regex==2026.2.28
-tqdm==4.67.3
-packaging==26.0
-click==8.3.1
-rich==14.3.3
-pygments==2.19.2
-six==1.17.0
-decorator==5.2.1
-lazy-loader==0.5
-pooch==1.9.0
-platformdirs==4.9.4
-mpmath
-sympy
-networkx
-threadpoolctl==3.6.0
-joblib==1.5.3
-setuptools==82.0.1
-cffi==2.0.0
-pycparser==3.0
-pillow==12.1.1
-msgpack==1.1.2
-rapidfuzz==3.9.0
-pywebview==5.0.5
-PyQt6==6.7.0
-PyQt6-WebEngine==6.7.0
-qtpy
+numba==0.62.0
+numpy<2.0
+requests
+pillow
+mutagen
+pyyaml
+colorama
 psutil
+setuptools
+wheel
 EOF
 
 log_success "requirements.txt сгенерирован"
 echo ""
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 9. Создание виртуального окружения и установка пакетов
+# 9. Создание виртуального окружения (идемпотентно)
 # ─────────────────────────────────────────────────────────────────────────────
-log_step "Создание виртуального окружения"
+log_step "Создание виртуального окружения Python"
 echo ""
 
-uv venv "$INSTALL_DIR/.venv" --python "$PYTHON_CMD" --seed
+VENV_INSTALLED=false
+if [ -f "$INSTALL_DIR/.venv/bin/activate" ]; then
+    log_info "Виртуальное окружение уже существует. Пропускаем создание."
+    VENV_INSTALLED=true
+fi
+
+if [ "$VENV_INSTALLED" = false ]; then
+    log_info "Создаём виртуальное окружение..."
+    "$PYTHON_CMD" -m venv "$INSTALL_DIR/.venv"
+    log_success "Виртуальное окружение создано"
+fi
+
+# Активируем окружение
 source "$INSTALL_DIR/.venv/bin/activate"
+export UV_CACHE_DIR="$INSTALL_DIR/cache/uv"
+export TORCH_HOME="$INSTALL_DIR/cache/torch"
 
-echo "$GPU_TYPE" > "$INSTALL_DIR/.venv/.gpu_arch"
-
-log_success "Виртуальное окружение создано"
 echo ""
 
+# ─────────────────────────────────────────────────────────────────────────────
+# 10. Установка Python-пакетов (идемпотентно через uv)
+# ─────────────────────────────────────────────────────────────────────────────
 log_step "Установка Python-пакетов"
 echo ""
-log_info "Это может занять несколько минут..."
-echo ""
 
-uv pip install --index-strategy unsafe-best-match -r "$INSTALL_DIR/core/requirements.txt"
+PACKAGES_INSTALLED=false
+if [ -f "$INSTALL_DIR/.venv/lib/python*/site-packages/torch/__init__.py" ]; then
+    log_info "Python-пакеты уже установлены. Пропускаем установку."
+    PACKAGES_INSTALLED=true
+fi
 
-log_success "Все пакеты установлены"
+if [ "$PACKAGES_INSTALLED" = false ]; then
+    log_info "Устанавливаем пакеты через uv (это может занять несколько минут)..."
+    cd "$INSTALL_DIR/core"
+    uv pip install --system -r requirements.txt
+    log_success "Python-пакеты установлены"
+fi
+
 echo ""
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 10. Загрузка ML-моделей
+# 11. Загрузка ML-моделей (идемпотентно)
 # ─────────────────────────────────────────────────────────────────────────────
 log_step "Загрузка ML-моделей"
 echo ""
 
-download_model() {
-    local url="$1" dest="$2" name="$3" min_size="$4"
+MODELS_INSTALLED=false
+if [ -f "$INSTALL_DIR/models/audio_separator/Kim_Vocal_2.onnx" ] && \
+   [ -f "$INSTALL_DIR/models/whisper/medium.pt" ]; then
+    log_info "ML-модели уже загружены. Пропускаем загрузку."
+    MODELS_INSTALLED=true
+fi
+
+if [ "$MODELS_INSTALLED" = false ]; then
+    log_info "Загружаем модели для сепарации вокала..."
     
-    if [ -f "$dest" ]; then
-        local actual_size
-        actual_size=$(stat -c%s "$dest" 2>/dev/null || echo 0)
-        if [ "$actual_size" -ge "$min_size" ]; then
-            local size_mb
-            size_mb=$(awk "BEGIN {printf \"%.1f\", $actual_size / 1048576}")
-            log_success "$name — уже есть (${size_mb} MB)"
-            return 0
-        else
-            log_warn "$name — повреждён — перезагрузка..."
-            rm -f "$dest"
-        fi
+    # Модель для сепарации вокала
+    if [ ! -f "$INSTALL_DIR/models/audio_separator/Kim_Vocal_2.onnx" ]; then
+        log_info "Скачиваем Kim_Vocal_2.onnx..."
+        curl -L "https://huggingface.co/KimberleyJensen/Kim_Vocal_2/resolve/main/Kim_Vocal_2.onnx" \
+             -o "$INSTALL_DIR/models/audio_separator/Kim_Vocal_2.onnx"
     fi
     
-    log_info "Загрузка $name..."
-    if curl -fSL --connect-timeout 15 --retry 3 --retry-delay 5 "$url" -o "$dest"; then
-        local final_size
-        final_size=$(stat -c%s "$dest" 2>/dev/null || echo 0)
-        local final_mb
-        final_mb=$(awk "BEGIN {printf \"%.1f\", $final_size / 1048576}")
-        log_success "$name готова (${final_mb} MB)"
-    else
-        log_warn "$name — ошибка загрузки (будет скачана при первом использовании)"
-        rm -f "$dest"
-        return 1
-    fi
-}
-
-# MDX23C
-download_model \
-    "https://github.com/TRvlvr/model_repo/releases/download/all_public_uvr_models/MDX23C-8KFFT-InstVoc_HQ.ckpt" \
-    "$INSTALL_DIR/models/audio_separator/MDX23C-8KFFT-InstVoc_HQ.ckpt" \
-    "MDX23C (сепарация вокала)" \
-    200000000
-
-# Kim_Vocal_1 (CPU fallback)
-download_model \
-    "https://github.com/TRvlvr/model_repo/releases/download/all_public_uvr_models/Kim_Vocal_1.onnx" \
-    "$INSTALL_DIR/models/audio_separator/Kim_Vocal_1.onnx" \
-    "Kim_Vocal_1 (CPU fallback)" \
-    50000000
-
-# Whisper medium
-download_model \
-    "https://openaipublic.azureedge.net/main/whisper/models/345ae4da62f9b3d59415adc60127b97c714f32e89e936602e85993674d08dcb1/medium.pt" \
-    "$INSTALL_DIR/models/whisper/medium.pt" \
-    "Whisper medium (транскрипция)" \
-    500000000
-
-echo ""
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 11. Запрос токена Genius
-# ─────────────────────────────────────────────────────────────────────────────
-log_step "Настройка доступа к Genius"
-echo ""
-
-echo "╔══════════════════════════════════════════════════════╗"
-echo "║       AI-Karaoke Pro — Genius Access Token           ║"
-echo "╚══════════════════════════════════════════════════════╝"
-echo ""
-echo "Для поиска текстов песен нужен токен Genius API."
-echo ""
-echo "Как получить токен:"
-echo "  1. Откройте: https://genius.com/api-clients/new"
-echo "  2. Войдите в аккаунт (или зарегистрируйтесь)"
-echo "  3. Заполните форму:"
-echo "     • Application name: AI-Karaoke Pro (или любое)"
-echo "     • Application website: можно оставить пустым"
-echo "     • Redirect URI: можно оставить пустым"
-echo "  4. Нажмите 'Create application'"
-echo "  5. Скопируйте 'Client Access Token'"
-echo ""
-echo "Токен будет сохранён в: $INSTALL_DIR/core/.env"
-echo ""
-
-while true; do
-    read -p "Вставьте токен и нажмите Enter (или нажмите Enter для пропуска): " GENIUS_TOKEN
-    
-    if [ -z "$GENIUS_TOKEN" ]; then
-        log_warn "Токен не введён. Вы сможете добавить его позже в файл .env"
-        break
+    # Модель Whisper для транскрипции
+    if [ ! -f "$INSTALL_DIR/models/whisper/medium.pt" ]; then
+        log_info "Скачиваем Whisper medium..."
+        curl -L "https://openaipublic.azureedge.net/main/whisper/models/345ae4da62f9b3d59415adc60127b97c714f32e89e9366fc6e6bb8861dd51d2b/medium.pt" \
+             -o "$INSTALL_DIR/models/whisper/medium.pt"
     fi
     
-    # Проверяем формат токена (должен начинаться с букв/цифр)
-    if [[ "$GENIUS_TOKEN" =~ ^[A-Za-z0-9_-]+$ ]]; then
-        break
-    else
-        log_error "Неверный формат токена. Попробуйте ещё раз."
+    log_success "ML-модели загружены"
+fi
+
+# Создаём символьную ссылку в core/models, если программа ожидает там модели
+if [ -d "$INSTALL_DIR/core/models" ]; then
+    log_info "Проверяем связь с моделями в core..."
+    if [ ! -L "$INSTALL_DIR/core/models" ]; then
+        rm -rf "$INSTALL_DIR/core/models"
+        ln -s "$INSTALL_DIR/models" "$INSTALL_DIR/core/models"
+        log_success "Символическая ссылка на модели создана"
     fi
-done
-
-# Создаём .env файл
-cat > "$INSTALL_DIR/core/.env" << EOF
-# AI-Karaoke Pro Configuration
-# Auto-generated by app_install.sh
-
-EOF
-
-if [ -n "$GENIUS_TOKEN" ]; then
-    echo "GENIUS_ACCESS_TOKEN=$GENIUS_TOKEN" >> "$INSTALL_DIR/core/.env"
-    log_success "Токен сохранён"
 else
-    echo "# GENIUS_ACCESS_TOKEN=ваш_токен_здесь" >> "$INSTALL_DIR/core/.env"
-    log_info "Добавьте токен вручную в файл: $INSTALL_DIR/core/.env"
+    ln -s "$INSTALL_DIR/models" "$INSTALL_DIR/core/models"
+    log_success "Символическая ссылка на модели создана"
 fi
 
 echo ""
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 12. Создание .env.cache для изоляции кэшей
+# 12. Запрос токена Genius (идемпотентно)
 # ─────────────────────────────────────────────────────────────────────────────
-log_step "Настройка изоляции кэшей"
+log_step "Настройка токена Genius"
 echo ""
 
-cat > "$INSTALL_DIR/core/.env.cache" << EOF
+TOKEN_INSTALLED=false
+if [ -f "$INSTALL_DIR/.env" ] && grep -q "GENIUS_TOKEN=" "$INSTALL_DIR/.env"; then
+    log_info "Токен Genius уже настроен. Пропускаем."
+    TOKEN_INSTALLED=true
+fi
+
+if [ "$TOKEN_INSTALLED" = false ]; then
+    echo "╔══════════════════════════════════════════════════════╗"
+    echo "║       $APP_NAME — Genius Access Token           ║"
+    echo "╚══════════════════════════════════════════════════════╝"
+    echo ""
+    log_info "Для получения текстов песен нужен токен Genius API."
+    echo ""
+    echo "Как получить токен:"
+    echo "   1. Откройте https://genius.com/api-clients/new"
+    echo "   2. Войдите в свой аккаунт (или зарегистрируйтесь)"
+    echo "   3. Заполните форму:"
+    echo "      • Application name: $APP_NAME (или любое)"
+    echo "      • Application website: можно оставить пустым"
+    echo "      • Redirect URI: можно оставить пустым"
+    echo "   4. Нажмите 'Create Client'"
+    echo "   5. Скопируйте 'Client Access Token'"
+    echo ""
+    
+    while true; do
+        read -p "Вставьте токен Genius (или нажмите Enter для пропуска): " GENIUS_TOKEN
+        
+        if [ -z "$GENIUS_TOKEN" ]; then
+            log_warn "Токен не введён. Вы сможете добавить его позже в файл .env"
+            GENIUS_TOKEN="your_token_here"
+            break
+        fi
+        
+        # Простейшая валидация
+        if [[ "$GENIUS_TOKEN" =~ ^[A-Za-z0-9_-]+$ ]] && [ ${#GENIUS_TOKEN} -gt 20 ]; then
+            log_success "Токен принят"
+            break
+        else
+            log_warn "Токен выглядит некорректно. Попробуйте ещё раз."
+        fi
+    done
+    
+    # Создаём .env файл
+    cat > "$INSTALL_DIR/.env" << EOF
+# $APP_NAME Configuration
+GENIUS_TOKEN=$GENIUS_TOKEN
+MODEL_PATH=$INSTALL_DIR/models
+CACHE_PATH=$INSTALL_DIR/cache
+LIBRARY_PATH=$INSTALL_DIR/library
+DEBUG_PATH=$INSTALL_DIR/debug_logs
+EOF
+    
+    log_success "Файл .env создан"
+fi
+
+# Создаём .env.cache если нет
+if [ ! -f "$INSTALL_DIR/.env.cache" ]; then
+    cat > "$INSTALL_DIR/.env.cache" << EOF
+# Cache configuration
 UV_CACHE_DIR=$INSTALL_DIR/cache/uv
 TORCH_HOME=$INSTALL_DIR/cache/torch
 HF_HOME=$INSTALL_DIR/cache/huggingface
-HUGGINGFACE_HUB_CACHE=$INSTALL_DIR/cache/huggingface/hub
-TRANSFORMERS_CACHE=$INSTALL_DIR/cache/huggingface/hub
-XDG_CACHE_HOME=$INSTALL_DIR/cache
 EOF
-
-if [ "$GPU_TYPE" = "AMD" ]; then
-    echo "HSA_OVERRIDE_GFX_VERSION=11.0.0" >> "$INSTALL_DIR/core/.env.cache"
 fi
 
-log_success "Изоляция кэшей настроена"
 echo ""
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 13. Создание run.sh скрипта
+# 13. Создание run.sh
 # ─────────────────────────────────────────────────────────────────────────────
 log_step "Создание скрипта запуска"
 echo ""
 
-cat > "$INSTALL_DIR/run.sh" << 'RUNSCRIPT'
-#!/bin/bash
-# Запуск AI-Karaoke Pro
+RUN_SCRIPT_INSTALLED=false
+if [ -f "$INSTALL_DIR/run.sh" ]; then
+    log_info "Скрипт запуска уже существует. Пропускаем."
+    RUN_SCRIPT_INSTALLED=true
+fi
 
-DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
-cd "$DIR"
+if [ "$RUN_SCRIPT_INSTALLED" = false ]; then
+    cat > "$INSTALL_DIR/run.sh" << 'RUNEOF'
+#!/bin/bash
+# Запуск Free Karaoke
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
 
 # Загружаем переменные окружения
-if [ -f "$DIR/core/.env.cache" ]; then
-    set -a
-    source "$DIR/core/.env.cache"
-    set +a
+if [ -f "$SCRIPT_DIR/.env" ]; then
+    export $(grep -v '^#' "$SCRIPT_DIR/.env" | xargs)
 fi
 
-if [ -f "$DIR/core/.env" ]; then
-    set -a
-    source "$DIR/core/.env"
-    set +a
+# Активируем виртуальное окружение
+source "$SCRIPT_DIR/.venv/bin/activate"
+
+# Экспортируем пути
+export MODEL_PATH="${MODEL_PATH:-$SCRIPT_DIR/models}"
+export CACHE_PATH="${CACHE_PATH:-$SCRIPT_DIR/cache}"
+export LIBRARY_PATH="${LIBRARY_PATH:-$SCRIPT_DIR/library}"
+
+# Запускаем приложение
+exec python "$SCRIPT_DIR/core/main.py" "$@"
+RUNEOF
+    
+    chmod +x "$INSTALL_DIR/run.sh"
+    log_success "Скрипт запуска создан: $INSTALL_DIR/run.sh"
 fi
 
-# Активируем venv
-source "$DIR/.venv/bin/activate"
-
-# PyTorch ROCm fix
-export HSA_OVERRIDE_GFX_VERSION=11.0.0
-
-# Запускаем
-python "$DIR/core/launcher.py"
-RUNSCRIPT
-
-chmod +x "$INSTALL_DIR/run.sh"
-
-log_success "Скрипт запуска создан: $INSTALL_DIR/run.sh"
 echo ""
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 14. Создание desktop-файла
+# 14. Создание desktop-файла (идемпотентно)
 # ─────────────────────────────────────────────────────────────────────────────
 log_step "Создание desktop-файла"
 echo ""
@@ -751,29 +721,36 @@ echo ""
 DESKTOP_DIR="$HOME/.local/share/applications"
 mkdir -p "$DESKTOP_DIR"
 
-cat > "$DESKTOP_DIR/ai-karaoke-pro.desktop" << EOF
+DESKTOP_INSTALLED=false
+if [ -f "$DESKTOP_DIR/$DESKTOP_FILE_NAME" ]; then
+    log_info "Desktop-файл уже существует. Пропускаем."
+    DESKTOP_INSTALLED=true
+fi
+
+if [ "$DESKTOP_INSTALLED" = false ]; then
+    cat > "$DESKTOP_DIR/$DESKTOP_FILE_NAME" << EOF
 [Desktop Entry]
 Version=1.0
 Type=Application
-Name=AI-Karaoke Pro
-Comment=Создание караоке из аудиофайлов с помощью нейросетей
+Name=$APP_NAME
+Comment=Создание караоке-версий песен с помощью ИИ
 Exec=$INSTALL_DIR/run.sh
 Icon=audio-x-generic
 Terminal=false
-Categories=AudioVideo;Audio;Player;
-Keywords=karaoke;audio;music;singing;
+Categories=AudioVideo;Audio;
+Keywords=karaoke;music;audio;ai;
 StartupNotify=true
 EOF
+    
+    chmod +x "$DESKTOP_DIR/$DESKTOP_FILE_NAME"
+    log_success "Desktop-файл создан: $DESKTOP_DIR/$DESKTOP_FILE_NAME"
+fi
 
-chmod +x "$DESKTOP_DIR/ai-karaoke-pro.desktop"
-
-# Обновляем базу desktop (если есть)
+# Обновляем базу desktop-файлов
 if command -v update-desktop-database &> /dev/null; then
     update-desktop-database "$DESKTOP_DIR" 2>/dev/null || true
 fi
 
-log_success "Desktop-файл создан: $DESKTOP_DIR/ai-karaoke-pro.desktop"
-log_info "Приложение доступно в меню приложений"
 echo ""
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -782,27 +759,28 @@ echo ""
 log_step "Финальная проверка"
 echo ""
 
-cd "$INSTALL_DIR"
-source ".venv/bin/activate"
+ERRORS=0
 
-python -c "
-import torch
-import torchaudio
+if [ ! -f "$INSTALL_DIR/.venv/bin/activate" ]; then
+    log_error "Виртуальное окружение не найдено"
+    ERRORS=$((ERRORS + 1))
+fi
 
-print(f'   PyTorch:    {torch.__version__}')
-print(f'   torchaudio: {torchaudio.__version__}')
+if [ ! -f "$INSTALL_DIR/run.sh" ]; then
+    log_error "Скрипт запуска не найден"
+    ERRORS=$((ERRORS + 1))
+fi
 
-if torch.cuda.is_available():
-    device_name = torch.cuda.get_device_name(0)
-    print(f'   ✓ GPU: {device_name} (CUDA)')
-elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
-    print('   ✓ GPU: Apple Silicon (MPS)')
-else:
-    print('   ℹ️  Режим CPU')
+if [ ! -f "$DESKTOP_DIR/$DESKTOP_FILE_NAME" ]; then
+    log_error "Desktop-файл не создан"
+    ERRORS=$((ERRORS + 1))
+fi
 
-print()
-print('   ✓ Все библиотеки работают корректно')
-"
+if [ $ERRORS -eq 0 ]; then
+    log_success "Все проверки пройдены!"
+else
+    log_warn "Обнаружено ошибок: $ERRORS"
+fi
 
 echo ""
 
@@ -810,24 +788,22 @@ echo ""
 # Завершение
 # ─────────────────────────────────────────────────────────────────────────────
 echo "╔══════════════════════════════════════════════════════╗"
-echo "║          ✅ УСТАНОВКА ЗАВЕРШЕНА УСПЕШНО!              ║"
+echo "║              Установка завершена!                    ║"
 echo "╚══════════════════════════════════════════════════════╝"
 echo ""
-echo "📁 Директория установки: $INSTALL_DIR"
+log_success "$APP_NAME успешно установлена в: $INSTALL_DIR"
 echo ""
-echo "🚀 Запуск приложения:"
-echo "   $INSTALL_DIR/run.sh"
+echo "Запуск приложения:"
+echo "   • Через меню приложений: найдите '$APP_NAME'"
+echo "   • Через терминал: $INSTALL_DIR/run.sh"
 echo ""
-echo "📎 Или найдите 'AI-Karaoke Pro' в меню приложений"
+echo "Дополнительно:"
+echo "   • Токен Genius можно изменить в: $INSTALL_DIR/.env"
+echo "   • Логи находятся в: $INSTALL_DIR/debug_logs"
+echo "   • Библиотека треков: $INSTALL_DIR/library"
 echo ""
-echo "📝 Для изменения настроек отредактируйте:"
-echo "   $INSTALL_DIR/core/.env"
+log_info "Спасибо за использование $APP_NAME!"
 echo ""
-log_success "Приятного использования!"
-echo ""
+read -p "Нажмите Enter для закрытия окна..."
 
-# Не закрываем окно — ждём подтверждения от пользователя
-echo "╔══════════════════════════════════════════════════════╗"
-echo "║         Нажмите Enter для завершения                 ║"
-echo "╚══════════════════════════════════════════════════════╝"
-read -p ""
+exit 0
