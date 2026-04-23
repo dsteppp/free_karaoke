@@ -1,16 +1,35 @@
+```bash
+# Environment
+.env
+.env.local
+.env.*
+
+# Logs and temp files
 *.log
 *.tmp
 *.swp
-*.env
-*.env.local
-.env.*
-.DS_Store
-Thumbs.db
-node_modules/
-.git/
+
+# Editors
 .vscode/
 .idea/
+
+# Dependencies
+node_modules/
+.venv/
+venv/
 __pycache__/
+.mypy_cache/
+.pytest_cache/
+dist/
+build/
+target/
+.gradle/
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Compiled files
 *.pyc
 *.class
 *.o
@@ -20,16 +39,13 @@ __pycache__/
 *.a
 *.obj
 *.out
-dist/
-build/
-target/
-.venv/
-venv/
-.mypy_cache/
-.pytest_cache/
+
+# Coverage
 coverage/
 htmlcov/
 .coverage
+
+# Compressed files
 *.zip
 *.gz
 *.tar
@@ -52,3 +68,4 @@ htmlcov/
 *.tar.bz2
 *.tar.xz
 *.tar.zst
+```

@@ -31,6 +31,24 @@ log_error()   { echo -e "${RED}❌ $1${NC}"; }
 log_step()    { echo -e "${CYAN}📍 $1${NC}"; }
 
 # ─────────────────────────────────────────────────────────────────────────────
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Обработка прерывания (Ctrl+C)
+# ─────────────────────────────────────────────────────────────────────────────
+cleanup() {
+    echo ""
+    log_warn "Установка прервана пользователем."
+    log_info "Очистка временных файлов..."
+    if [ -n "$INSTALL_DIR" ] && [ -d "$INSTALL_DIR/tmp_clone" ]; then
+        rm -rf "$INSTALL_DIR/tmp_clone"
+    fi
+    # Оставляем папку установки, чтобы пользователь мог продолжить позже
+    echo "Нажмите Enter для выхода..."
+    read -r
+    exit 130
+}
+
+trap cleanup SIGINT SIGTERM
 # Обработчик ошибок — не даём окну закрыться
 # ─────────────────────────────────────────────────────────────────────────────
 error_handler() {
@@ -418,7 +436,7 @@ if [ "$CODE_INSTALLED" = false ]; then
         if command -v git &> /dev/null; then
             # Клонируем во временную папку
             rm -rf "$INSTALL_DIR/tmp_clone"
-            git clone --depth 1 --branch "$REPO_BRANCH" "$REPO_URL" "$INSTALL_DIR/tmp_clone"
+            git clone --depth 1 --branch "$REPO_BRANCH" "$REPO_URL" "$INSTALL_DIR/tmp_clone" < /dev/null
             
             # Копируем только недостающие файлы (флаг -n для no-clobber)
             cp -rn "$INSTALL_DIR/tmp_clone/core/"* "$INSTALL_DIR/core/" 2>/dev/null || true
@@ -582,7 +600,7 @@ log_step "Загрузка ML-моделей"
 echo ""
 
 MODELS_INSTALLED=false
-if [ -f "$INSTALL_DIR/core/models/audio_separator/Kim_Vocal_2.onnx" ] and \
+if [ -f "$INSTALL_DIR/core/models/audio_separator/Kim_Vocal_1.onnx" ] && \
    [ -f "$INSTALL_DIR/core/models/whisper/medium.pt" ]; then
     log_info "ML-модели уже загружены. Пропускаем загрузку."
     MODELS_INSTALLED=true
@@ -595,34 +613,34 @@ if [ "$MODELS_INSTALLED" = false ]; then
     mkdir -p "$INSTALL_DIR/core/models/audio_separator"
     mkdir -p "$INSTALL_DIR/core/models/whisper"
 
-    # Модель для сепарации вокала (Kim_Vocal_2.onnx ~79MB)
-    if [ ! -f "$INSTALL_DIR/core/models/audio_separator/Kim_Vocal_2.onnx" ]; then
-        log_info "Скачиваем Kim_Vocal_2.onnx..."
-        if curl -L --progress-bar "https://huggingface.co/KimberleyJensen/Kim_Vocal_2/resolve/main/Kim_Vocal_2.onnx" \
-             -o "$INSTALL_DIR/core/models/audio_separator/Kim_Vocal_2.onnx"; then
+    # Модель для сепарации вокала (Kim_Vocal_1.onnx ~79MB)
+    if [ ! -f "$INSTALL_DIR/core/models/audio_separator/Kim_Vocal_1.onnx" ]; then
+        log_info "Скачиваем Kim_Vocal_1.onnx..."
+        if curl -fSL --connect-timeout 15 --progress-bar --retry 3 --retry-delay 5 "https://github.com/TRvlvr/model_repo/releases/download/all_public_uvr_models/Kim_Vocal_1.onnx" \
+             -o "$INSTALL_DIR/core/models/audio_separator/Kim_Vocal_1.onnx"; then
             # Проверяем размер файла (должен быть > 50MB)
-            MODEL_SIZE=$(stat -c%s "$INSTALL_DIR/core/models/audio_separator/Kim_Vocal_2.onnx" 2>/dev/null || echo 0)
-            if [ "$MODEL_SIZE" -gt 50000000 ]; then
-                log_success "Kim_Vocal_2.onnx загружена ($(awk "BEGIN {printf \"%.1f\", $MODEL_SIZE/1048576}") MB)"
+            MODEL_SIZE=$(stat -c%s "$INSTALL_DIR/core/models/audio_separator/Kim_Vocal_1.onnx" 2>/dev/null); MODEL_SIZE=${MODEL_SIZE:-0}
+            if (( MODEL_SIZE > 50000000 )); then
+                log_success "Kim_Vocal_1.onnx загружена ($(awk "BEGIN {printf \"%.1f\", $MODEL_SIZE/1048576}") MB)"
             else
-                log_warn "Файл Kim_Vocal_2.onnx слишком мал, возможна ошибка загрузки"
-                rm -f "$INSTALL_DIR/core/models/audio_separator/Kim_Vocal_2.onnx"
+                log_warn "Файл Kim_Vocal_1.onnx слишком мал, возможна ошибка загрузки"
+                rm -f "$INSTALL_DIR/core/models/audio_separator/Kim_Vocal_1.onnx"
             fi
         else
-            log_warn "Не удалось скачать Kim_Vocal_2.onnx (будет загружена при первом запуске)"
+            log_warn "Не удалось скачать Kim_Vocal_1.onnx (будет загружена при первом запуске)"
         fi
     else
-        log_info "Kim_Vocal_2.onnx уже существует. Пропускаем."
+        log_info "Kim_Vocal_1.onnx уже существует. Пропускаем."
     fi
 
     # Модель Whisper для транскрипции (medium.pt ~769MB)
     if [ ! -f "$INSTALL_DIR/core/models/whisper/medium.pt" ]; then
         log_info "Скачиваем Whisper medium..."
-        if curl -L --progress-bar "https://openaipublic.azureedge.net/main/whisper/models/345ae4da62f9b3d59415adc60127b97c714f32e89e9366fc6e6bb8861dd51d2b/medium.pt" \
+        if curl -fSL --connect-timeout 15 --progress-bar --retry 3 --retry-delay 5 "https://openaipublic.azureedge.net/main/whisper/models/345ae4da62f9b3d59415adc60127b97c714f32e89e936602e85993674d08dcb1/medium.pt" \
              -o "$INSTALL_DIR/core/models/whisper/medium.pt"; then
             # Проверяем размер файла (должен быть > 500MB)
-            MODEL_SIZE=$(stat -c%s "$INSTALL_DIR/core/models/whisper/medium.pt" 2>/dev/null || echo 0)
-            if [ "$MODEL_SIZE" -gt 500000000 ]; then
+            MODEL_SIZE=$(stat -c%s "$INSTALL_DIR/core/models/whisper/medium.pt" 2>/dev/null); MODEL_SIZE=${MODEL_SIZE:-0}
+            if (( MODEL_SIZE > 500000000 )); then
                 log_success "Whisper medium загружена ($(awk "BEGIN {printf \"%.1f\", $MODEL_SIZE/1048576}") MB)"
             else
                 log_warn "Файл Whisper medium слишком мал, возможна ошибка загрузки"
