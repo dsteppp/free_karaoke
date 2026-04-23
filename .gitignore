@@ -1,61 +1,77 @@
-# ═══════════════════════════════════════════════════════
-# Free Karaoke — .gitignore
-# ═══════════════════════════════════════════════════════
+```
+# Environment
+.env
+.env.local
+*.env.*
 
-# ── Пользовательские данные (core) ─────────────────────
-core/cache/
-core/debug_logs/
-core/library/
-core/models/
-core/*.db
-core/*.db-shm
-core/*.db-wal
-core/requirements.txt
-core/huey_queue.db
-core/huey_queue.db-*
-core/__pycache__/
-core/*.pyc
-core/.venv/
-core/venv/
-core/reinstall.sh
+# Logs and temporary files
+*.log
+*.tmp
+*.swp
 
-# ── Секреты пользователя ───────────────────────────────
-core/.env
-core/.env.cache
-core/portable.env
+# Dependencies
+node_modules/
 
-# ── Скрипты сборки — временная директория ─────────────
-releases/_build/
-releases/_build-cache/
-releases/_build-installer
-releases/*.AppImage
-releases/*.apk
-releases/FreeKaraoke-*/
-releases/core/
+# Editors
+.vscode/
+.idea/
 
-# ── Собранные артефакты ────────────────────────────────
-dist/
-build/
-*.AppImage
-*.apk
-*.aab
-Free_Karaoke/
-FreeKaraoke/
-
-# ── Python ─────────────────────────────────────────────
+# Python
 __pycache__/
 *.pyc
 *.pyo
-*.egg-info/
-.eggs/
+*.pyd
+.Python
+venv/
+.venv/
+.env
 
-# ── IDE ────────────────────────────────────────────────
-.idea/
-.vscode/
-*.iml
-*.swp
-*~
+# Build outputs
+dist/
+build/
+target/
+*.out
+*.exe
+*.dll
+*.so
+*.a
+*.o
+*.obj
 
-# ── OS ─────────────────────────────────────────────────
+# Compression and archives
+*.zip
+*.gz
+*.tar
+*.tgz
+*.bz2
+*.xz
+*.7z
+*.rar
+*.zst
+*.lz4
+*.lzh
+*.cab
+*.arj
+*.rpm
+*.deb
+*.Z
+*.lz
+*.lzo
+*.tar.gz
+*.tar.bz2
+*.tar.xz
+*.tar.zst
+
+# Coverage
+coverage/
+htmlcov/
+.coverage
+
+# OS generated files
 .DS_Store
 Thumbs.db
+
+# Testing
+.mypy_cache/
+.pytest_cache/
+```
