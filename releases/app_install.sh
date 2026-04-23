@@ -667,7 +667,7 @@ log_step "Настройка токена Genius"
 echo ""
 
 TOKEN_INSTALLED=false
-if [ -f "$INSTALL_DIR/.env" ] && grep -q "GENIUS_TOKEN=" "$INSTALL_DIR/.env"; then
+if [ -f "$INSTALL_DIR/core/.env" ] && grep -q "GENIUS_ACCESS_TOKEN=" "$INSTALL_DIR/core/.env"; then
     log_info "Токен Genius уже настроен. Пропускаем."
     TOKEN_INSTALLED=true
 fi
@@ -708,27 +708,35 @@ if [ "$TOKEN_INSTALLED" = false ]; then
         fi
     done
     
-    # Создаём .env файл
-    cat > "$INSTALL_DIR/.env" << EOF
+    # Создаём .env файл в папке core
+    cat > "$INSTALL_DIR/core/.env" << EOF
 # $APP_NAME Configuration
-GENIUS_TOKEN=$GENIUS_TOKEN
+GENIUS_ACCESS_TOKEN=$GENIUS_TOKEN
 MODEL_PATH=$INSTALL_DIR/core/models
 CACHE_PATH=$INSTALL_DIR/core/cache
 LIBRARY_PATH=$INSTALL_DIR/core/library
 DEBUG_PATH=$INSTALL_DIR/core/debug_logs
 EOF
     
-    log_success "Файл .env создан"
+    log_success "Файл .env создан в $INSTALL_DIR/core/.env"
 fi
 
 # Создаём .env.cache если нет
-if [ ! -f "$INSTALL_DIR/.env.cache" ]; then
-    cat > "$INSTALL_DIR/.env.cache" << EOF
+if [ ! -f "$INSTALL_DIR/core/.env.cache" ]; then
+    cat > "$INSTALL_DIR/core/.env.cache" << EOF
 # Cache configuration
 UV_CACHE_DIR=$INSTALL_DIR/core/cache/uv
 TORCH_HOME=$INSTALL_DIR/core/cache/torch
 HF_HOME=$INSTALL_DIR/core/cache/huggingface
+HUGGINGFACE_HUB_CACHE=$INSTALL_DIR/core/cache/huggingface/hub
+TRANSFORMERS_CACHE=$INSTALL_DIR/core/cache/huggingface/hub
+XDG_CACHE_HOME=$INSTALL_DIR/core/cache
 EOF
+    # Добавляем переменную для AMD GPU
+    if [ "$GPU_TYPE" = "AMD" ]; then
+        echo "HSA_OVERRIDE_GFX_VERSION=11.0.0" >> "$INSTALL_DIR/core/.env.cache"
+    fi
+    log_success "Файл .env.cache создан в $INSTALL_DIR/core/.env.cache"
 fi
 
 echo ""
@@ -753,20 +761,125 @@ if [ "$RUN_SCRIPT_INSTALLED" = false ]; then
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-# Загружаем переменные окружения
-if [ -f "$SCRIPT_DIR/.env" ]; then
-    export $(grep -v '^#' "$SCRIPT_DIR/.env" | xargs)
+# Загружаем переменные окружения из .env.cache и .env
+if [ -f "$SCRIPT_DIR/core/.env.cache" ]; then
+    set -a
+    source "$SCRIPT_DIR/core/.env.cache"
+    set +a
 fi
 
+if [ -f "$SCRIPT_DIR/core/.env" ]; then
+    set -a
+    source "$SCRIPT_DIR/core/.env"
+    set +a
+fi
+
+# Функция проверки и запроса токена Genius
+check_genius_token() {
+    # Проверяем, есть ли токен и не является ли он заглушкой
+    if [ -z "$GENIUS_ACCESS_TOKEN" ] || [[ "$GENIUS_ACCESS_TOKEN" == *"ваш_токен"* ]] || [[ "$GENIUS_ACCESS_TOKEN" == "your_token_here" ]]; then
+        
+        # Если запущены в терминале (есть stdin)
+        if [ -t 0 ]; then
+            echo ""
+            echo "╔══════════════════════════════════════════════════════╗"
+            echo "║       Free Karaoke — Требуется токен Genius         ║"
+            echo "╚══════════════════════════════════════════════════════╝"
+            echo ""
+            echo "Для работы с текстами песен необходим токен Genius API."
+            echo ""
+            echo "Как получить токен:"
+            echo "  1. Откройте: https://genius.com/api-clients/new"
+            echo "  2. Войдите в аккаунт (или зарегистрируйтесь)"
+            echo "  3. Заполните форму и создайте клиент"
+            echo "  4. Скопируйте 'Client Access Token'"
+            echo ""
+            
+            while true; do
+                read -p "Вставьте токен и нажмите Enter (или нажмите Ctrl+C для выхода): " GENIUS_TOKEN
+                
+                if [ -n "$GENIUS_TOKEN" ] && [[ "$GENIUS_TOKEN" =~ ^[A-Za-z0-9_-]+$ ]]; then
+                    # Сохраняем токен в .env
+                    echo "GENIUS_ACCESS_TOKEN=$GENIUS_TOKEN" > "$SCRIPT_DIR/core/.env"
+                    export GENIUS_ACCESS_TOKEN="$GENIUS_TOKEN"
+                    echo ""
+                    echo "✅ Токен сохранён в $SCRIPT_DIR/core/.env"
+                    echo ""
+                    break
+                else
+                    echo "❌ Неверный формат токена. Попробуйте ещё раз."
+                fi
+            done
+        else
+            # Запуск из GUI (Desktop файл) - нет терминала
+            # Используем графический диалог или открытие файла
+            
+            MSG="Для работы Free Karaoke необходим токен Genius API.\n\nСейчас будет открыт файл конфигурации (.env).\nВставьте полученный токен (GENIUS_ACCESS_TOKEN=...) и сохраните файл.\nПосле этого запустите программу снова."
+            
+            # Попытка использовать zenity для уведомления
+            if command -v zenity &> /dev/null; then
+                zenity --warning --title="Требуется настройка Free Karaoke" --text="$MSG" --width=450 2>/dev/null || true
+            elif command -v kdialog &> /dev/null; then
+                kdialog --sorry "$MSG" --title "Требуется настройка Free Karaoke" 2>/dev/null || true
+            elif command -v notify-send &> /dev/null; then
+                notify-send "Free Karaoke: Требуется токен" "$MSG" 2>/dev/null || true
+            fi
+            
+            # Открываем файл .env в редакторе по умолчанию
+            echo "📝 Открытие файла конфигурации для ввода токена..."
+            
+            if command -v xdg-open &> /dev/null; then
+                xdg-open "$SCRIPT_DIR/core/.env" &
+            elif command -v gnome-text-editor &> /dev/null; then
+                gnome-text-editor "$SCRIPT_DIR/core/.env" &
+            elif command -v kate &> /dev/null; then
+                kate "$SCRIPT_DIR/core/.env" &
+            elif command -v mousepad &> /dev/null; then
+                mousepad "$SCRIPT_DIR/core/.env" &
+            elif command -v geany &> /dev/null; then
+                geany "$SCRIPT_DIR/core/.env" &
+            else
+                # Если ничего не нашли, пробуем через переменные окружения
+                ${EDITOR:-nano} "$SCRIPT_DIR/core/.env" 2>/dev/null || echo "❌ Не удалось открыть редактор. Откройте файл вручную: $SCRIPT_DIR/core/.env"
+            fi
+            
+            echo ""
+            echo "⚠️  Программа остановлена."
+            echo "   1. Вставьте токен в открывшийся файл."
+            echo "   2. Сохраните файл."
+            echo "   3. Запустите Free Karaoke повторно."
+            echo ""
+            
+            # Завершаем скрипт, чтобы пользователь сохранил файл и перезапустил
+            exit 0
+        fi
+    fi
+}
+
+# Выполняем проверку токена
+check_genius_token
+
 # Активируем виртуальное окружение
-source "$SCRIPT_DIR/.venv/bin/activate"
+if [ -f "$SCRIPT_DIR/.venv/bin/activate" ]; then
+    source "$SCRIPT_DIR/.venv/bin/activate"
+else
+    echo "❌ Виртуальное окружение не найдено!"
+    echo "Запустите установку заново."
+    exit 1
+fi
 
 # Экспортируем пути (теперь все пути внутри core)
 export MODEL_PATH="${MODEL_PATH:-$SCRIPT_DIR/core/models}"
 export CACHE_PATH="${CACHE_PATH:-$SCRIPT_DIR/core/cache}"
 export LIBRARY_PATH="${LIBRARY_PATH:-$SCRIPT_DIR/core/library}"
 
+# PyTorch ROCm fix для AMD
+if [ "$HSA_OVERRIDE_GFX_VERSION" ]; then
+    export HSA_OVERRIDE_GFX_VERSION="$HSA_OVERRIDE_GFX_VERSION"
+fi
+
 # Запускаем приложение
+echo "🚀 Запуск Free Karaoke..."
 exec python "$SCRIPT_DIR/core/main.py" "$@"
 RUNEOF
     
@@ -862,9 +975,9 @@ echo "   • Через меню приложений: найдите '$APP_NAME
 echo "   • Через терминал: $INSTALL_DIR/run.sh"
 echo ""
 echo "Дополнительно:"
-echo "   • Токен Genius можно изменить в: $INSTALL_DIR/.env"
-echo "   • Логи находятся в: $INSTALL_DIR/debug_logs"
-echo "   • Библиотека треков: $INSTALL_DIR/library"
+echo "   • Токен Genius можно изменить в: $INSTALL_DIR/core/.env"
+echo "   • Логи находятся в: $INSTALL_DIR/core/debug_logs (создаются при запуске)"
+echo "   • Библиотека треков: $INSTALL_DIR/core/library (создается при запуске)"
 echo ""
 log_info "Спасибо за использование $APP_NAME!"
 echo ""
