@@ -1,1 +1,3 @@
-(release/app_install.sh is a source/script file, not a build artifact or temporary file, so no ignores are needed)
+(releases/app_install.sh is a shell script file, which is source code/config file type, so according to rule 6, since the modified file is a source/config file and there are no build artifacts, dependencies, or temp files in the changes, the output should be empty)
+
+(empty)

@@ -2,9 +2,14 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # app_install.sh — Универсальный установщик AI-Karaoke Pro
 # Работает на любом Linux, определяет конфигурацию, создаёт portable-установку
+# Репозиторий: https://github.com/ai-karaoke-pro/ai-karaoke-pro
 # ─────────────────────────────────────────────────────────────────────────────
 
 set -e
+
+# Публичный URL репозитория
+REPO_URL="https://github.com/ai-karaoke-pro/ai-karaoke-pro.git"
+REPO_BRANCH="main"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Цвета и форматирование вывода
@@ -349,8 +354,6 @@ echo ""
 log_step "Загрузка файлов программы"
 echo ""
 
-REPO_URL="https://github.com/user/ai-karaoke-pro.git"  # Замените на актуальный URL
-
 # Если скрипт лежит в репозитории — копируем локально
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [ -d "$SCRIPT_DIR/core" ]; then
@@ -359,10 +362,10 @@ if [ -d "$SCRIPT_DIR/core" ]; then
     cp -r "$SCRIPT_DIR/shared/"* "$INSTALL_DIR/shared/" 2>/dev/null || true
     log_success "Файлы скопированы"
 else
-    # Клонируем из git
-    log_info "Клонируем репозиторий..."
+    # Клонируем из публичного репозитория
+    log_info "Клонируем репозиторий ($REPO_URL)..."
     if command -v git &> /dev/null; then
-        git clone --depth 1 "$REPO_URL" "$INSTALL_DIR/tmp_clone"
+        git clone --depth 1 --branch "$REPO_BRANCH" "$REPO_URL" "$INSTALL_DIR/tmp_clone"
         cp -r "$INSTALL_DIR/tmp_clone/core/"* "$INSTALL_DIR/core/"
         cp -r "$INSTALL_DIR/tmp_clone/shared/"* "$INSTALL_DIR/shared/" 2>/dev/null || true
         rm -rf "$INSTALL_DIR/tmp_clone"
@@ -785,3 +788,9 @@ echo "   $INSTALL_DIR/core/.env"
 echo ""
 log_success "Приятного использования!"
 echo ""
+
+# Не закрываем окно — ждём подтверждения от пользователя
+echo "╔══════════════════════════════════════════════════════╗"
+echo "║         Нажмите Enter для завершения                 ║"
+echo "╚══════════════════════════════════════════════════════╝"
+read -p ""
