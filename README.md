@@ -21,8 +21,8 @@ web-karaoke/
 ├── core/              # 🔵 Desktop-приложение (FastAPI + PyWebview + ML)
 │   ├── main.py        #   FastAPI сервер
 │   ├── launcher.py    #   Точка входа (Huey + Uvicorn + PyWebview)
-│   ├── gpu_detect.py  #   Определение GPU (AppImage)
-│   ├── token_prompt.py#   Запрос Genius-токена (AppImage)
+│   ├── gpu_detect.py  #   Определение GPU (for AppImage)
+│   ├── token_prompt.py#   Запрос Genius-токена (for AppImage)
 │   ├── tasks.py       #   Huey-задачи обработки треков
 │   ├── ai_pipeline.py #   ML-пайплайн (сепарация, Genius, метаданные)
 │   ├── karaoke_aligner.py  #   Выравнивание Whisper → тайминги
@@ -36,14 +36,6 @@ web-karaoke/
 ├── docs/              # 📖 Документация
 ├── scripts/           # 🔧 Утилиты разработки
 └── README.md          # Этот файл
-```
-
-## Быстрый старт (разработка)
-
-```bash
-cd core/
-bash reinstall.sh   # установка зависимостей + автоопределение GPU
-bash run.sh         # запуск приложения
 ```
 
 Требуется: **Python 3.11**, токен Genius (файл `.env`).
@@ -92,8 +84,8 @@ web-karaoke/
 ├── core/              # 🔵 Desktop app (FastAPI + PyWebview + ML)
 │   ├── main.py        #   FastAPI server
 │   ├── launcher.py    #   Entry point (Huey + Uvicorn + PyWebview)
-│   ├── gpu_detect.py  #   GPU detection (AppImage)
-│   ├── token_prompt.py#   Genius token prompt (AppImage)
+│   ├── gpu_detect.py  #   GPU detection (for AppImage)
+│   ├── token_prompt.py#   Genius token prompt (for AppImage)
 │   ├── tasks.py       #   Huey track processing tasks
 │   ├── ai_pipeline.py #   ML pipeline (separation, Genius, metadata)
 │   ├── karaoke_aligner.py  #   Whisper → timing alignment
@@ -107,14 +99,6 @@ web-karaoke/
 ├── docs/              # 📖 Documentation
 ├── scripts/           # 🔧 Development utilities
 └── README.md          # This file
-```
-
-## Quick Start (Development)
-
-```bash
-cd core/
-bash reinstall.sh   # install dependencies + auto-detect GPU
-bash run.sh         # launch application
 ```
 
 Requires: **Python 3.11**, Genius token (`.env` file).
