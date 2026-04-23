@@ -10,6 +10,7 @@ from ai_pipeline import (
 )
 from app_status import set_status, clear_status
 from app_logger import get_logger
+from library_io import export_library, import_library  # <--- Импортируем новые функции
 from tinytag import TinyTag
 import os
 import traceback
@@ -23,9 +24,15 @@ import numpy as np
 log = get_logger("worker")
 
 # ──────────────────────────────────────────────────────────────────────────────
+# ГЛОБАЛЬНОЕ ХРАНИЛИЩЕ ФЛАГОВ ОТМЕНЫ
+# Используется API для сигнализации задачам о необходимости прерваться.
+# Ключ: task_id, Значение: threading.Event
+# ──────────────────────────────────────────────────────────────────────────────
+CANCEL_EVENTS = {}
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Глобальный мьютекс: гарантирует, что только один трек обрабатывается
-# в любой момент времени, даже если Huey worker получит задачу раньше,
-# чем предыдущая полностью завершится (включая очистку GPU).
+# в любой момент времени (для аудио-пайплайна).
 # ──────────────────────────────────────────────────────────────────────────────
 _processing_lock = threading.Lock()
 
@@ -279,10 +286,6 @@ def partial_rescan_task(track_id: str, start_word_index: int, anchor_time: float
     """
     Частичный перескан таймингов: обрабатывает только слова [start_word_index:] до конца песни.
     Слова до start_word_index НЕ изменяются — их тайминги сохраняются как есть.
-
-    anchor_time — точное время (секунды) ручного якоря, установленного пользователем.
-    Аудио и VAD обрезаются от anchor_time, чтобы Whisper и matching работали только
-    от указанной точки, игнорируя сломанные тайминги до неё.
     """
     db = SessionLocal()
 
@@ -353,7 +356,6 @@ def partial_rescan_task(track_id: str, start_word_index: int, anchor_time: float
         log.info("─" * 60)
         log.info("📊 ЭТАП 2: Анализ исходных таймингов")
 
-        # Считаем слова с broken таймингами
         broken_before = 0
         manual_before = 0
         valid_before = 0
@@ -399,7 +401,6 @@ def partial_rescan_task(track_id: str, start_word_index: int, anchor_time: float
         log.info("─" * 60)
         log.info("✂️ ЭТАП 3: Обрезка аудио и VAD по якорю")
 
-        # Буфер перед якорем (0.5с) — чтобы захватить начало слога
         ANCHOR_BUFFER = 0.5
         audio_start_time = max(0.0, anchor_time - ANCHOR_BUFFER)
 
@@ -407,12 +408,10 @@ def partial_rescan_task(track_id: str, start_word_index: int, anchor_time: float
         log.info("   📐 Буфер для захвата начала слога: %.2fс", ANCHOR_BUFFER)
         log.info("   📍 Аудио начинаем с: %.2fс", audio_start_time)
 
-        # Загружаем полное аудио
         log.info("   🎧 Загрузка вокального стема...")
         audio_data, sr = librosa.load(vocals_path, sr=16000, mono=True)
         full_duration = len(audio_data) / sr
 
-        # Обрезаем аудио-массив: берём только от anchor_time - buffer до конца
         start_sample = int(audio_start_time * sr)
         audio_partial = audio_data[start_sample:]
         partial_duration = len(audio_partial) / sr
@@ -421,7 +420,6 @@ def partial_rescan_task(track_id: str, start_word_index: int, anchor_time: float
         log.info("   📊 Обрезанное аудио: %.2fс (%d сэмплов) — с %.2fс до конца", partial_duration, len(audio_partial), audio_start_time)
         log.info("   📉 Обрезано: %.2fс тишины/проигрыша в начале", audio_start_time)
 
-        # Загружаем или вычисляем VAD
         log.info("   🔊 Загрузка/расчёт VAD-интервалов...")
         vad_intervals = None
         if os.path.exists(vad_path):
@@ -430,7 +428,6 @@ def partial_rescan_task(track_id: str, start_word_index: int, anchor_time: float
                     vad_data = json.load(f)
                 all_vad = vad_data.get("intervals", [])
                 log.info("   📂 VAD загружен из кэша: %d интервалов", len(all_vad))
-                # Покажем первые 5 интервалов для понимания
                 for i, (vs, ve) in enumerate(all_vad[:5]):
                     log.info("      VAD[%d]: %.2fс — %.2fс (%.2fс)", i, vs, ve, ve - vs)
                 if len(all_vad) > 5:
@@ -446,14 +443,11 @@ def partial_rescan_task(track_id: str, start_word_index: int, anchor_time: float
                 all_vad = [(0.0, full_duration)]
             log.info("   🔊 VAD рассчитан: %d интервалов", len(all_vad))
 
-        # Обрезаем VAD-интервалы: только те, что пересекаются с [audio_start_time, full_duration]
         vad_intervals = []
         vad_clipped_count = 0
         vad_dropped_count = 0
         for vs, ve in all_vad:
-            # Интервал должен хотя бы частично быть после audio_start_time
             if ve > audio_start_time:
-                # Обрезаем начало интервала, если оно раньше audio_start_time
                 if vs < audio_start_time:
                     clipped_start = audio_start_time
                     vad_clipped_count += 1
@@ -469,7 +463,6 @@ def partial_rescan_task(track_id: str, start_word_index: int, anchor_time: float
         log.info("      🗑️ Отброшено (до якоря): %d", vad_dropped_count)
         log.info("      ✅ Осталось для анализа: %d", len(vad_intervals))
 
-        # Покажем первые 5 обрезанных VAD интервалов
         for i, (vs, ve) in enumerate(vad_intervals[:5]):
             log.info("      VAD_clip[%d]: %.2fс — %.2fс (%.2fс)", i, vs, ve, ve - vs)
         if len(vad_intervals) > 5:
@@ -499,27 +492,16 @@ def partial_rescan_task(track_id: str, start_word_index: int, anchor_time: float
             vad=True,
         )
 
-        # Подсчитаем сегменты и слова от Whisper
         total_segments = len(result.segments)
         total_raw_words = sum(len(seg.words) for seg in result.segments)
         log.info("   ✅ Транскрипция завершена")
         log.info("   📊 Сегментов: %d, слов (сырых): %d", total_segments, total_raw_words)
 
-        # Лог первых нескольких сегментов
-        for seg_idx, seg in enumerate(result.segments[:3]):
-            words_sample = [f"«{w.word.strip()}»({w.start:.2f}-{w.end:.2f})" for w in seg.words[:5]]
-            log.info("   Сегмент[%d]: %s ...", seg_idx, " ".join(words_sample))
-        if total_segments > 3:
-            log.info("   ... и ещё %d сегментов", total_segments - 3)
-
-        # Формируем raw_heard_words — сдвигаем тайминги обратно к абсолютным значениям
         raw_heard_words = []
         for segment in result.segments:
             for w in segment.words:
                 cw = clean_word(w.word)
                 if cw:
-                    # Сдвигаем тайминги: Whisper дал время от 0 (обрезанное аудио),
-                    # нам нужно абсолютное время в оригинальном аудио
                     abs_start = w.start + audio_start_time
                     abs_end = w.end + audio_start_time
                     raw_heard_words.append({
@@ -531,12 +513,6 @@ def partial_rescan_task(track_id: str, start_word_index: int, anchor_time: float
                     })
 
         log.info("   📝 raw_heard_words: %d слов (после clean_word)", len(raw_heard_words))
-        # Покажем первые 10 heard words
-        for i, hw in enumerate(raw_heard_words[:10]):
-            log.info("      heard[%d]: «%s» clean=«%s» %.2fс-%.2fс p=%.2f",
-                     i, hw["word"].strip(), hw["clean"], hw["start"], hw["end"], hw["probability"])
-        if len(raw_heard_words) > 10:
-            log.info("      ... и ещё %d слов", len(raw_heard_words) - 10)
 
         # ── Фильтрация галлюцинаций ─────────────────────────────────────────
         log.info("─" * 60)
@@ -550,20 +526,11 @@ def partial_rescan_task(track_id: str, start_word_index: int, anchor_time: float
         filtered_out = len(raw_heard_words) - len(heard_words)
         log.info("   ✅ После фильтрации: %d слов (отфильтровано: %d)", len(heard_words), filtered_out)
 
-        # Покажем первые 10 отфильтрованных слов
-        for i, hw in enumerate(heard_words[:10]):
-            log.info("      clean[%d]: «%s» %.2fс-%.2fс", i, hw["clean"], hw["start"], hw["end"])
-        if len(heard_words) > 10:
-            log.info("      ... и ещё %d слов", len(heard_words) - 10)
-
         # ── Sequence Matching ───────────────────────────────────────────────
         log.info("─" * 60)
         log.info("🧠 ЭТАП 6: Sequence Matching (сопоставление текста с аудио)")
         log.info("   ⚓ Partial rescan от слова #%d («%s»)", start_word_index, anchor_word.get("word", "?"))
         log.info("   ⚓ Anchor time: %.2fс", anchor_time)
-        log.info("   📝 Слов в тексте (всего): %d", len(old_karaoke_data))
-        log.info("   📝 Слов после якоря: %d", len(old_karaoke_data) - start_word_index)
-        log.info("   🎤 heard_words для matching: %d", len(heard_words))
 
         from aligner_orchestra import execute_sequence_matching
         canon_words = prepare_text(lyrics_text)
@@ -571,10 +538,6 @@ def partial_rescan_task(track_id: str, start_word_index: int, anchor_time: float
         log.info("   📄 canon_words (из lyrics): %d слов", len(canon_words))
 
         # ── КРИТИЧЕСКОЕ: копируем старые тайминги слов ДО якоря ─────────────
-        # prepare_text создаёт ВСЕ слова с start=-1, end=-1.
-        # prepare_text МОЖЕТ дать другое количество слов, чем old_karaoke_data
-        # (например, если в JSON есть теги [Chorus] которые были удалены).
-        # Нужно сопоставить слова по тексту и скопировать тайминги.
         log.info("   🔄 Восстановление старых таймингов для слов [0:%d]...", start_word_index)
 
         restored_count = 0
@@ -588,14 +551,12 @@ def partial_rescan_task(track_id: str, start_word_index: int, anchor_time: float
             old_w = old_karaoke_data[idx]
             new_w = canon_words[idx]
 
-            # Сравниваем текст слов (case-insensitive, strip)
             old_text = old_w.get("word", "").strip().lower()
             new_text = new_w["word"].strip().lower()
 
             if old_text == new_text:
                 new_w["start"] = old_w.get("start", -1.0)
                 new_w["end"] = old_w.get("end", -1.0)
-                # Копируем флаги ручных якорей если они были в JSON
                 if "is_manual_start" in old_w:
                     new_w["is_manual_start"] = old_w["is_manual_start"]
                 if "is_manual_end" in old_w:
@@ -609,15 +570,6 @@ def partial_rescan_task(track_id: str, start_word_index: int, anchor_time: float
 
         log.info("   ✅ Восстановлено таймингов: %d | Несовпадений: %d", restored_count, mismatch_count)
 
-        # Лог первых слов canon (после восстановления)
-        for i in range(min(5, len(canon_words))):
-            w = canon_words[i]
-            status = "✅" if w.get("start", -1) >= 0 else "❌"
-            log.info("      %s canon[%d]: «%s» clean=«%s» start=%.3f end=%.3f",
-                     status, i, w["word"], w["clean_text"], w.get("start", -1), w.get("end", -1))
-
-        # ВАЖНО: canon_words — это полный массив, включая старые тайминги
-        # execute_sequence_matching с start_word_index > 0 обработает только часть
         canon_words = execute_sequence_matching(
             canon_words, heard_words, vad_intervals, full_duration, start_word_index, anchor_time
         )
@@ -642,15 +594,6 @@ def partial_rescan_task(track_id: str, start_word_index: int, anchor_time: float
         log.info("   ✅ Слов с таймингами после рескана: %d", matched_after)
         log.info("   ⚓ Ручных якорей (сохранены): %d", manual_anchors_after)
         log.info("   ❌ Слов без таймингов (слепые зоны): %d", broken_after_match)
-
-        # Лог первых 10 слов после якоря
-        log.info("   📝 Первые 10 слов после якоря:")
-        for i in range(start_word_index, min(start_word_index + 10, len(canon_words))):
-            w = canon_words[i]
-            status = "✅" if w.get("start", -1) >= 0 else "❌"
-            manual = " ⚓MANUAL" if (w.get("is_manual_start") or w.get("is_manual_end")) else ""
-            log.info("      %s canon[%d]: «%s» start=%.3f end=%.3f%s",
-                     status, i, w["word"], w.get("start", -1), w.get("end", -1), manual)
 
         # ── Физический контроль (VAD-Magnet) ────────────────────────────────
         log.info("─" * 60)
@@ -699,14 +642,6 @@ def partial_rescan_task(track_id: str, start_word_index: int, anchor_time: float
         log.info("   📍 ДО якоря (не тронуты): %d слов", start_word_index)
         log.info("   📍 ПОСЛЕ якоря (обработаны): %d слов", len(canon_words) - start_word_index)
 
-        # Лог последних 5 слов для проверки конца
-        log.info("   📝 Последние 5 слов:")
-        for i in range(max(0, len(canon_words) - 5), len(canon_words)):
-            w = canon_words[i]
-            status = "✅" if w.get("start", -1) >= 0 else "❌"
-            log.info("      %s canon[%d]: «%s» start=%.3f end=%.3f",
-                     status, i, w["word"], w.get("start", -1), w.get("end", -1))
-
         # Формируем JSON
         log.info("─" * 60)
         log.info("💾 ЭТАП 11: Сохранение результатов")
@@ -729,8 +664,6 @@ def partial_rescan_task(track_id: str, start_word_index: int, anchor_time: float
 
         log.info("=" * 80)
         log.info("✅ PARTIAL RESCAN ЗАВЕРШЁН УСПЕШНО")
-        log.info("   📊 Слов обработано: %d (из %d)", len(canon_words) - start_word_index, len(canon_words))
-        log.info("   ✅ С таймингами: %d | ❌ Без таймингов: %d", total_with_timing - (start_word_index - broken_before - manual_before), total_broken)
         log.info("=" * 80)
 
         # Освобождение памяти
@@ -767,3 +700,104 @@ def partial_rescan_task(track_id: str, start_word_index: int, anchor_time: float
             torch.cuda.ipc_collect()
 
         log.info("GPU память сброшена (finally partial rescan).")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 🆕 НОВЫЕ ЗАДАЧИ: ПОТОКОВЫЙ ЭКСПОРТ И ИМПОРТ (для 100 ГБ+)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@huey.task(context=True)  # <--- ДОБАВЛЕНО context=True
+def export_library_task(output_path: str, library_dir: str = LIBRARY_DIR, task=None):
+    """
+    Фоновая задача экспорта библиотеки.
+    task — контекст Huey (передаётся автоматически при context=True)
+    """
+    # ✅ Правильное получение task_id
+    task_id = task.id if task else "unknown"
+    
+    # Создаём флаг отмены и регистрируем его глобально
+    cancel_flag = threading.Event()
+    CANCEL_EVENTS[task_id] = cancel_flag
+    
+    try:
+        log.info("🚀 Запуск задачи экспорта (ID: %s)", task_id)
+        set_status("💾 Подготовка экспорта...", 0)
+        
+        # Функция обратного вызова для обновления прогресса в UI
+        def progress_callback(processed: int, total: int, current_file: str):
+            if total > 0:
+                progress = int((processed / total) * 100)
+                set_status(f"💾 Экспорт: {current_file} ({processed}/{total})", progress)
+        
+        # Вызываем основную потоковую функцию
+        result = export_library(
+            library_dir=library_dir,
+            output_path=output_path,
+            progress_callback=progress_callback,
+            cancel_flag=cancel_flag,
+        )
+        
+        clear_status()
+        log.info("✅ Экспорт завершён: %s", result.get("status"))
+        return result
+        
+    except Exception as e:
+        log.error("❌ Ошибка в задаче экспорта: %s", e)
+        clear_status()
+        return {"status": "error", "errors": [str(e)]}
+    finally:
+        # Удаляем флаг отмены после завершения задачи
+        if task_id in CANCEL_EVENTS:
+            del CANCEL_EVENTS[task_id]
+
+
+@huey.task(context=True)  # <--- ДОБАВЛЕНО context=True
+def import_library_task(zip_path: str, library_dir: str = LIBRARY_DIR, task=None):
+    """
+    Фоновая задача импорта библиотеки.
+    task — контекст Huey (передаётся автоматически при context=True)
+    """
+    # ✅ Правильное получение task_id
+    task_id = task.id if task else "unknown"
+    
+    db = SessionLocal()
+    
+    # Создаём флаг отмены и регистрируем его глобально
+    cancel_flag = threading.Event()
+    CANCEL_EVENTS[task_id] = cancel_flag
+    
+    try:
+        log.info("🚀 Запуск задачи импорта (ID: %s)", task_id)
+        set_status("📦 Подготовка импорта...", 0)
+        
+        # Функция обратного вызова для обновления прогресса в UI
+        def progress_callback(processed: int, total: int, current_item: str):
+            if total > 0:
+                progress = int((processed / total) * 100)
+                set_status(f"📦 Импорт: {current_item} ({processed}/{total})", progress)
+        
+        # Вызываем основную потоковую функцию
+        result = import_library(
+            zip_path=zip_path,
+            library_dir=library_dir,
+            db_session=db,
+            Track_model=Track,
+            progress_callback=progress_callback,
+            cancel_flag=cancel_flag,
+        )
+        
+        # Финальный коммит транзакции БД
+        db.commit()
+        clear_status()
+        log.info("✅ Импорт завершён: добавлено=%d, пропущено=%d", result.get("added"), result.get("skipped"))
+        return result
+        
+    except Exception as e:
+        db.rollback()
+        log.error("❌ Ошибка в задаче импорта: %s", e)
+        clear_status()
+        return {"status": "error", "errors": [str(e)]}
+    finally:
+        db.close()
+        if task_id in CANCEL_EVENTS:
+            del CANCEL_EVENTS[task_id]

@@ -1,25 +1,26 @@
-from fastapi import FastAPI, Depends, UploadFile, File, HTTPException, Request
+from fastapi import FastAPI, Depends, UploadFile, File, HTTPException, Request, BackgroundTasks
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi import Response
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
-from typing import List, Optional
+from typing import List, Optional, Dict
 import aiofiles
 import os
 import json
 import traceback
 import gc
 import torch
+import threading
 from datetime import datetime
 
 from database import get_db, Track
-from tasks import process_audio_task, partial_rescan_task
+from tasks import process_audio_task, partial_rescan_task, export_library_task, import_library_task
 from huey_config import huey
 from ai_pipeline import get_audio_metadata, url_to_base64
 from app_status import read_status
 from app_logger import get_logger
-from library_io import export_library, import_library, IMPORT_LOG_PATH
+from library_io import IMPORT_LOG_PATH
 
 # --- ВРЕЗКА РЕДАКТОРА ---
 from editor_backend import router as editor_router
@@ -33,6 +34,9 @@ app = FastAPI(title="AI-Karaoke Pro")
 app.include_router(editor_router)
 # -------------------------------------
 
+# ── Глобальное хранилище флагов отмены для задач импорта/экспорта ──
+_active_io_tasks: Dict[str, threading.Event] = {}
+
 
 # ── Анти-кэш прослойка ────────────────────────────────────────────────────────
 @app.middleware("http")
@@ -45,7 +49,6 @@ async def add_no_cache_headers(request: Request, call_next):
 
 
 # ── Portable-режим: переменные окружения FK_* ────────────────────────────────
-# Устанавливаются bootstrap-скриптами для Windows/Linux portable
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 LIBRARY_DIR = os.environ.get("FK_LIBRARY_DIR") or os.path.join(BASE_DIR, "library")
@@ -363,7 +366,6 @@ async def scan_library(db: Session = Depends(get_db)):
             continue
 
         # Трек не в БД — пробуем прочитать метаданные
-        # Используем base_name как имя файла для парсинга (без суффиксов стемов)
         artist, title = "", base_name
         clean_name = f"{base_name}.mp3"
         audio_path = files.get("orig") or files.get("vocals")
@@ -390,7 +392,6 @@ async def scan_library(db: Session = Depends(get_db)):
         orig_path  = files.get("orig")
         orig_fname = os.path.basename(orig_path) if orig_path else f"{base_name}.mp3"
 
-        # filename всегда base_name.mp3 — это ключ для построения путей стемов
         new_track = Track(
             filename=f"{base_name}.mp3",
             original_name=orig_fname,
@@ -418,7 +419,6 @@ async def scan_library(db: Session = Depends(get_db)):
         k_path = os.path.join(LIBRARY_DIR, f"{base_name}_(Karaoke Lyrics).json")
         m_path = os.path.join(LIBRARY_DIR, f"{base_name}_library.json")
 
-        # Ищем оригинал по всем поддерживаемым расширениям
         o_path = t.original_path
         if not o_path or not os.path.exists(o_path):
             o_path = None
@@ -576,7 +576,7 @@ async def delete_single_track(track_id: str, db: Session = Depends(get_db)):
         track.karaoke_json_path,
         library_meta_path,
         vad_path,
-        vad_path_vocals,  # На случай если VAD создан от vocals_path
+        vad_path_vocals,
     ]
     for path in paths:
         if path and os.path.exists(path):
@@ -935,7 +935,6 @@ async def partial_rescan_endpoint(
         raise HTTPException(status_code=400, detail="Время якоря не может быть отрицательным")
 
     # Загружаем JSON чтобы проверить диапазон
-    # Приоритет: путь из БД (импорт), fallback: LIBRARY_DIR
     karaoke_json_path = track.karaoke_json_path
     if not karaoke_json_path or not os.path.isabs(karaoke_json_path) or not os.path.exists(karaoke_json_path):
         base_name = os.path.splitext(track.filename)[0]
@@ -957,8 +956,6 @@ async def partial_rescan_endpoint(
         raise HTTPException(status_code=400, detail="Индекс слова вне диапазона")
 
     # ── КРИТИЧЕСКОЕ: устанавливаем статус ДО запуска задачи ──────────────
-    # Иначе polling в frontend увидит active=false и сразу закроет оверлей
-    # (между постановкой задачи в очередь и её выполнением есть задержка)
     from app_status import set_status as app_set_status
     display_name_for_status = track.title or track.original_name or track.filename
     if track.artist:
@@ -984,77 +981,263 @@ async def partial_rescan_endpoint(
     }
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# POST /api/library/export  — экспорт библиотеки в ZIP
-# ──────────────────────────────────────────────────────────────────────────────
-@app.post("/api/library/export")
-async def export_library_endpoint():
-    """Экспорт всей библиотеки в ZIP-архив."""
-    try:
-        zip_bytes = export_library(LIBRARY_DIR)
-        return Response(
-            content=zip_bytes,
-            media_type="application/zip",
-            headers={
-                "Content-Disposition": f'attachment; filename="karaoke_library_{datetime.now().strftime("%Y%m%d_%H%M")}.zip"',
-            },
-        )
-    except Exception as e:
-        log.error("Ошибка экспорта: %s", e, exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+# ════════════════════════════════════════════════════════════════════════════════
+# 🆕 ПОТОКОВЫЙ ЭКСПОРТ / ИМПОРТ БИБЛИОТЕКИ (для 100 ГБ+)
+# ════════════════════════════════════════════════════════════════════════════════
+
+class ExportStartRequest(BaseModel):
+    output_path: str
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# POST /api/library/import  — импорт библиотеки из ZIP
-# ──────────────────────────────────────────────────────────────────────────────
-@app.post("/api/library/import")
-async def import_library_endpoint(
-    file: UploadFile = File(...),
-    db: Session = Depends(get_db),
-):
-    """Импорт библиотеки из ZIP-архива."""
-    if not file.filename or not file.filename.endswith('.zip'):
-        raise HTTPException(status_code=400, detail="Требуется ZIP-файл")
-
-    try:
-        zip_bytes = await file.read()
-        result = import_library(zip_bytes, LIBRARY_DIR, db, Track)
-        return result
-    except RuntimeError as e:
-        raise HTTPException(status_code=409, detail=str(e))
-    except Exception as e:
-        log.error("Ошибка импорта: %s", e, exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# POST /api/library/import-from-path  — импорт по пути к файлу (без передачи bytes через JS)
-# ──────────────────────────────────────────────────────────────────────────────
-class ImportFromPathRequest(BaseModel):
+class ImportStartRequest(BaseModel):
     path: str
 
 
-@app.post("/api/library/import-from-path")
-async def import_library_from_path(
-    req: ImportFromPathRequest,
-    db: Session = Depends(get_db),
-):
-    """Импорт библиотеки из ZIP по пути к файлу. Python сам читает файл."""
-    if not os.path.exists(req.path):
-        raise HTTPException(status_code=404, detail="Файл не найден")
+# ──────────────────────────────────────────────────────────────────────────────
+# POST /api/library/export/start — ЗАПУСК ЭКСПОРТА В ФОНЕ
+# ──────────────────────────────────────────────────────────────────────────────
+@app.post("/api/library/export/start")
+async def start_export(req: ExportStartRequest, db: Session = Depends(get_db)):
+    """
+    Запускает экспорт библиотеки в фоне.
+    Возвращает task_id для polling статуса.
+    """
+    if not req.output_path:
+        raise HTTPException(status_code=400, detail="Требуется output_path")
+    
+    # Создаём флаг отмены для этой задачи
+    cancel_flag = threading.Event()
+    
+    try:
+        # Запускаем фоновую задачу
+        task = export_library_task(req.output_path, LIBRARY_DIR)
+        
+        # Сохраняем флаг отмены
+        _active_io_tasks[task.id] = cancel_flag
+        
+        log.info("Запущен экспорт: task_id=%s, output=%s", task.id, req.output_path)
+        
+        return {
+            "task_id": task.id,
+            "status": "queued",
+            "output_path": req.output_path,
+            "message": "Экспорт запущен",
+        }
+        
+    except Exception as e:
+        log.error("Ошибка запуска экспорта: %s", e)
+        raise HTTPException(status_code=500, detail=f"Не удалось запустить экспорт: {e}")
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# GET /api/library/export/status/{task_id} — ПОЛЛИНГ СТАТУСА ЭКСПОРТА
+# ──────────────────────────────────────────────────────────────────────────────
+@app.get("/api/library/export/status/{task_id}")
+async def get_export_status(task_id: str):
+    """Возвращает статус задачи экспорта — всегда с ожидаемой структурой."""
+    result = None
+    result_available = False
+    
+    try:
+        result = huey.result(task_id)
+        result_available = True
+    except Exception as e:
+        log.debug("Export status: result not yet available for %s: %s", task_id, e)
+    
+    # ✅ Задача завершена и результат доступен
+    if result_available and isinstance(result, dict):
+        if task_id in _active_io_tasks:
+            del _active_io_tasks[task_id]
+        
+        written = result.get("written", 0)
+        total = result.get("total", 0)
+        size_mb = result.get("size", 0) / 1024**2
+        
+        return {
+            "task_id": task_id,
+            "status": result.get("status", "done"),
+            # ✅ Все поля на верхнем уровне — как ждёт фронтенд
+            "written": written,
+            "total": total,
+            "errors": result.get("errors", []),
+            "output_path": result.get("output_path", ""),
+            "size": result.get("size", 0),
+            "progress": 100,  # Завершено
+            "message": f"Экспорт завершён: {written}/{total} файлов ({size_mb:.1f} MB)",
+        }
+    
+    # ✅ Задача ещё выполняется
+    if task_id in _active_io_tasks:
+        status = read_status()
+        return {
+            "task_id": task_id,
+            "status": "running",
+            "message": status.get("message", "Обработка..."),
+            "progress": status.get("progress"),  # Может быть None — фронтенд обработает
+            "written": 0,
+            "total": 0,
+            "errors": [],
+            "output_path": "",
+            "size": 0,
+        }
+    
+    # ✅ Задача не найдена (уже очищена из Huey)
+    return {
+        "task_id": task_id,
+        "status": "not_found",
+        "message": "Статус задачи недоступен",
+        "written": 0,
+        "total": 0,
+        "errors": [],
+        "output_path": "",
+        "size": 0,
+        "progress": None,
+    }
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# POST /api/library/export/cancel/{task_id} — ОТМЕНА ЭКСПОРТА
+# ──────────────────────────────────────────────────────────────────────────────
+@app.post("/api/library/export/cancel/{task_id}")
+async def cancel_export(task_id: str):
+    """
+    Отправляет сигнал отмены для задачи экспорта.
+    """
+    if task_id in _active_io_tasks:
+        _active_io_tasks[task_id].set()  # Сигнал отмены
+        log.info("Отправлен сигнал отмены для экспорта: %s", task_id)
+        return {"status": "cancelling", "task_id": task_id}
+    
+    # Задача уже завершена или не найдена
+    return {"status": "not_found", "task_id": task_id}
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# POST /api/library/import/start — ЗАПУСК ИМПОРТА В ФОНЕ
+# ──────────────────────────────────────────────────────────────────────────────
+@app.post("/api/library/import/start")
+async def start_import(req: ImportStartRequest, db: Session = Depends(get_db)):
+    """
+    Запускает импорт библиотеки из ZIP в фоне.
+    Возвращает task_id для polling статуса.
+    """
+    if not req.path or not os.path.exists(req.path):
+        raise HTTPException(status_code=400, detail="Неверный путь к файлу")
+    
     if not req.path.endswith('.zip'):
         raise HTTPException(status_code=400, detail="Требуется ZIP-файл")
-
+    
+    # Создаём флаг отмены для этой задачи
+    cancel_flag = threading.Event()
+    
     try:
-        with open(req.path, 'rb') as f:
-            zip_bytes = f.read()
-        result = import_library(zip_bytes, LIBRARY_DIR, db, Track)
-        return result
-    except RuntimeError as e:
-        raise HTTPException(status_code=409, detail=str(e))
+        # Запускаем фоновую задачу
+        task = import_library_task(req.path, LIBRARY_DIR)
+        
+        # Сохраняем флаг отмены
+        _active_io_tasks[task.id] = cancel_flag
+        
+        log.info("Запущен импорт: task_id=%s, zip=%s", task.id, req.path)
+        
+        return {
+            "task_id": task.id,
+            "status": "queued",
+            "zip_path": req.path,
+            "message": "Импорт запущен",
+        }
+        
     except Exception as e:
-        log.error("Ошибка импорта: %s", e, exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        log.error("Ошибка запуска импорта: %s", e)
+        raise HTTPException(status_code=500, detail=f"Не удалось запустить импорт: {e}")
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# GET /api/library/import/status/{task_id} — ПОЛЛИНГ СТАТУСА ИМПОРТА
+# ──────────────────────────────────────────────────────────────────────────────
+@app.get("/api/library/import/status/{task_id}")
+async def get_import_status(task_id: str):
+    """Возвращает статус задачи импорта — всегда с ожидаемой структурой."""
+    result = None
+    result_available = False
+    
+    try:
+        result = huey.result(task_id)
+        result_available = True
+    except Exception as e:
+        log.debug("Import status: result not yet available for %s: %s", task_id, e)
+    
+    # ✅ Задача завершена и результат доступен
+    if result_available and isinstance(result, dict):
+        if task_id in _active_io_tasks:
+            del _active_io_tasks[task_id]
+        
+        added = result.get("added", 0)
+        skipped = result.get("skipped", 0)
+        
+        return {
+            "task_id": task_id,
+            "status": result.get("status", "done"),
+            # ✅ Все поля на верхнем уровне — как ждёт фронтенд
+            "added": added,
+            "skipped": skipped,
+            "errors": result.get("errors", []),
+            "artists": result.get("artists", []),
+            "tracks": result.get("tracks", []),
+            "progress": 100,  # Завершено
+            "message": f"Импорт завершён: добавлено={added}, пропущено={skipped}",
+        }
+    
+    # ✅ Задача ещё выполняется
+    if task_id in _active_io_tasks:
+        status = read_status()
+        return {
+            "task_id": task_id,
+            "status": "running",
+            "message": status.get("message", "Обработка..."),
+            "progress": status.get("progress"),
+            "added": 0,
+            "skipped": 0,
+            "errors": [],
+            "artists": [],
+            "tracks": [],
+        }
+    
+    # ✅ Задача не найдена
+    return {
+        "task_id": task_id,
+        "status": "not_found",
+        "message": "Статус задачи недоступен",
+        "added": 0,
+        "skipped": 0,
+        "errors": [],
+        "artists": [],
+        "tracks": [],
+        "progress": None,
+    }
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# POST /api/library/import/cancel/{task_id} — ОТМЕНА ИМПОРТА
+# ──────────────────────────────────────────────────────────────────────────────
+@app.post("/api/library/import/cancel/{task_id}")
+async def cancel_import(task_id: str):
+    """
+    Отправляет сигнал отмены для задачи импорта.
+    """
+    if task_id in _active_io_tasks:
+        _active_io_tasks[task_id].set()
+        log.info("Отправлен сигнал отмены для импорта: %s", task_id)
+        return {"status": "cancelling", "task_id": task_id}
+    
+    return {"status": "not_found", "task_id": task_id}
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 🗑️ УДАЛЕННЫЕ ЭНДПОИНТЫ (заменены на потоковые версии выше):
+# - POST /api/library/export (возвращал bytes — OOM для больших библиотек)
+# - POST /api/library/import (читал файл в bytes — OOM)
+# - POST /api/library/import-from-path (всё равно грузил в память)
+# ════════════════════════════════════════════════════════════════════════════════
 
 
 # ──────────────────────────────────────────────────────────────────────────────

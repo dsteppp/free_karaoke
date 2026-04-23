@@ -1533,3 +1533,8 @@ body.processing #editor-popover {
     pointer-events: none !important;
     opacity: 0.5 !important;
 }
+
+@keyframes pulse {
+    0%, 100% { opacity: 0.6; }
+    50% { opacity: 1; }
+}

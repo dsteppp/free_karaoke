@@ -125,7 +125,7 @@ document.addEventListener("keydown", (e) => {
         return;
     }
 
-    // R — вкл/выкл редактор (любая раскладка,物理ческая клавиша R)
+    // R — вкл/выкл редактор (любая раскладка, физическая клавиша R)
     if (e.code === "KeyR") {
         e.preventDefault();
         const editorStartBtn = document.getElementById("edit-start-btn");
@@ -1421,12 +1421,14 @@ if (textareaWrapper && textareaEl) {
 })();
 
 // ══════════════════════════════════════════════════════════════════════════════
-// ЭКСПОРТ / ИМПОРТ БИБЛИОТЕКИ
+// 🆕 ЭКСПОРТ / ИМПОРТ БИБЛИОТЕКИ (НОВАЯ АРХИТЕКТУРА С POLLING)
 // ══════════════════════════════════════════════════════════════════════════════
 (function() {
     const importBtn = document.getElementById("import-btn");
     const exportBtn = document.getElementById("export-btn");
-    let isBusy = false; // Блокировка одновременных операций
+    let isBusy = false;
+    let currentIoTaskId = null; // ID текущей задачи экспорта/импорта для отмены
+    let ioPollingInterval = null;
 
     // Блокировка интерфейса во время операции
     function setBusy(busy, operation) {
@@ -1435,14 +1437,16 @@ if (textareaWrapper && textareaEl) {
         const statusText = document.getElementById("app-status-text");
         const statusSpinner = document.getElementById("app-status-spinner");
         const statusProgress = document.getElementById("app-status-progress");
+        
         if (busy) {
             if (statusText) statusText.textContent = operation;
-            if (statusSpinner) statusSpinner.style.display = "";
-            if (statusProgress) statusProgress.style.display = "none";
+            if (statusSpinner) statusSpinner.style.display = "none"; // Скрываем спиннер, так как будет прогресс-бар
+            if (statusProgress) statusProgress.style.display = "";
         } else {
             if (statusText) statusText.textContent = "";
             if (statusSpinner) statusSpinner.style.display = "none";
             if (statusProgress) statusProgress.style.display = "none";
+            document.getElementById("app-status-progress-fill").style.width = "0%";
         }
     }
 
@@ -1460,115 +1464,6 @@ if (textareaWrapper && textareaEl) {
         overlay.addEventListener("click", (e) => { if (e.target === overlay) overlay.remove(); });
     }
 
-    if (exportBtn) {
-        exportBtn.addEventListener("click", async () => {
-            if (isBusy) return;
-            try {
-                setBusy(true, "💾 Подготовка экспорта...");
-                if (window.pywebview && window.pywebview.api) {
-                    const path = await window.pywebview.api.save_file_dialog(
-                        "Экспорт библиотеки",
-                        "karaoke_library_" + new Date().toISOString().slice(0, 16).replace(/[T:]/g, "-") + ".zip"
-                    );
-                    if (!path) { setBusy(false); return; }
-
-                    setBusy(true, "💾 Создание архива...");
-                    const res = await fetch("/api/library/export", { method: "POST" });
-                    if (!res.ok) throw new Error("Ошибка экспорта");
-                    const blob = await res.blob();
-
-                    setBusy(true, "💾 Сохранение файла...");
-                    const b64 = await new Promise((resolve, reject) => {
-                        const reader = new FileReader();
-                        reader.onload = () => resolve(reader.result.split(',')[1]);
-                        reader.onerror = reject;
-                        reader.readAsDataURL(blob);
-                    });
-                    const ok = await window.pywebview.api.save_binary(path, b64);
-                    if (!ok) throw new Error("Не удалось сохранить файл");
-
-                    setBusy(false);
-                    showCompletionSummary("📦 Экспорт завершён", "Библиотека успешно сохранена.");
-                } else {
-                    const res = await fetch("/api/library/export", { method: "POST" });
-                    if (!res.ok) throw new Error("Ошибка экспорта");
-                    const blob = await res.blob();
-                    const url = URL.createObjectURL(blob);
-                    const a = document.createElement("a");
-                    a.href = url;
-                    a.download = "karaoke_library_" + new Date().toISOString().slice(0, 16).replace(/[T:]/g, "-") + ".zip";
-                    a.click();
-                    URL.revokeObjectURL(url);
-                    setBusy(false);
-                    showCompletionSummary("📦 Экспорт завершён", "Файл скачан.");
-                }
-            } catch (e) {
-                setBusy(false);
-                console.error("Ошибка экспорта:", e);
-                showCompletionSummary("❌ Ошибка экспорта", e.message);
-            }
-        });
-    }
-
-    if (importBtn) {
-        importBtn.addEventListener("click", async () => {
-            if (isBusy) return;
-            try {
-                if (window.pywebview && window.pywebview.api) {
-                    const filePath = await window.pywebview.api.open_file_dialog(false, "ZIP Files | *.zip");
-                    if (!filePath) return;
-                    setBusy(true, "📦 Импорт библиотеки...");
-                    // Python сам читает файл — без передачи base64
-                    const res = await fetch("/api/library/import-from-path", {
-                        method: "POST",
-                        headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({ path: filePath }),
-                    });
-                    if (!res.ok) {
-                        const err = await res.json().catch(() => ({}));
-                        setBusy(false);
-                        throw new Error(err.detail || "Ошибка сервера");
-                    }
-                    const result = await res.json();
-                    await loadTracks();
-                    setBusy(false);
-                    showImportSummary(result);
-                } else {
-                    // Fallback: HTML input + FormData
-                    const input = document.createElement("input");
-                    input.type = "file";
-                    input.accept = ".zip";
-                    input.onchange = async () => {
-                        if (input.files.length) await doImport(input.files[0]);
-                    };
-                    input.click();
-                }
-            } catch (e) {
-                setBusy(false);
-                console.error("Ошибка импорта:", e);
-                showCompletionSummary("❌ Ошибка импорта", e.message);
-            }
-        });
-    }
-
-    async function doImport(blob, fileName) {
-        setBusy(true, "📦 Импорт библиотеки...");
-        const fd = new FormData();
-        fd.append("file", blob, fileName || "import.zip");
-
-        const res = await fetch("/api/library/import", { method: "POST", body: fd });
-        if (!res.ok) {
-            const err = await res.json().catch(() => ({}));
-            setBusy(false);
-            throw new Error(err.detail || "Ошибка сервера");
-        }
-
-        const result = await res.json();
-        await loadTracks();
-        setBusy(false);
-        showImportSummary(result);
-    }
-
     function showImportSummary(result) {
         const { added, skipped, errors, artists, tracks } = result;
         const noteIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:1.2em;height:1.2em;vertical-align:-0.15em;display:inline-block;"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>';
@@ -1576,7 +1471,6 @@ if (textareaWrapper && textareaEl) {
         let html = '<div style="text-align:center; max-width:500px; display:flex; flex-direction:column; align-items:center;">';
         html += '<h2 style="margin-bottom:1rem;">📦 Импорт завершён</h2>';
 
-        // Основной контент (без списка треков)
         let mainContent = '';
         if (added > 0) {
             mainContent += '<p style="color:var(--success); font-weight:600; margin:0 0 0.25rem 0;">' + noteIcon + ' Добавлено треков: ' + added + '</p>';
@@ -1587,16 +1481,15 @@ if (textareaWrapper && textareaEl) {
         if (skipped > 0) {
             mainContent += '<p style="color:var(--warning); margin:0 0 0.5rem 0;">⏭ Пропущено дубликатов: ' + skipped + '</p>';
         }
-        if (errors.length > 0) {
+        if (errors && errors.length > 0) {
             mainContent += '<details style="margin-top:0.5rem;"><summary style="cursor:pointer; color:var(--danger);">❌ Ошибки (' + errors.length + ')</summary>';
             mainContent += '<ul style="text-align:left; font-size:0.75rem; color:var(--text-muted); padding-left:1.5rem; max-height:100px; overflow-y:auto;">';
             errors.forEach(e => { mainContent += '<li>' + esc(e) + '</li>'; });
             mainContent += '</ul></details>';
         }
 
-        // Список треков — всегда, с прокруткой
         let trackListHtml = '';
-        if (tracks.length > 0) {
+        if (tracks && tracks.length > 0) {
             trackListHtml = '<ul style="text-align:left; font-size:0.8rem; color:var(--text-muted); padding-left:1.5rem; margin:0.5rem 0 0 0; max-height:180px; overflow-y:auto; width:100%; scrollbar-width:none; -ms-overflow-style:none;">';
             trackListHtml += '<style>.io-summary-overlay .track-scroll::-webkit-scrollbar { display: none !important; width: 0; height: 0; }</style>';
             trackListHtml = trackListHtml.replace('<ul ', '<ul class="track-scroll" ');
@@ -1619,10 +1512,163 @@ if (textareaWrapper && textareaEl) {
         overlay.addEventListener("click", (e) => { if (e.target === overlay) overlay.remove(); });
     }
 
+    // --- Polling Logic ---
+    function startIoPolling(taskId, type) {
+        currentIoTaskId = taskId;
+        
+        ioPollingInterval = setInterval(async () => {
+            try {
+                const url = type === 'export' ? `/api/library/export/status/${taskId}` : `/api/library/import/status/${taskId}`;
+                const res = await fetch(url);
+                const data = await res.json();
+
+                if (data.status === 'running') {
+                    // Обновляем UI прогрессом
+                    const statusText = document.getElementById("app-status-text");
+                    const statusProgress = document.getElementById("app-status-progress");
+                    const statusProgressFill = document.getElementById("app-status-progress-fill");
+                    
+                    if (statusText && data.message) statusText.textContent = data.message;
+                    if (statusProgress) statusProgress.style.display = "";
+                    if (statusProgressFill) {
+                        const progress = data.progress;
+                        if (progress !== null && progress !== undefined && !isNaN(progress)) {
+                            statusProgressFill.style.width = progress + "%";
+                        } else {
+                            // Показываем неопределённый прогресс (анимация)
+                            statusProgressFill.style.width = "30%";
+                            statusProgressFill.style.animation = "pulse 1.5s infinite ease-in-out";
+                        }
+                    }
+                } else if (data.status === 'done' || data.status === 'completed') {
+                    clearInterval(ioPollingInterval);
+                    ioPollingInterval = null;
+                    currentIoTaskId = null;
+                    setBusy(false);
+                    
+                    if (type === 'export') {
+                        showCompletionSummary("📦 Экспорт завершён", `Файл успешно сохранён.`);
+                    } else {
+                        await loadTracks();
+                        // ✅ data уже содержит нужные поля напрямую
+                        showImportSummary(data);
+                    }
+                } else if (data.status === 'error' || data.status === 'failed') {
+                    clearInterval(ioPollingInterval);
+                    ioPollingInterval = null;
+                    currentIoTaskId = null;
+                    setBusy(false);
+                    showCompletionSummary("❌ Ошибка", data.message || "Произошла ошибка при выполнении задачи.");
+                }
+            } catch (e) {
+                console.error("Polling error:", e);
+            }
+        }, 1000); // Опрос каждую секунду
+    }
+
+    // --- EXPORT ---
+    if (exportBtn) {
+        exportBtn.addEventListener("click", async () => {
+            if (isBusy) return;
+            try {
+                // 1. Запрос пути сохранения
+                let outputPath = null;
+                if (window.pywebview && window.pywebview.api) {
+                    outputPath = await window.pywebview.api.save_file_dialog(
+                        "Экспорт библиотеки",
+                        "karaoke_library_" + new Date().toISOString().slice(0, 16).replace(/[T:]/g, "-") + ".zip"
+                    );
+                } else {
+                    // Fallback для браузера (не поддерживается для больших файлов, но оставим для совместимости)
+                    showCompletionSummary("⚠️ Внимание", "Экспорт больших библиотек доступен только в десктопном режиме.");
+                    return;
+                }
+
+                if (!outputPath) return; // Пользователь отменил диалог
+
+                setBusy(true, "💾 Запуск экспорта...");
+
+                // 2. Запуск задачи на сервере
+                const res = await fetch("/api/library/export/start", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ output_path: outputPath })
+                });
+
+                if (!res.ok) throw new Error("Не удалось запустить экспорт");
+                
+                const { task_id } = await res.json();
+                
+                // 3. Запуск поллинга
+                setBusy(true, "💾 Подготовка..."); // Начальный текст
+                startIoPolling(task_id, 'export');
+
+            } catch (e) {
+                setBusy(false);
+                console.error("Ошибка экспорта:", e);
+                showCompletionSummary("❌ Ошибка экспорта", e.message);
+            }
+        });
+    }
+
+    // --- IMPORT ---
+    if (importBtn) {
+        importBtn.addEventListener("click", async () => {
+            if (isBusy) return;
+            try {
+                // 1. Выбор файла
+                let filePath = null;
+                if (window.pywebview && window.pywebview.api) {
+                    filePath = await window.pywebview.api.open_file_dialog(false, "ZIP Files | *.zip");
+                } else {
+                    // Fallback для браузера
+                    const input = document.createElement("input");
+                    input.type = "file";
+                    input.accept = ".zip";
+                    input.onchange = async () => {
+                        if (input.files.length) {
+                            // Для маленьких файлов в браузере можно использовать старый метод, 
+                            // но для единообразия лучше предупредить.
+                            showCompletionSummary("⚠️ Внимание", "Импорт больших архивов доступен только в десктопном режиме.");
+                        }
+                    };
+                    input.click();
+                    return;
+                }
+
+                if (!filePath) return; // Пользователь отменил
+
+                setBusy(true, "📦 Запуск импорта...");
+
+                // 2. Запуск задачи на сервере
+                const res = await fetch("/api/library/import/start", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ path: filePath })
+                });
+
+                if (!res.ok) {
+                    const errData = await res.json().catch(() => ({}));
+                    throw new Error(errData.detail || "Не удалось запустить импорт");
+                }
+                
+                const { task_id } = await res.json();
+                
+                // 3. Запуск поллинга
+                setBusy(true, "📦 Чтение архива...");
+                startIoPolling(task_id, 'import');
+
+            } catch (e) {
+                setBusy(false);
+                console.error("Ошибка импорта:", e);
+                showCompletionSummary("❌ Ошибка импорта", e.message);
+            }
+        });
+    }
+
     // Блокировка клавиатуры и кликов во время операции
     document.addEventListener("keydown", (e) => {
         if (!isBusy) return;
-        // Разрешаем только Escape для отмены (если будет реализовано)
         if (e.key === "Escape") return;
         e.preventDefault();
         e.stopPropagation();
@@ -1630,7 +1676,6 @@ if (textareaWrapper && textareaEl) {
 
     document.addEventListener("click", (e) => {
         if (!isBusy) return;
-        // Разрешаем клик только по overlay завершения
         if (e.target.closest(".io-summary-overlay")) return;
         e.preventDefault();
         e.stopPropagation();
