@@ -378,14 +378,6 @@ echo ""
 mkdir -p "$INSTALL_DIR/core"
 mkdir -p "$INSTALL_DIR/.venv"
 
-# Создаём подпапки внутри core (там где они нужны программе)
-mkdir -p "$INSTALL_DIR/core/models/audio_separator"
-mkdir -p "$INSTALL_DIR/core/models/whisper"
-mkdir -p "$INSTALL_DIR/core/cache"
-mkdir -p "$INSTALL_DIR/core/debug_logs"
-mkdir -p "$INSTALL_DIR/core/library"
-mkdir -p "$INSTALL_DIR/core/shared/formats"
-
 log_success "Структура папок создана"
 echo ""
 
@@ -435,7 +427,7 @@ if [ "$CODE_INSTALLED" = false ]; then
             rm -rf "$INSTALL_DIR/tmp_clone"
             log_success "Файлы загружены из репозитория"
         else
-            handle_error "git не найден. Установите git или поместите файлы программы рядом со скриптом." 6
+            error_handler "git не найден. Установите git или поместите файлы программы рядом со скриптом." 6
         fi
     fi
 fi
@@ -503,7 +495,7 @@ samplerate==0.1.0
 resampy==0.4.3
 julius==0.2.7
 numba==0.62.0
-numpy<2.0
+numpy>=2.0
 requests
 pillow
 mutagen
@@ -539,7 +531,7 @@ if [ "$VENV_INSTALLED" = false ]; then
     log_info "Создаём виртуальное окружение..."
     "$PYTHON_CMD" -m venv "$INSTALL_DIR/.venv"
     if [ $? -ne 0 ]; then
-        handle_error "Не удалось создать виртуальное окружение" 4
+        error_handler "Не удалось создать виртуальное окружение" 4
     fi
     log_success "Виртуальное окружение создано"
 fi
@@ -575,7 +567,7 @@ if [ "$PACKAGES_INSTALLED" = false ]; then
     cd "$INSTALL_DIR/core"
     # Убираем --system, используем явный путь к Python из venv
     if ! uv pip install -r requirements.txt --python "$VIRTUAL_ENV/bin/python"; then
-        handle_error "Не удалось установить Python-пакеты. Проверьте логи выше." 5
+        error_handler "Не удалось установить Python-пакеты. Проверьте логи выше." 5
     fi
     
     log_success "Python-пакеты установлены"
@@ -603,20 +595,42 @@ if [ "$MODELS_INSTALLED" = false ]; then
     mkdir -p "$INSTALL_DIR/core/models/audio_separator"
     mkdir -p "$INSTALL_DIR/core/models/whisper"
 
-    # Модель для сепарации вокала
+    # Модель для сепарации вокала (Kim_Vocal_2.onnx ~79MB)
     if [ ! -f "$INSTALL_DIR/core/models/audio_separator/Kim_Vocal_2.onnx" ]; then
         log_info "Скачиваем Kim_Vocal_2.onnx..."
-        curl -L "https://huggingface.co/KimberleyJensen/Kim_Vocal_2/resolve/main/Kim_Vocal_2.onnx" \
-             -o "$INSTALL_DIR/core/models/audio_separator/Kim_Vocal_2.onnx"
+        if curl -L --progress-bar "https://huggingface.co/KimberleyJensen/Kim_Vocal_2/resolve/main/Kim_Vocal_2.onnx" \
+             -o "$INSTALL_DIR/core/models/audio_separator/Kim_Vocal_2.onnx"; then
+            # Проверяем размер файла (должен быть > 50MB)
+            MODEL_SIZE=$(stat -c%s "$INSTALL_DIR/core/models/audio_separator/Kim_Vocal_2.onnx" 2>/dev/null || echo 0)
+            if [ "$MODEL_SIZE" -gt 50000000 ]; then
+                log_success "Kim_Vocal_2.onnx загружена ($(awk "BEGIN {printf \"%.1f\", $MODEL_SIZE/1048576}") MB)"
+            else
+                log_warn "Файл Kim_Vocal_2.onnx слишком мал, возможна ошибка загрузки"
+                rm -f "$INSTALL_DIR/core/models/audio_separator/Kim_Vocal_2.onnx"
+            fi
+        else
+            log_warn "Не удалось скачать Kim_Vocal_2.onnx (будет загружена при первом запуске)"
+        fi
     else
         log_info "Kim_Vocal_2.onnx уже существует. Пропускаем."
     fi
 
-    # Модель Whisper для транскрипции
+    # Модель Whisper для транскрипции (medium.pt ~769MB)
     if [ ! -f "$INSTALL_DIR/core/models/whisper/medium.pt" ]; then
         log_info "Скачиваем Whisper medium..."
-        curl -L "https://openaipublic.azureedge.net/main/whisper/models/345ae4da62f9b3d59415adc60127b97c714f32e89e9366fc6e6bb8861dd51d2b/medium.pt" \
-             -o "$INSTALL_DIR/core/models/whisper/medium.pt"
+        if curl -L --progress-bar "https://openaipublic.azureedge.net/main/whisper/models/345ae4da62f9b3d59415adc60127b97c714f32e89e9366fc6e6bb8861dd51d2b/medium.pt" \
+             -o "$INSTALL_DIR/core/models/whisper/medium.pt"; then
+            # Проверяем размер файла (должен быть > 500MB)
+            MODEL_SIZE=$(stat -c%s "$INSTALL_DIR/core/models/whisper/medium.pt" 2>/dev/null || echo 0)
+            if [ "$MODEL_SIZE" -gt 500000000 ]; then
+                log_success "Whisper medium загружена ($(awk "BEGIN {printf \"%.1f\", $MODEL_SIZE/1048576}") MB)"
+            else
+                log_warn "Файл Whisper medium слишком мал, возможна ошибка загрузки"
+                rm -f "$INSTALL_DIR/core/models/whisper/medium.pt"
+            fi
+        else
+            log_warn "Не удалось скачать Whisper medium (будет загружена при первом запуске)"
+        fi
     else
         log_info "Whisper medium уже существует. Пропускаем."
     fi
@@ -680,10 +694,10 @@ if [ "$TOKEN_INSTALLED" = false ]; then
     cat > "$INSTALL_DIR/.env" << EOF
 # $APP_NAME Configuration
 GENIUS_TOKEN=$GENIUS_TOKEN
-MODEL_PATH=$INSTALL_DIR/models
-CACHE_PATH=$INSTALL_DIR/cache
-LIBRARY_PATH=$INSTALL_DIR/library
-DEBUG_PATH=$INSTALL_DIR/debug_logs
+MODEL_PATH=$INSTALL_DIR/core/models
+CACHE_PATH=$INSTALL_DIR/core/cache
+LIBRARY_PATH=$INSTALL_DIR/core/library
+DEBUG_PATH=$INSTALL_DIR/core/debug_logs
 EOF
     
     log_success "Файл .env создан"
@@ -693,9 +707,9 @@ fi
 if [ ! -f "$INSTALL_DIR/.env.cache" ]; then
     cat > "$INSTALL_DIR/.env.cache" << EOF
 # Cache configuration
-UV_CACHE_DIR=$INSTALL_DIR/cache/uv
-TORCH_HOME=$INSTALL_DIR/cache/torch
-HF_HOME=$INSTALL_DIR/cache/huggingface
+UV_CACHE_DIR=$INSTALL_DIR/core/cache/uv
+TORCH_HOME=$INSTALL_DIR/core/cache/torch
+HF_HOME=$INSTALL_DIR/core/cache/huggingface
 EOF
 fi
 
@@ -729,10 +743,10 @@ fi
 # Активируем виртуальное окружение
 source "$SCRIPT_DIR/.venv/bin/activate"
 
-# Экспортируем пути
-export MODEL_PATH="${MODEL_PATH:-$SCRIPT_DIR/models}"
-export CACHE_PATH="${CACHE_PATH:-$SCRIPT_DIR/cache}"
-export LIBRARY_PATH="${LIBRARY_PATH:-$SCRIPT_DIR/library}"
+# Экспортируем пути (теперь все пути внутри core)
+export MODEL_PATH="${MODEL_PATH:-$SCRIPT_DIR/core/models}"
+export CACHE_PATH="${CACHE_PATH:-$SCRIPT_DIR/core/cache}"
+export LIBRARY_PATH="${LIBRARY_PATH:-$SCRIPT_DIR/core/library}"
 
 # Запускаем приложение
 exec python "$SCRIPT_DIR/core/main.py" "$@"
