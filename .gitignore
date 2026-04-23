@@ -1,61 +1,48 @@
-# ═══════════════════════════════════════════════════════
-# Free Karaoke — .gitignore
-# ═══════════════════════════════════════════════════════
+```
+# Database files
+*.db
 
-# ── Пользовательские данные (core) ─────────────────────
-core/cache/
-core/debug_logs/
-core/library/
-core/models/
-core/*.db
-core/*.db-shm
-core/*.db-wal
-core/requirements.txt
-core/huey_queue.db
-core/huey_queue.db-*
-core/__pycache__/
-core/*.pyc
-core/.venv/
-core/venv/
-core/reinstall.sh
-
-# ── Секреты пользователя ───────────────────────────────
-core/.env
-core/.env.cache
-core/portable.env
-
-# ── Скрипты сборки — временная директория ─────────────
-releases/_build/
-releases/_build-cache/
-releases/_build-installer
-releases/*.AppImage
-releases/*.apk
-releases/FreeKaraoke-*/
-releases/core/
-
-# ── Собранные артефакты ────────────────────────────────
-dist/
-build/
-*.AppImage
-*.apk
-*.aab
-Free_Karaoke/
-FreeKaraoke/
-
-# ── Python ─────────────────────────────────────────────
+# Python
 __pycache__/
 *.pyc
 *.pyo
-*.egg-info/
-.eggs/
+*.pyd
 
-# ── IDE ────────────────────────────────────────────────
-.idea/
+# Dependencies
+.venv/
+venv/
+env/
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Environment
+.env
+.env.local
+.env.*
+!.env.example
+
+# Logs
+*.log
+
+# Coverage reports
+coverage/
+.htmlcov/
+.coverage
+*.cover
+
+# IDE
 .vscode/
-*.iml
+.idea/
 *.swp
-*~
+*.swo
+*.tmp
 
-# ── OS ─────────────────────────────────────────────────
+# OS
 .DS_Store
 Thumbs.db
+
+# Build artifacts
+dist/
+build/
+*.egg-info/
+```

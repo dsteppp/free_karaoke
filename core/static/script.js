@@ -1421,12 +1421,13 @@ if (textareaWrapper && textareaEl) {
 })();
 
 // ══════════════════════════════════════════════════════════════════════════════
-// ЭКСПОРТ / ИМПОРТ БИБЛИОТЕКИ
+// ЭКСПОРТ / ИМПОРТ БИБЛИОТЕКИ (потоковый с прогрессом)
 // ══════════════════════════════════════════════════════════════════════════════
 (function() {
     const importBtn = document.getElementById("import-btn");
     const exportBtn = document.getElementById("export-btn");
     let isBusy = false; // Блокировка одновременных операций
+    let statusPollingInterval = null;
 
     // Блокировка интерфейса во время операции
     function setBusy(busy, operation) {
@@ -1438,11 +1439,51 @@ if (textareaWrapper && textareaEl) {
         if (busy) {
             if (statusText) statusText.textContent = operation;
             if (statusSpinner) statusSpinner.style.display = "";
-            if (statusProgress) statusProgress.style.display = "none";
+            if (statusProgress) statusProgress.style.display = "";
         } else {
             if (statusText) statusText.textContent = "";
             if (statusSpinner) statusSpinner.style.display = "none";
             if (statusProgress) statusProgress.style.display = "none";
+        }
+    }
+
+    // Старт polling статуса
+    function startStatusPolling(callback) {
+        if (statusPollingInterval) clearInterval(statusPollingInterval);
+        
+        statusPollingInterval = setInterval(async () => {
+            try {
+                const r = await fetch("/api/library/import/status");
+                const d = await r.json();
+                
+                if (d.active && d.message) {
+                    const statusText = document.getElementById("app-status-text");
+                    const statusProgress = document.getElementById("app-status-progress");
+                    const statusProgressFill = document.getElementById("app-status-progress-fill");
+                    
+                    if (statusText) statusText.textContent = d.message;
+                    if (statusProgress && d.progress !== null && d.progress !== undefined) {
+                        statusProgress.style.display = "";
+                        if (statusProgressFill) statusProgressFill.style.width = d.progress + "%";
+                    }
+                }
+                
+                // Проверяем результат
+                if (d.result) {
+                    stopStatusPolling();
+                    callback(d.result);
+                }
+            } catch (e) {
+                console.error("Ошибка polling статуса:", e);
+            }
+        }, 1000);
+    }
+
+    // Стоп polling статуса
+    function stopStatusPolling() {
+        if (statusPollingInterval) {
+            clearInterval(statusPollingInterval);
+            statusPollingInterval = null;
         }
     }
 
@@ -1473,9 +1514,35 @@ if (textareaWrapper && textareaEl) {
                     if (!path) { setBusy(false); return; }
 
                     setBusy(true, "💾 Создание архива...");
+                    
+                    // Потоковая загрузка с прогрессом через fetch + FileReader
                     const res = await fetch("/api/library/export", { method: "POST" });
                     if (!res.ok) throw new Error("Ошибка экспорта");
-                    const blob = await res.blob();
+                    
+                    // Используем потоковое чтение для больших файлов
+                    const reader = res.body.getReader();
+                    const chunks = [];
+                    let receivedLength = 0;
+                    
+                    while (true) {
+                        const {done, value} = await reader.read();
+                        if (done) break;
+                        chunks.push(value);
+                        receivedLength += value.length;
+                        
+                        // Обновляем прогресс (примерно по полученным байтам)
+                        setBusy(true, `💾 Загрузка: ${(receivedLength / 1024 / 1024).toFixed(1)} МБ...`);
+                    }
+                    
+                    // Собираем все чанки в один blob
+                    const chunksAll = new Uint8Array(receivedLength);
+                    let position = 0;
+                    for (let chunk of chunks) {
+                        chunksAll.set(chunk, position);
+                        position += chunk.length;
+                    }
+                    
+                    const blob = new Blob([chunksAll], {type: 'application/zip'});
 
                     setBusy(true, "💾 Сохранение файла...");
                     const b64 = await new Promise((resolve, reject) => {
@@ -1490,6 +1557,7 @@ if (textareaWrapper && textareaEl) {
                     setBusy(false);
                     showCompletionSummary("📦 Экспорт завершён", "Библиотека успешно сохранена.");
                 } else {
+                    // Fallback для браузера — скачивание через blob URL
                     const res = await fetch("/api/library/export", { method: "POST" });
                     if (!res.ok) throw new Error("Ошибка экспорта");
                     const blob = await res.blob();
@@ -1517,22 +1585,31 @@ if (textareaWrapper && textareaEl) {
                 if (window.pywebview && window.pywebview.api) {
                     const filePath = await window.pywebview.api.open_file_dialog(false, "ZIP Files | *.zip");
                     if (!filePath) return;
+                    
                     setBusy(true, "📦 Импорт библиотеки...");
-                    // Python сам читает файл — без передачи base64
+                    
+                    // Запускаем импорт через фоновую задачу
                     const res = await fetch("/api/library/import-from-path", {
                         method: "POST",
                         headers: { "Content-Type": "application/json" },
                         body: JSON.stringify({ path: filePath }),
                     });
+                    
                     if (!res.ok) {
                         const err = await res.json().catch(() => ({}));
                         setBusy(false);
                         throw new Error(err.detail || "Ошибка сервера");
                     }
+                    
                     const result = await res.json();
-                    await loadTracks();
-                    setBusy(false);
-                    showImportSummary(result);
+                    
+                    // Запускаем polling статуса
+                    startStatusPolling((finalResult) => {
+                        setBusy(false);
+                        showImportSummary(finalResult);
+                        loadTracks(); // Обновляем список треков
+                    });
+                    
                 } else {
                     // Fallback: HTML input + FormData
                     const input = document.createElement("input");
@@ -1564,9 +1641,13 @@ if (textareaWrapper && textareaEl) {
         }
 
         const result = await res.json();
-        await loadTracks();
-        setBusy(false);
-        showImportSummary(result);
+        
+        // Запускаем polling статуса
+        startStatusPolling((finalResult) => {
+            setBusy(false);
+            showImportSummary(finalResult);
+            loadTracks(); // Обновляем список треков
+        });
     }
 
     function showImportSummary(result) {
