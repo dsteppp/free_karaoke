@@ -175,6 +175,8 @@ echo ""
 # Определяем дистрибутив
 DISTRO=""
 PACKAGE_MANAGER=""
+OS_NAME=$(uname -s)
+
 if [ -f /etc/os-release ]; then
     source /etc/os-release
     DISTRO="$ID"
@@ -197,6 +199,8 @@ if [ -f /etc/os-release ]; then
     esac
     log_info "Дистрибутив: $PRETTY_NAME"
 fi
+
+log_info "ОС: $OS_NAME"
 
 # Определяем GPU
 GPU_TYPE="CPU"
@@ -385,6 +389,8 @@ mkdir -p "$INSTALL_DIR/core"
 mkdir -p "$INSTALL_DIR/core/cache/uv"
 mkdir -p "$INSTALL_DIR/core/cache/torch"
 mkdir -p "$INSTALL_DIR/core/cache/huggingface"
+mkdir -p "$INSTALL_DIR/core/cache/webview"
+mkdir -p "$INSTALL_DIR/core/cache/chromium"
 mkdir -p "$INSTALL_DIR/core/models/audio_separator"
 mkdir -p "$INSTALL_DIR/core/models/whisper"
 # Папки library, debug_logs, shared создаются программой при первом запуске
@@ -727,7 +733,14 @@ HF_HOME=$INSTALL_DIR/core/cache/huggingface
 HUGGINGFACE_HUB_CACHE=$INSTALL_DIR/core/cache/huggingface/hub
 TRANSFORMERS_CACHE=$INSTALL_DIR/core/cache/huggingface/hub
 XDG_CACHE_HOME=$INSTALL_DIR/core/cache
+QTWEBENGINE_CHROMIUM_FLAGS=--no-sandbox --disable-gpu --disable-gpu-compositing --disable-gpu-rasterization --disable-gpu-memory-buffer --use-gl=swiftshader --disable-software-rasterizer
+QTWEBENGINE_DICTIONARIES_PATH=$INSTALL_DIR/core/cache/chromium
 EOF
+
+if [ "$OS_NAME" = "Linux" ]; then
+    echo "QT_QPA_PLATFORM=xcb" >> "$INSTALL_DIR/core/.env.cache"
+    echo "QT_XCB_GL_INTEGRATION=none" >> "$INSTALL_DIR/core/.env.cache"
+fi
 
 if [ "$GPU_TYPE" = "AMD" ]; then
     echo "HSA_OVERRIDE_GFX_VERSION=11.0.0" >> "$INSTALL_DIR/core/.env.cache"
