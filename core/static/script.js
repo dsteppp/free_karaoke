@@ -1428,6 +1428,7 @@ if (textareaWrapper && textareaEl) {
     const exportBtn = document.getElementById("export-btn");
     let isBusy = false; // Блокировка одновременных операций
     let statusPollingInterval = null;
+    let exportPollingInterval = null;
 
     // Блокировка интерфейса во время операции
     function setBusy(busy, operation) {
@@ -1447,7 +1448,7 @@ if (textareaWrapper && textareaEl) {
         }
     }
 
-    // Старт polling статуса
+    // Старт polling статуса импорта
     function startStatusPolling(callback) {
         if (statusPollingInterval) clearInterval(statusPollingInterval);
         
@@ -1479,11 +1480,51 @@ if (textareaWrapper && textareaEl) {
         }, 1000);
     }
 
-    // Стоп polling статуса
+    // Старт polling статуса экспорта
+    function startExportPolling(callback) {
+        if (exportPollingInterval) clearInterval(exportPollingInterval);
+        
+        exportPollingInterval = setInterval(async () => {
+            try {
+                const r = await fetch("/api/library/export/status");
+                const d = await r.json();
+                
+                if (d.active && d.message) {
+                    const statusText = document.getElementById("app-status-text");
+                    const statusProgress = document.getElementById("app-status-progress");
+                    const statusProgressFill = document.getElementById("app-status-progress-fill");
+                    
+                    if (statusText) statusText.textContent = d.message;
+                    if (statusProgress && d.progress !== null && d.progress !== undefined) {
+                        statusProgress.style.display = "";
+                        if (statusProgressFill) statusProgressFill.style.width = d.progress + "%";
+                    }
+                }
+                
+                // Проверяем результат
+                if (d.result) {
+                    stopExportPolling();
+                    callback(d.result);
+                }
+            } catch (e) {
+                console.error("Ошибка polling статуса экспорта:", e);
+            }
+        }, 1000);
+    }
+
+    // Стоп polling статуса импорта
     function stopStatusPolling() {
         if (statusPollingInterval) {
             clearInterval(statusPollingInterval);
             statusPollingInterval = null;
+        }
+    }
+
+    // Стоп polling статуса экспорта
+    function stopExportPolling() {
+        if (exportPollingInterval) {
+            clearInterval(exportPollingInterval);
+            exportPollingInterval = null;
         }
     }
 
@@ -1515,60 +1556,36 @@ if (textareaWrapper && textareaEl) {
 
                     setBusy(true, "💾 Создание архива...");
                     
-                    // Потоковая загрузка с прогрессом через fetch + FileReader
-                    const res = await fetch("/api/library/export", { method: "POST" });
-                    if (!res.ok) throw new Error("Ошибка экспорта");
-                    
-                    // Используем потоковое чтение для больших файлов
-                    const reader = res.body.getReader();
-                    const chunks = [];
-                    let receivedLength = 0;
-                    
-                    while (true) {
-                        const {done, value} = await reader.read();
-                        if (done) break;
-                        chunks.push(value);
-                        receivedLength += value.length;
-                        
-                        // Обновляем прогресс (примерно по полученным байтам)
-                        setBusy(true, `💾 Загрузка: ${(receivedLength / 1024 / 1024).toFixed(1)} МБ...`);
-                    }
-                    
-                    // Собираем все чанки в один blob
-                    const chunksAll = new Uint8Array(receivedLength);
-                    let position = 0;
-                    for (let chunk of chunks) {
-                        chunksAll.set(chunk, position);
-                        position += chunk.length;
-                    }
-                    
-                    const blob = new Blob([chunksAll], {type: 'application/zip'});
-
-                    setBusy(true, "💾 Сохранение файла...");
-                    const b64 = await new Promise((resolve, reject) => {
-                        const reader = new FileReader();
-                        reader.onload = () => resolve(reader.result.split(',')[1]);
-                        reader.onerror = reject;
-                        reader.readAsDataURL(blob);
+                    // Запускаем экспорт через фоновую задачу
+                    const res = await fetch("/api/library/export", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ path: path }),
                     });
-                    const ok = await window.pywebview.api.save_binary(path, b64);
-                    if (!ok) throw new Error("Не удалось сохранить файл");
+                    
+                    if (!res.ok) {
+                        const err = await res.json().catch(() => ({}));
+                        setBusy(false);
+                        throw new Error(err.detail || "Ошибка сервера");
+                    }
+                    
+                    const result = await res.json();
+                    
+                    // Запускаем polling статуса
+                    startExportPolling((finalResult) => {
+                        setBusy(false);
+                        showCompletionSummary("📦 Экспорт завершён", `Библиотека сохранена в: ${path}`);
+                    });
 
-                    setBusy(false);
-                    showCompletionSummary("📦 Экспорт завершён", "Библиотека успешно сохранена.");
                 } else {
                     // Fallback для браузера — скачивание через blob URL
-                    const res = await fetch("/api/library/export", { method: "POST" });
-                    if (!res.ok) throw new Error("Ошибка экспорта");
-                    const blob = await res.blob();
-                    const url = URL.createObjectURL(blob);
-                    const a = document.createElement("a");
-                    a.href = url;
-                    a.download = "karaoke_library_" + new Date().toISOString().slice(0, 16).replace(/[T:]/g, "-") + ".zip";
-                    a.click();
-                    URL.revokeObjectURL(url);
+                    const res = await fetch("/api/library/export", { 
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ path: "" }),
+                    });
                     setBusy(false);
-                    showCompletionSummary("📦 Экспорт завершён", "Файл скачан.");
+                    throw new Error("Прямое скачивание в браузере не поддерживается. Используйте desktop-версию.");
                 }
             } catch (e) {
                 setBusy(false);

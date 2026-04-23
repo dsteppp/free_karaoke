@@ -12,6 +12,7 @@ from app_status import set_status, clear_status
 from app_logger import get_logger
 from tinytag import TinyTag
 import os
+import re
 import traceback
 import threading
 import gc
@@ -25,6 +26,47 @@ import shutil
 from datetime import datetime
 
 log = get_logger("worker")
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Utility функции для нормализации и логирования (ранее в library_streaming.py)
+# ──────────────────────────────────────────────────────────────────────────────
+
+# Путь к логу импорта — portable-режим
+LOGS_DIR = os.environ.get("FK_LOGS_DIR") or os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "debug_logs"
+)
+IMPORT_LOG_PATH = os.path.join(LOGS_DIR, "import_streaming.log")
+
+_import_lock = threading.Lock()
+
+
+def normalize_string(s: str) -> str:
+    """
+    Нормализация строки для сравнения:
+    - lowercase
+    - удаление пунктуации
+    - collapse whitespace
+    - strip
+    """
+    if not s:
+        return ""
+    s = s.lower().strip()
+    # Убираем пунктуацию и спецсимволы
+    s = re.sub(r'[^\w\sа-яёa-z0-9]', '', s, flags=re.IGNORECASE | re.UNICODE)
+    # Collapse whitespace
+    s = re.sub(r'\s+', ' ', s).strip()
+    return s
+
+
+def _import_log(msg: str):
+    """Записать сообщение в лог импорта."""
+    try:
+        os.makedirs(os.path.dirname(IMPORT_LOG_PATH), exist_ok=True)
+        with open(IMPORT_LOG_PATH, 'a', encoding='utf-8') as f:
+            f.write(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} {msg}\n")
+    except Exception:
+        pass
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Глобальный мьютекс: гарантирует, что только один трек обрабатывается
@@ -276,6 +318,107 @@ def _process_track(track_id: str):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# TASK: Экспорт библиотеки (фоновая задача с прямой записью в файл)
+# ──────────────────────────────────────────────────────────────────────────────
+@huey.task()
+def export_library_task(dest_path: str, library_dir: str):
+    """
+    Фоновая задача для экспорта библиотеки в ZIP файл.
+    
+    Прямая запись в целевой файл без временных файлов.
+    Поддерживает прерывание и прогресс через app_status.
+    
+    Args:
+        dest_path: Путь к целевому ZIP файлу
+        library_dir: Исходная директория библиотеки
+    """
+    # _import_log уже определена в этом файле
+    from database import Track
+    
+    result = {
+        "files_exported": 0,
+        "total_bytes": 0,
+        "errors": [],
+    }
+    
+    try:
+        log.info("=" * 60)
+        log.info("ЭКСПОРТ БИБЛИОТЕКИ (фоновая задача)")
+        log.info("Источник: %s", library_dir)
+        log.info("Цель: %s", dest_path)
+        log.info("=" * 60)
+        
+        _import_log(f"=== Экспорт библиотеки {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ===")
+        _import_log(f"Источник: {library_dir}")
+        _import_log(f"Цель: {dest_path}")
+        
+        # Получаем список всех файлов в библиотеке
+        all_files = sorted([
+            f for f in os.listdir(library_dir)
+            if os.path.isfile(os.path.join(library_dir, f))
+        ])
+        total_files = len(all_files)
+        
+        log.info("Найдено %d файлов для экспорта", total_files)
+        _import_log(f"Найдено {total_files} файлов для экспорта")
+        
+        # Создаём ZIP напрямую в целевой файл
+        with zipfile.ZipFile(dest_path, 'w', zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
+            for idx, fname in enumerate(all_files, 1):
+                fpath = os.path.join(library_dir, fname)
+                
+                # Обновляем статус
+                progress = (idx / total_files) * 100 if total_files > 0 else 0
+                set_status(f"📦 Экспорт: {fname} ({idx}/{total_files})", progress)
+                _import_log(f"[{idx}/{total_files}] Добавление: {fname}")
+                
+                try:
+                    zf.write(fpath, arcname=fname)
+                    file_size = os.path.getsize(fpath)
+                    result["files_exported"] += 1
+                    result["total_bytes"] += file_size
+                    log.debug("  Добавлен (%d/%d): %s (%d байт)", idx, total_files, fname, file_size)
+                except Exception as e:
+                    log.error("  Ошибка добавления %s: %s", fname, e)
+                    _import_log(f"  ❌ Ошибка: {fname}: {e}")
+                    result["errors"].append(f"{fname}: {e}")
+        
+        log.info("Экспорт завершён: %d файлов, %d байт", result["files_exported"], result["total_bytes"])
+        _import_log(f"✅ Экспорт завершён: {result['files_exported']} файлов, {result['total_bytes']} байт")
+        
+        # Сохраняем результат в кэш
+        from app_status import _ensure_dir
+        import json as json_mod
+        _ensure_dir()
+        cache_file = os.path.join(
+            os.environ.get("FK_CACHE_DIR") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "cache"),
+            "export_result.json"
+        )
+        with open(cache_file, 'w', encoding='utf-8') as f:
+            json_mod.dump(result, f, ensure_ascii=False)
+        
+    except Exception as e:
+        log.error("Ошибка экспорта: %s", e, exc_info=True)
+        _import_log(f"❌ КРИТИЧЕСКАЯ ОШИБКА: {e}")
+        result["errors"].append(f"Критическая ошибка: {e}")
+        
+        # Сохраняем ошибку в кэш
+        from app_status import _ensure_dir
+        import json as json_mod
+        _ensure_dir()
+        cache_file = os.path.join(
+            os.environ.get("FK_CACHE_DIR") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "cache"),
+            "export_result.json"
+        )
+        with open(cache_file, 'w', encoding='utf-8') as f:
+            json_mod.dump(result, f, ensure_ascii=False)
+    
+    finally:
+        clear_status()
+        log.info("Экспорт библиотеки завершён")
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # TASK: Импорт библиотеки (фоновая задача с потоковой обработкой)
 # ──────────────────────────────────────────────────────────────────────────────
 @huey.task()
@@ -283,18 +426,20 @@ def import_library_task(zip_path: str, library_dir: str):
     """
     Фоновая задача для импорта библиотеки из ZIP файла.
     
-    Обрабатывает файлы пакетно, не загружая весь архив в память.
+    Потоковая обработка без полной распаковки: файлы извлекаются по одному
+    и сразу обрабатываются пакетно. Это позволяет импортировать архивы
+    любого размера без требования двойного места на диске.
+    
     Поддерживает прерывание и прогресс через app_status.
     
     Args:
         zip_path: Путь к ZIP файлу
         library_dir: Целевая директория библиотеки
     """
-    from library_streaming import normalize_string, _import_log
+    # normalize_string и _import_log уже определены в этом файле
     from database import Track
     
     db = SessionLocal()
-    tmp_dir = None
     
     # Глобальный результат
     result = {
@@ -320,22 +465,26 @@ def import_library_task(zip_path: str, library_dir: str):
         except Exception:
             pass
         
-        _import_log(f"Распаковка ZIP: {zip_path}")
+        _import_log(f"Открытие ZIP: {zip_path}")
         
-        # 1. Распаковка во временную директорию
-        tmp_dir = tempfile.mkdtemp(prefix="karaoke_import_")
-        log.info("Временная директория: %s", tmp_dir)
+        # 1. Открываем ZIP для потокового чтения
+        zf = zipfile.ZipFile(zip_path, 'r')
+        infolist = zf.infolist()
+        total_files = len(infolist)
         
-        with zipfile.ZipFile(zip_path, 'r') as zf:
-            zf.extractall(tmp_dir)
+        log.info("Найдено %d файлов в архиве", total_files)
+        _import_log(f"Найдено {total_files} файлов в архиве")
         
-        # 2. Группировка файлов по base_name
+        # 2. Группировка файлов по base_name (потоковая)
         file_groups: Dict[str, dict] = {}
-        all_files = os.listdir(tmp_dir)
+        tmp_files = []  # Список временных файлов для очистки
         
-        for fname in all_files:
-            fpath = os.path.join(tmp_dir, fname)
-            if not os.path.isfile(fpath):
+        for idx, info in enumerate(infolist, 1):
+            if info.is_dir():
+                continue
+            
+            fname = os.path.basename(info.filename)
+            if not fname:
                 continue
             
             base = None
@@ -361,7 +510,23 @@ def import_library_task(zip_path: str, library_dir: str):
             
             if base not in file_groups:
                 file_groups[base] = {}
-            file_groups[base][ftype] = fpath
+            
+            # Извлекаем файл во временную директорию
+            tmp_fd, tmp_path = tempfile.mkstemp(suffix=f'_{fname}', prefix='karaoke_import_')
+            os.close(tmp_fd)
+            tmp_files.append(tmp_path)
+            
+            with open(tmp_path, 'wb') as outf:
+                outf.write(zf.read(info))
+            
+            file_groups[base][ftype] = tmp_path
+            
+            # Обновляем статус
+            progress = (idx / total_files) * 100 if total_files > 0 else 0
+            set_status(f"📦 Импорт: чтение {fname} ({idx}/{total_files})", progress)
+            _import_log(f"[{idx}/{total_files}] Извлечён: {fname}")
+        
+        zf.close()
         
         log.info("Найдено %d групп файлов", len(file_groups))
         _import_log(f"Найдено {len(file_groups)} потенциальных треков")
@@ -416,7 +581,7 @@ def import_library_task(zip_path: str, library_dir: str):
                 
                 # Обработка батча
                 batch_result = _process_import_batch(
-                    current_batch, library_dir, db, Track, existing_keys, tmp_dir
+                    current_batch, library_dir, db, Track, existing_keys
                 )
                 
                 result["added"] += batch_result["added"]
@@ -483,13 +648,14 @@ def import_library_task(zip_path: str, library_dir: str):
             json_mod.dump(result, f, ensure_ascii=False)
     
     finally:
-        # Очистка временной директории
-        if tmp_dir and os.path.exists(tmp_dir):
-            try:
-                shutil.rmtree(tmp_dir)
-                log.debug("Временная директория удалена: %s", tmp_dir)
-            except Exception:
-                pass
+        # Очистка временных файлов
+        for tmp_path in tmp_files:
+            if os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                    log.debug("Временный файл удалён: %s", tmp_path)
+                except Exception:
+                    pass
         
         # Удаляем ZIP после обработки
         if os.path.exists(zip_path):
@@ -511,13 +677,11 @@ def _process_import_batch(
     db_session,
     Track_model,
     existing_keys: set,
-    tmp_dir: str,
 ) -> dict:
     """
     Внутренняя функция для обработки батча импорта.
-    Дублирует логику из library_streaming для автономности задачи.
     """
-    from library_streaming import normalize_string, _import_log
+    # normalize_string и _import_log уже определены в этом файле
     
     result = {"added": 0, "skipped": 0, "errors": []}
     

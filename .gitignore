@@ -1,61 +1,45 @@
-# ═══════════════════════════════════════════════════════
-# Free Karaoke — .gitignore
-# ═══════════════════════════════════════════════════════
+```
+# Database
+*.db
 
-# ── Пользовательские данные (core) ─────────────────────
-core/cache/
-core/debug_logs/
-core/library/
-core/models/
-core/*.db
-core/*.db-shm
-core/*.db-wal
-core/requirements.txt
-core/huey_queue.db
-core/huey_queue.db-*
-core/__pycache__/
-core/*.pyc
-core/.venv/
-core/venv/
-core/reinstall.sh
+# Environment
+.env
+.env.local
+.env.*
 
-# ── Секреты пользователя ───────────────────────────────
-core/.env
-core/.env.cache
-core/portable.env
+# Dependencies
+node_modules/
+.venv/
+venv/
+__pycache__/
+.mypy_cache/
+.pytest_cache/
 
-# ── Скрипты сборки — временная директория ─────────────
-releases/_build/
-releases/_build-cache/
-releases/_build-installer
-releases/*.AppImage
-releases/*.apk
-releases/FreeKaraoke-*/
-releases/core/
-
-# ── Собранные артефакты ────────────────────────────────
+# Build artifacts
 dist/
 build/
-*.AppImage
-*.apk
-*.aab
-Free_Karaoke/
-FreeKaraoke/
-
-# ── Python ─────────────────────────────────────────────
-__pycache__/
+target/
 *.pyc
-*.pyo
-*.egg-info/
-.eggs/
+*.class
+*.o
+*.obj
+*.exe
+*.dll
+*.so
+*.a
+*.out
 
-# ── IDE ────────────────────────────────────────────────
-.idea/
-.vscode/
-*.iml
+# Logs and temp files
+*.log
+*.tmp
 *.swp
-*~
+*.swo
 
-# ── OS ─────────────────────────────────────────────────
+# Editors
+.vscode/
+.idea/
+
+# System files
 .DS_Store
 Thumbs.db
+```

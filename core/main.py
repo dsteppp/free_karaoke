@@ -1,6 +1,6 @@
-from fastapi import FastAPI, Depends, UploadFile, File, HTTPException, Request
+from fastapi import FastAPI, Depends, UploadFile, File, HTTPException, Request, BackgroundTasks
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi import Response
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -16,13 +16,11 @@ import tempfile
 import shutil
 
 from database import get_db, Track
-from tasks import process_audio_task, partial_rescan_task, import_library_task
+from tasks import process_audio_task, partial_rescan_task, import_library_task, export_library_task, normalize_string, _import_log, IMPORT_LOG_PATH
 from huey_config import huey
 from ai_pipeline import get_audio_metadata, url_to_base64
 from app_status import read_status
 from app_logger import get_logger
-from library_io import export_library, import_library, IMPORT_LOG_PATH
-from library_streaming import stream_library_export
 
 # --- ВРЕЗКА РЕДАКТОРА ---
 from editor_backend import router as editor_router
@@ -988,32 +986,67 @@ async def partial_rescan_endpoint(
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# POST /api/library/export  — экспорт библиотеки в ZIP (потоковый)
+# POST /api/library/export  — экспорт библиотеки в ZIP (прямая запись в файл)
 # ──────────────────────────────────────────────────────────────────────────────
+class ExportRequest(BaseModel):
+    path: str
+
+
 @app.post("/api/library/export")
-async def export_library_endpoint():
-    """Потоковый экспорт всей библиотеки в ZIP-архив."""
+async def export_library_endpoint(req: ExportRequest):
+    """Экспорт библиотеки в ZIP с прямой записью в указанный файл."""
+    if not req.path or not req.path.endswith('.zip'):
+        raise HTTPException(status_code=400, detail="Требуется путь к ZIP-файлу")
+    
     try:
-        # Создаём StreamingResponse с генератором
-        return StreamingResponse(
-            stream_library_export(LIBRARY_DIR, chunk_size=64 * 1024),
-            media_type="application/zip",
-            headers={
-                "Content-Disposition": f'attachment; filename="karaoke_library_{datetime.now().strftime("%Y%m%d_%H%M")}.zip"',
-            },
-        )
+        # Проверяем, что директория существует
+        dest_dir = os.path.dirname(req.path)
+        if dest_dir and not os.path.exists(dest_dir):
+            raise HTTPException(status_code=400, detail="Директория не существует")
+        
+        # Запускаем фоновую задачу экспорта
+        task = export_library_task(req.path, LIBRARY_DIR)
+        task_id = task.id
+        
+        log.info("Задача экспорта запущена: task_id=%s, dest=%s", task_id, req.path)
+        
+        return {
+            "status": "queued",
+            "task_id": str(task_id),
+            "message": "Экспорт запущен в фоновом режиме"
+        }
+    
+    except RuntimeError as e:
+        raise HTTPException(status_code=409, detail=str(e))
     except Exception as e:
         log.error("Ошибка экспорта: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# GET /api/library/export/status/{task_id}  — статус задачи экспорта
+# GET /api/library/export/status  — статус задачи экспорта
 # ──────────────────────────────────────────────────────────────────────────────
 @app.get("/api/library/export/status")
 async def get_export_status():
-    """Получить статус текущего экспорта из app_status."""
-    return read_status()
+    """Получить статус текущего экспорта и результат если готов."""
+    status = read_status()
+    
+    # Проверяем кэш результатов экспорта
+    from app_status import _ensure_dir
+    cache_file = os.path.join(
+        os.environ.get("FK_CACHE_DIR") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "cache"),
+        "export_result.json"
+    )
+    
+    if os.path.exists(cache_file):
+        try:
+            with open(cache_file, 'r', encoding='utf-8') as f:
+                result = json.load(f)
+            return {**status, "result": result}
+        except Exception:
+            pass
+    
+    return status
 
 
 # ──────────────────────────────────────────────────────────────────────────────
