@@ -1,6 +1,7 @@
 #!/bin/bash
 # ─────────────────────────────────────────────────────────────────────────────
 # run.sh — запуск Free Karaoke в отдельном окне (pywebview + PyQt6)
+# С полным логированием проблем QtWebEngine для отладки
 # ─────────────────────────────────────────────────────────────────────────────
 
 DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
@@ -72,6 +73,25 @@ mkdir -p "$DIR/cache/huggingface"
 mkdir -p "$DIR/debug_logs"
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 6. Запускаем launcher.py — он сам поднимет сервер и откроет окно
+# 6. Дополнительные переменные для отладки QtWebEngine
+# ─────────────────────────────────────────────────────────────────────────────
+# Эти переменные уже могут быть установлены из .env.cache, но дублируем для надёжности
+export QT_LOGGING_TO_CONSOLE=${QT_LOGGING_TO_CONSOLE:-1}
+export QT_DEBUG_PLUGINS=${QT_DEBUG_PLUGINS:-1}
+
+# Если QT_LOGGING_RULES не установлен, устанавливаем по умолчанию
+if [ -z "$QT_LOGGING_RULES" ]; then
+    export QT_LOGGING_RULES="qt.webenginecontext.debug=true;qt.qpa.xcb.error=true;qt.qpa.xcb.generic=true"
+fi
+
+echo "[run.sh] Переменные QtWebEngine:"
+echo "  QT_QPA_PLATFORM=$QT_QPA_PLATFORM"
+echo "  QTWEBENGINE_CHROMIUM_FLAGS=$QTWEBENGINE_CHROMIUM_FLAGS"
+echo "  QT_LOGGING_RULES=$QT_LOGGING_RULES"
+echo "  QTWEBENGINEPROCESS_DEBUG=$QTWEBENGINEPROCESS_DEBUG"
+echo ""
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 7. Запускаем launcher.py — он сам поднимет сервер и откроет окно
 # ─────────────────────────────────────────────────────────────────────────────
 python "$DIR/launcher.py"
