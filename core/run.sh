@@ -41,6 +41,14 @@ fi
 export HSA_OVERRIDE_GFX_VERSION=11.0.0
 
 # ─────────────────────────────────────────────────────────────────────────────
+# 2.6. Qt WebEngine: переменные окружения для корректной отрисовки интерфейса
+# ─────────────────────────────────────────────────────────────────────────────
+# QT_QPA_PLATFORM должен быть установлен до инициализации QApplication
+export QT_QPA_PLATFORM="${QT_QPA_PLATFORM:-xcb}"
+# Флаги Chromium для стабильной работы WebEngine
+export QTWEBENGINE_CHROMIUM_FLAGS="${QTWEBENGINE_CHROMIUM_FLAGS:---no-sandbox --disable-gpu-sandbox --disable-dev-shm-usage --disable-http-cache}"
+
+# ─────────────────────────────────────────────────────────────────────────────
 # 3. Загружаем .env (токены и настройки приложения)
 # ─────────────────────────────────────────────────────────────────────────────
 if [ -f "$DIR/.env" ]; then
