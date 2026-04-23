@@ -374,15 +374,17 @@ echo ""
 log_step "Создание структуры папок"
 echo ""
 
+# Создаём только основные папки в директории установки
 mkdir -p "$INSTALL_DIR/core"
-mkdir -p "$INSTALL_DIR/cache/uv"
-mkdir -p "$INSTALL_DIR/cache/torch"
-mkdir -p "$INSTALL_DIR/cache/huggingface"
-mkdir -p "$INSTALL_DIR/models/audio_separator"
-mkdir -p "$INSTALL_DIR/models/whisper"
-mkdir -p "$INSTALL_DIR/library"
-mkdir -p "$INSTALL_DIR/debug_logs"
-mkdir -p "$INSTALL_DIR/shared/formats"
+mkdir -p "$INSTALL_DIR/.venv"
+
+# Создаём подпапки внутри core (там где они нужны программе)
+mkdir -p "$INSTALL_DIR/core/models/audio_separator"
+mkdir -p "$INSTALL_DIR/core/models/whisper"
+mkdir -p "$INSTALL_DIR/core/cache"
+mkdir -p "$INSTALL_DIR/core/debug_logs"
+mkdir -p "$INSTALL_DIR/core/library"
+mkdir -p "$INSTALL_DIR/core/shared/formats"
 
 log_success "Структура папок создана"
 echo ""
@@ -588,47 +590,44 @@ log_step "Загрузка ML-моделей"
 echo ""
 
 MODELS_INSTALLED=false
-if [ -f "$INSTALL_DIR/models/audio_separator/Kim_Vocal_2.onnx" ] && \
-   [ -f "$INSTALL_DIR/models/whisper/medium.pt" ]; then
+if [ -f "$INSTALL_DIR/core/models/audio_separator/Kim_Vocal_2.onnx" ] and \
+   [ -f "$INSTALL_DIR/core/models/whisper/medium.pt" ]; then
     log_info "ML-модели уже загружены. Пропускаем загрузку."
     MODELS_INSTALLED=true
 fi
 
 if [ "$MODELS_INSTALLED" = false ]; then
     log_info "Загружаем модели для сепарации вокала..."
-    
+
+    # Создаём папки моделей внутри core если их нет
+    mkdir -p "$INSTALL_DIR/core/models/audio_separator"
+    mkdir -p "$INSTALL_DIR/core/models/whisper"
+
     # Модель для сепарации вокала
-    if [ ! -f "$INSTALL_DIR/models/audio_separator/Kim_Vocal_2.onnx" ]; then
+    if [ ! -f "$INSTALL_DIR/core/models/audio_separator/Kim_Vocal_2.onnx" ]; then
         log_info "Скачиваем Kim_Vocal_2.onnx..."
         curl -L "https://huggingface.co/KimberleyJensen/Kim_Vocal_2/resolve/main/Kim_Vocal_2.onnx" \
-             -o "$INSTALL_DIR/models/audio_separator/Kim_Vocal_2.onnx"
+             -o "$INSTALL_DIR/core/models/audio_separator/Kim_Vocal_2.onnx"
+    else
+        log_info "Kim_Vocal_2.onnx уже существует. Пропускаем."
     fi
-    
+
     # Модель Whisper для транскрипции
-    if [ ! -f "$INSTALL_DIR/models/whisper/medium.pt" ]; then
+    if [ ! -f "$INSTALL_DIR/core/models/whisper/medium.pt" ]; then
         log_info "Скачиваем Whisper medium..."
         curl -L "https://openaipublic.azureedge.net/main/whisper/models/345ae4da62f9b3d59415adc60127b97c714f32e89e9366fc6e6bb8861dd51d2b/medium.pt" \
-             -o "$INSTALL_DIR/models/whisper/medium.pt"
+             -o "$INSTALL_DIR/core/models/whisper/medium.pt"
+    else
+        log_info "Whisper medium уже существует. Пропускаем."
     fi
-    
+
     log_success "ML-модели загружены"
 fi
 
-# Создаём символьную ссылку в core/models, если программа ожидает там модели
-if [ -d "$INSTALL_DIR/core/models" ]; then
-    log_info "Проверяем связь с моделями в core..."
-    if [ ! -L "$INSTALL_DIR/core/models" ]; then
-        rm -rf "$INSTALL_DIR/core/models"
-        ln -s "$INSTALL_DIR/models" "$INSTALL_DIR/core/models"
-        log_success "Символическая ссылка на модели создана"
-    fi
-else
-    ln -s "$INSTALL_DIR/models" "$INSTALL_DIR/core/models"
-    log_success "Символическая ссылка на модели создана"
-fi
+# Больше не создаём символьные ссылки — модели теперь хранятся прямо в core/models
+log_info "Модели находятся в $INSTALL_DIR/core/models/"
 
 echo ""
-
 # ─────────────────────────────────────────────────────────────────────────────
 # 12. Запрос токена Genius (идемпотентно)
 # ─────────────────────────────────────────────────────────────────────────────
