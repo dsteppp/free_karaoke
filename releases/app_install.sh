@@ -229,21 +229,66 @@ fi
 RAM_GB=$(free -g | awk '/^Mem:/{print $2}')
 log_info "Оперативная память: ${RAM_GB} GB"
 
-# Проверяем Python
+# Проверяем Python — строго требуем версию 3.11
 PYTHON_VERSION=""
-PYTHON_CMD="python3"
-for py in python3.11 python3.12 python3.10 python3; do
-    if command -v "$py" &> /dev/null; then
-        PYTHON_VERSION=$("$py" --version 2>&1 | cut -d' ' -f2)
-        PYTHON_CMD="$py"
-        break
-    fi
-done
+PYTHON_CMD="python3.11"
 
-if [ -n "$PYTHON_VERSION" ]; then
+# Сначала ищем именно python3.11
+if command -v python3.11 &> /dev/null; then
+    PYTHON_VERSION=$(python3.11 --version 2>&1 | cut -d' ' -f2)
+    PYTHON_CMD="python3.11"
     log_success "Python: $PYTHON_VERSION ($PYTHON_CMD)"
 else
-    log_error "Python 3 не найден! Установите Python 3.10-3.12"
+    # Python 3.11 не найден — выводим инструкции по установке
+    log_error "Python 3.11 не найден! Для работы приложения требуется именно Python 3.11."
+    echo ""
+    echo "📋 Инструкции по установке Python 3.11:"
+    echo ""
+
+    if [ "$PACKAGE_MANAGER" = "pacman" ]; then
+        echo "   Для Arch Linux / Manjaro / EndeavourOS:"
+        echo "   ────────────────────────────────────────"
+        echo "   Рекомендуется использовать AUR-хелпер yay:"
+        echo ""
+        echo "   yay -S python311"
+        echo ""
+        echo "   Или вручную через makepkg из AUR:"
+        echo "   git clone https://aur.archlinux.org/python311.git"
+        echo "   cd python311 && makepkg -si"
+        echo ""
+    elif [ "$PACKAGE_MANAGER" = "apt" ]; then
+        echo "   Для Ubuntu / Debian / Linux Mint / Pop!_OS:"
+        echo "   ───────────────────────────────────────────"
+        echo "   sudo add-apt-repository ppa:deadsnakes/ppa"
+        echo "   sudo apt update"
+        echo "   sudo apt install python3.11 python3.11-venv python3.11-dev"
+        echo ""
+    elif [ "$PACKAGE_MANAGER" = "dnf" ]; then
+        echo "   Для Fedora:"
+        echo "   ───────────"
+        echo "   sudo dnf install python3.11 python3.11-devel"
+        echo ""
+    elif [ "$PACKAGE_MANAGER" = "zypper" ]; then
+        echo "   Для openSUSE:"
+        echo "   ─────────────"
+        echo "   sudo zypper install python3.11 python3.11-devel"
+        echo ""
+    else
+        echo "   Для вашего дистрибутива:"
+        echo "   ────────────────────────"
+        echo "   Установите Python 3.11 из репозиториев вашего дистрибутива."
+        echo "   Также доступны варианты установки через pyenv:"
+        echo ""
+        echo "   curl https://pyenv.run | bash"
+        echo "   pyenv install 3.11.11"
+        echo "   pyenv global 3.11.11"
+        echo ""
+    fi
+
+    echo "После установки Python 3.11 запустите этот скрипт снова."
+    echo ""
+    echo "Нажмите Enter для выхода..."
+    read -r
     exit 1
 fi
 
