@@ -2,7 +2,7 @@
 
 # ==============================================================================
 # Free Karaoke Android Release Builder (FastAPI + WebView Edition)
-# Версия: 7.8 (SDK Tools Locator - Final)
+# Версия: 7.9.6 (Fix: Local Module Imports & Smart FastAPI App Discovery)
 # ==============================================================================
 
 set -euo pipefail
@@ -20,9 +20,6 @@ REPO_URL="https://github.com/dsteppp/free_karaoke.git"
 REQUIRED_PYTHON_VER="3.11"
 CMAKE_VERSION="3.24.3"
 
-# ------------------------------------------------------------------------------
-# Функции логирования
-# ------------------------------------------------------------------------------
 log() {
     local msg="$1"
     local level="${2:-INFO}"
@@ -49,9 +46,6 @@ log_error_exit() {
 
 trap 'last_line=$LINENO; log "Критическая ошибка на строке $last_line. Проверьте логи: $LOG_FILE" "ERROR"; read -p "Нажмите Enter для выхода..."; exit 1' ERR
 
-# ------------------------------------------------------------------------------
-# Шаг 0: Принудительный запуск в терминале
-# ------------------------------------------------------------------------------
 if [ -z "${TERM:-}" ] || [ "$TERM" == "dumb" ]; then
     TERMINALS=("konsole" "gnome-terminal" "xfce4-terminal" "alacritty" "kitty" "xterm")
     SCRIPT_PATH="$(readlink -f "$0")"
@@ -75,9 +69,6 @@ echo -e "${GREEN}  Free Karaoke Android Builder (Release)      ${NC}"
 echo -e "${GREEN}==============================================${NC}"
 log "Инициализация среды сборки APK..."
 
-# ------------------------------------------------------------------------------
-# Шаг 1: Выбор директории
-# ------------------------------------------------------------------------------
 while true; do
     read -p "Введите полный путь к папке для сборки (например, /home/$USER/apk_build): " BUILD_ROOT
     if [ -z "$BUILD_ROOT" ]; then continue; fi
@@ -88,9 +79,6 @@ LOG_FILE="$BUILD_ROOT/logs/build_script.log"
 : > "$LOG_FILE"
 log "Рабочая директория: $BUILD_ROOT"
 
-# ------------------------------------------------------------------------------
-# Шаг 2: Установка системных зависимостей
-# ------------------------------------------------------------------------------
 log "Проверка менеджера пакетов и зависимостей..."
 INSTALL_CMD=""
 if command -v yay &> /dev/null; then INSTALL_CMD="yay -S --noconfirm --needed"
@@ -123,9 +111,6 @@ fi
 export PATH="$JAVA_HOME/bin:$PATH"
 log "Используется Java: $JAVA_HOME" "SUCCESS"
 
-# ------------------------------------------------------------------------------
-# Шаг 3: Подготовка CMake 3.24.3
-# ------------------------------------------------------------------------------
 log "Настройка изолированной среды CMake $CMAKE_VERSION..."
 CMAKE_DIR="$BUILD_ROOT/tools/cmake-$CMAKE_VERSION-linux-x86_64"
 
@@ -143,9 +128,6 @@ fi
 export PATH="$CMAKE_DIR/bin:$PATH"
 export CMAKE_POLICY_VERSION_MINIMUM=3.5
 
-# ------------------------------------------------------------------------------
-# Шаг 4: Работа с репозиторием
-# ------------------------------------------------------------------------------
 PROJECT_DIR="$BUILD_ROOT/src/project_src"
 log "Загрузка актуального кода проекта..."
 
@@ -160,9 +142,6 @@ else
 fi
 cd "$BUILD_ROOT"
 
-# ------------------------------------------------------------------------------
-# Шаг 5: Виртуальное окружение
-# ------------------------------------------------------------------------------
 log "Создание изолированного Python окружения..."
 if [ -d "env" ]; then rm -rf env; fi
 python3.11 -m venv env
@@ -171,32 +150,41 @@ pip install --upgrade pip setuptools wheel
 pip install "Cython<3.0" requests packaging
 pip install --upgrade "git+https://github.com/kivy/buildozer.git"
 
-# ------------------------------------------------------------------------------
-# Шаг 6: Глубокая очистка
-# ------------------------------------------------------------------------------
 log "Очистка кэша сборки (без удаления скачанных SDK/NDK)..."
 rm -rf "$PROJECT_DIR/.buildozer" 2>/dev/null || true
 rm -rf "$PROJECT_DIR/bin" 2>/dev/null || true
 
-# ------------------------------------------------------------------------------
-# Шаг 7: Патчинг кода
-# ------------------------------------------------------------------------------
-log "Модификация бэкенда: отключение ML и настройка WebView..."
+log "Модификация бэкенда: решение проблем локальных импортов, БД и умный поиск сервера..."
 export PROJECT_DIR
 python3 << 'PYEOF'
 import os
 
 project_dir = os.environ.get('PROJECT_DIR', '.')
 req_path = os.path.join(project_dir, 'requirements.txt')
-safe_reqs = ['python3', 'fastapi', 'uvicorn', 'jinja2', 'requests', 'pyjnius', 'android', 'kivy==2.3.0', 'mutagen', 'pillow', 'aiofiles']
-blocked_libs = ['torch', 'torchaudio', 'torchvision', 'whisper', 'demucs', 'librosa', 'onnx', 'numba', 'soundfile', 'scipy']
+
+safe_reqs = [
+    'python3', 'sqlite3', 'openssl', 'fastapi==0.95.2', 'pydantic==1.10.13', 
+    'sqlalchemy', 'databases', 'uvicorn', 'jinja2', 'requests', 'pyjnius', 'android', 
+    'kivy==2.3.0', 'mutagen', 'pillow', 'aiofiles', 'starlette', 'anyio', 
+    'typing_extensions', 'click', 'h11', 'markupsafe', 'python-multipart'
+]
+
+blocked_libs = [
+    'torch', 'torchaudio', 'torchvision', 'whisper', 'demucs', 'librosa', 
+    'onnx', 'numba', 'soundfile', 'scipy', 'numpy', 'faiss', 'yt_dlp', 'pytube', 
+    'pydantic-core', 'annotated-types', 'annotated-doc'
+]
 
 if os.path.exists(req_path):
     with open(req_path, 'r', encoding='utf-8') as f:
         lines = f.readlines()
     for line in lines:
-        lib = line.split('==')[0].split('>')[0].split('<')[0].strip().lower()
-        if lib and not any(b in lib for b in blocked_libs) and lib not in safe_reqs:
+        lib = line.split('==')[0].split('>')[0].split('<')[0].split('[')[0].strip().lower()
+        
+        is_blocked = any(b in lib for b in blocked_libs)
+        is_already_in_safe = any(lib == sr.split('==')[0] for sr in safe_reqs)
+        
+        if lib and not is_blocked and not is_already_in_safe:
             safe_reqs.append(lib)
 
 req_string = ','.join(safe_reqs)
@@ -207,16 +195,18 @@ package.name = freekaraoke
 package.domain = org.dstep
 version = 1.0.0
 source.dir = .
-source.include_exts = py,png,jpg,kv,atlas,json,ttf,wav,mp3,html,js,css
+source.include_exts = py,png,jpg,svg,ico,kv,atlas,json,ttf,woff,woff2,eot,wav,mp3,html,js,css,map
 orientation = landscape
 osx.python_version = 3.11
 min_android_version = 24
 android.api = 33
 android.ndk = 25b
+android.archs = arm64-v8a, armeabi-v7a
 android.permissions = INTERNET, READ_EXTERNAL_STORAGE, WRITE_EXTERNAL_STORAGE, MANAGE_EXTERNAL_STORAGE, RECORD_AUDIO, MODIFY_AUDIO_SETTINGS
 requirements = {req_string}
 android.accept_all_licenses = True
 android.release_artifact = apk
+android.manifest.application_meta_data = android:usesCleartextTraffic=true
 android.add_args = --orientation=sensorLandscape
 [buildozer]
 log_level = 2
@@ -230,81 +220,275 @@ import sys
 import os
 import threading
 import time
+import traceback
+from unittest.mock import MagicMock
 
-try:
-    from jnius import autoclass
-    Environment = autoclass('android.os.Environment')
-    music_dir = os.path.join(Environment.getExternalStorageDirectory().getAbsolutePath(), 'Music', 'free_karaoke_library')
-    os.makedirs(music_dir, exist_ok=True)
-    os.environ['FREE_KARAOKE_LIBRARY_PATH'] = music_dir
-except Exception as e:
-    print("Ошибка настройки путей JNI:", e)
+# 1. ФИКС ПУТЕЙ ИМПОРТА (чтобы находились файлы типа core/database.py)
+APP_DIR = os.path.dirname(os.path.abspath(__file__))
+if APP_DIR not in sys.path:
+    sys.path.insert(0, APP_DIR)
 
+# Добавляем все возможные подпапки в системные пути
+for subdir in ['core', 'server', 'app', 'backend', 'db']:
+    subpath = os.path.join(APP_DIR, subdir)
+    if os.path.isdir(subpath) and subpath not in sys.path:
+        sys.path.insert(0, subpath)
+
+# 2. ЖЕСТКОЕ ЗАМЕЩЕНИЕ ТЯЖЕЛЫХ БИБЛИОТЕК
+blocked_libs = ['torch', 'torchaudio', 'torchvision', 'whisper', 'demucs', 'librosa', 'onnx', 'onnxruntime', 'numba', 'soundfile', 'scipy', 'numpy', 'faiss', 'pytube', 'yt_dlp']
+for lib in blocked_libs:
+    sys.modules[lib] = MagicMock()
+
+print("[APP] Starting Free Karaoke Android Initialization")
+
+def setup_storage():
+    try:
+        from jnius import autoclass
+        Environment = autoclass('android.os.Environment')
+        music_dir = os.path.join(Environment.getExternalStorageDirectory().getAbsolutePath(), 'Music', 'free_karaoke_library')
+        os.environ['FREE_KARAOKE_LIBRARY_PATH'] = music_dir
+        print("[STORAGE] Env path set to:", music_dir)
+    except Exception as e:
+        print("[STORAGE] Error setting env path:", e)
+
+setup_storage()
+
+import fastapi
 import uvicorn
 from fastapi import Request
 from fastapi.responses import JSONResponse
 
+SERVER_STARTED = False
+original_app = None
+
+# Умный поиск инстанса сервера FastAPI
+def find_fastapi_app(mod):
+    # Сначала проверяем стандартные имена
+    for name in ['app', 'api', 'server', 'application']:
+        if hasattr(mod, name):
+            attr = getattr(mod, name)
+            if isinstance(attr, fastapi.FastAPI):
+                return attr
+    # Если не нашли, сканируем вообще все переменные в модуле
+    for attr_name in dir(mod):
+        attr = getattr(mod, attr_name)
+        if isinstance(attr, fastapi.FastAPI):
+            return attr
+    return None
+
+# 3. ИМПОРТ И ЗАПУСК БЭКЕНДА
 try:
-    from main import app as original_app
-except ImportError:
-    try:
-        from server import app as original_app
-    except ImportError:
-        from core.main import app as original_app
-
-@original_app.middleware("http")
-async def block_ml_features(request: Request, call_next):
-    ml_endpoints = ["separate", "transcribe", "rescan", "fix"]
-    path = request.url.path.lower()
+    for module_path in ['desktop_main', 'server', 'core.main', 'main']:
+        try:
+            if '.' in module_path:
+                mod_name, attr = module_path.rsplit('.', 1)
+                mod = __import__(mod_name, fromlist=[attr])
+                target_mod = getattr(mod, attr)
+            else:
+                target_mod = __import__(module_path)
+            
+            app_instance = find_fastapi_app(target_mod)
+            if app_instance:
+                original_app = app_instance
+                print(f"[SERVER] SUCCESS: Found FastAPI app in '{module_path}'")
+                break
+            else:
+                print(f"[SERVER] Module '{module_path}' imported, but no FastAPI app instance found inside.")
+                
+        except ImportError as ie:
+            print(f"[SERVER] ImportError in '{module_path}': {ie}")
+            continue
+        except Exception as e:
+            print(f"[SERVER] Critical error while executing '{module_path}':")
+            traceback.print_exc()
+            continue
     
-    if any(endpoint in path for endpoint in ml_endpoints):
-        return JSONResponse(
-            status_code=400,
-            content={"error": "Эта функция требует работы нейросетей и доступна только в Desktop версии программы.", "detail": "blocked"}
-        )
-    return await call_next(request)
+    if not original_app:
+        raise ImportError("Could not locate FastAPI app instance in any backend files.")
 
-def run_server():
-    uvicorn.run(original_app, host="127.0.0.1", port=8000, log_level="info")
+    @original_app.get("/health")
+    async def health_check():
+        return {"status": "ok", "server": "android"}
 
-server_thread = threading.Thread(target=run_server, daemon=True)
-server_thread.start()
+    @original_app.middleware("http")
+    async def block_ml_features(request: Request, call_next):
+        ml_endpoints = ["separate", "transcribe", "rescan", "fix", "upload"]
+        path = request.url.path.lower()
+        if any(endpoint in path for endpoint in ml_endpoints):
+            return JSONResponse(
+                status_code=400,
+                content={"error": "Эта функция требует нейросетей и доступна только в десктопной версии.", "detail": "blocked"}
+            )
+        return await call_next(request)
 
+    def run_server():
+        global SERVER_STARTED
+        try:
+            print("[SERVER] Starting uvicorn on 127.0.0.1:8000")
+            uvicorn.run(original_app, host="127.0.0.1", port=8000, log_level="info")
+        except Exception as e:
+            print("[SERVER] Uvicorn thread crashed:", e)
+            traceback.print_exc()
+
+    server_thread = threading.Thread(target=run_server, daemon=True)
+    server_thread.start()
+    time.sleep(4)
+    SERVER_STARTED = True
+    print("[SERVER] Uvicorn background thread is running")
+    
+except Exception as e:
+    print("[SERVER] Fatal Backend Init Error:", e)
+    traceback.print_exc()
+    SERVER_STARTED = False
+
+# 4. KIVY И WEBVIEW
 from kivy.app import App
 from kivy.clock import Clock
 from kivy.utils import platform
+from kivy.uix.label import Label
 
 class WebWrapperApp(App):
     def build(self):
-        Clock.schedule_once(self.open_webview, 1)
-        from kivy.uix.label import Label
-        return Label(text="Запуск сервера Free Karaoke...")
-
-    def open_webview(self, dt):
+        self.label = Label(text="Запуск сервера Free Karaoke...\\n\\nПожалуйста, подождите.", font_size='20sp', halign='center')
+        
         if platform == 'android':
+            try:
+                from android.permissions import request_permissions, Permission
+                request_permissions([
+                    Permission.INTERNET,
+                    Permission.READ_EXTERNAL_STORAGE,
+                    Permission.WRITE_EXTERNAL_STORAGE,
+                    Permission.RECORD_AUDIO,
+                    Permission.MODIFY_AUDIO_SETTINGS
+                ], self.on_permissions_callback)
+            except Exception as e:
+                print("[PERM] Permission request error:", e)
+                self.on_permissions_callback([], [])
+        else:
+            Clock.schedule_once(self.open_webview, 2)
+            
+        if not SERVER_STARTED:
+            self.label.text = "Ошибка запуска сервера.\\nПодключитесь по USB и введите:\\nadb logcat -s python"
+            
+        return self.label
+
+    def on_permissions_callback(self, permissions, results):
+        print("[PERM] Granted statuses:", list(zip(permissions, results)))
+        try:
+            music_dir = os.environ.get('FREE_KARAOKE_LIBRARY_PATH')
+            if music_dir:
+                os.makedirs(music_dir, exist_ok=True)
+                print("[STORAGE] Directory verified:", music_dir)
+        except Exception as e:
+            print("[STORAGE] Mkdir Error (Normal if waiting for MANAGE_EXTERNAL_STORAGE):", e)
+        
+        self.check_manage_storage()
+
+    def check_manage_storage(self):
+        if platform != 'android':
+            Clock.schedule_once(self.open_webview, 1)
+            return
+            
+        try:
             from jnius import autoclass
             from android.runnable import run_on_ui_thread
+            
+            Environment = autoclass('android.os.Environment')
+            activity = autoclass('org.kivy.android.PythonActivity').mActivity
+            
+            if hasattr(Environment, 'isExternalStorageManager'):
+                if not Environment.isExternalStorageManager():
+                    print("[PERM] MANAGE_EXTERNAL_STORAGE not granted, opening settings...")
+                    @run_on_ui_thread
+                    def launch_settings():
+                        Intent = autoclass('android.content.Intent')
+                        Uri = autoclass('android.net.Uri')
+                        try:
+                            intent = Intent(Intent.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION)
+                            intent.setData(Uri.parse("package:" + activity.getPackageName()))
+                            activity.startActivity(intent)
+                        except:
+                            intent = Intent(Intent.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION)
+                            activity.startActivity(intent)
+                    
+                    launch_settings()
+                    self.label.text = (
+                        "Требуется полный доступ к файлам\\n\\n"
+                        "1. Найдите 'Free Karaoke' в списке\\n"
+                        "2. Включите 'Разрешить управление всеми файлами'\\n"
+                        "3. Вернитесь в приложение (нажмите Назад)\\n\\n"
+                        "Интерфейс загрузится автоматически."
+                    )
+                    return
+        except Exception as e:
+            print("[PERM] Scoped storage check error:", e)
+        
+        Clock.schedule_once(self.open_webview, 2)
+
+    def open_webview(self, dt):
+        if not SERVER_STARTED:
+            return
+            
+        if platform != 'android':
+            import webbrowser
+            webbrowser.open('http://127.0.0.1:8000')
+            return
+            
+        try:
+            from jnius import autoclass
+            from android.runnable import run_on_ui_thread
+            import urllib.request
             
             WebView = autoclass('android.webkit.WebView')
             WebViewClient = autoclass('android.webkit.WebViewClient')
             activity = autoclass('org.kivy.android.PythonActivity').mActivity
             
+            def wait_for_server(max_attempts=30):
+                for i in range(max_attempts):
+                    try:
+                        urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=1)
+                        return True
+                    except:
+                        time.sleep(1)
+                return False
+            
             @run_on_ui_thread
             def create_webview():
-                webview = WebView(activity)
-                settings = webview.getSettings()
-                settings.setJavaScriptEnabled(True)
-                settings.setDomStorageEnabled(True)
-                settings.setMediaPlaybackRequiresUserGesture(False)
-                
-                webview.setWebViewClient(WebViewClient())
-                webview.loadUrl('http://127.0.0.1:8000')
-                
-                activity.setContentView(webview)
+                if not wait_for_server():
+                    self.label.text = "Таймаут: сервер не ответил за 30 сек."
+                    return
+                    
+                try:
+                    webview = WebView(activity)
+                    settings = webview.getSettings()
+                    settings.setJavaScriptEnabled(True)
+                    settings.setDomStorageEnabled(True)
+                    settings.setMediaPlaybackRequiresUserGesture(False)
+                    settings.setAllowFileAccess(True)
+                    settings.setAllowContentAccess(True)
+                    
+                    webview.setWebViewClient(WebViewClient())
+                    webview.loadUrl('http://127.0.0.1:8000')
+                    activity.setContentView(webview)
+                    print("[WEBVIEW] Successfully loaded UI")
+                    
+                except Exception as e:
+                    print("[WEBVIEW] Internal Error:", e)
+                    self.label.text = "Ошибка WebView: " + str(e)
             
             create_webview()
+            
+        except Exception as e:
+            print("[WEBVIEW] Init Error:", e)
+            self.label.text = "Ошибка: " + str(e)
+
+    def on_resume(self):
+        if platform == 'android' and SERVER_STARTED:
+            Clock.schedule_once(lambda dt: self.open_webview(dt), 2)
+        return True
 
 if __name__ == '__main__':
+    print("[APP] Entering Kivy App Loop")
     WebWrapperApp().run()
 """
 
@@ -319,9 +503,6 @@ PYEOF
 
 log "Генерация конфигурации завершена." "SUCCESS"
 
-# ------------------------------------------------------------------------------
-# Шаг 8: Генерация Keystore
-# ------------------------------------------------------------------------------
 KEYSTORE_PATH="$BUILD_ROOT/keystore/freekaraoke.keystore"
 KEY_PASS="karaokepass123"
 
@@ -333,9 +514,6 @@ if [ ! -f "$KEYSTORE_PATH" ]; then
         -dname "CN=Free Karaoke, OU=Android, O=FreeKaraoke, C=RU"
 fi
 
-# ------------------------------------------------------------------------------
-# Шаг 9: Сборка и подпись APK
-# ------------------------------------------------------------------------------
 cd "$PROJECT_DIR"
 log "НАЧАЛО СБОРКИ RELEASE APK..."
 
@@ -371,7 +549,6 @@ if [ -n "$UNSIGNED_APK" ]; then
     log "Подписываем APK..."
     FINAL_APK="$BUILD_ROOT/output/FreeKaraoke-Release-Signed.apk"
     
-    # Ищем apksigner и zipalign во внутренних инструментах Android SDK (Скачанных Buildozer)
     ZIPALIGN_CMD="zipalign"
     if ! command -v zipalign &> /dev/null; then
         ZIPALIGN_CMD=$(find ~/.buildozer/android/platform/android-sdk/build-tools -name "zipalign" | sort -r | head -n 1 || echo "")
@@ -397,15 +574,12 @@ if [ -n "$UNSIGNED_APK" ]; then
         "$APKSIGNER_CMD" sign --ks "$KEYSTORE_PATH" --ks-pass "pass:$KEY_PASS" --out "$FINAL_APK" "$UNSIGNED_APK"
     fi
     
-    log "РЕЛИЗ ГОТОВ!" "SUCCESS"
+    log "РЕЛИ ГОТОВ!" "SUCCESS"
     log "Файл находится здесь: $FINAL_APK" "SUCCESS"
 else
     log_error_exit "Не удалось найти итоговый apk файл в папке bin/"
 fi
 
-# ------------------------------------------------------------------------------
-# Шаг 10: Завершение
-# ------------------------------------------------------------------------------
 echo ""
 read -p "Удалить тяжелые временные файлы Buildozer (исходники, NDK/SDK)? (y/n): " CLEANUP
 if [[ "$CLEANUP" =~ ^[Yy]$ ]]; then
