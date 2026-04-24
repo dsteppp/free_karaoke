@@ -2,7 +2,7 @@
 
 # ==============================================================================
 # Free Karaoke Android Release Builder (FastAPI + WebView Edition)
-# Версия: 7.1 (Fixed Orientation & NDK Regression)
+# Версия: 7.8 (SDK Tools Locator - Final)
 # ==============================================================================
 
 set -euo pipefail
@@ -18,6 +18,7 @@ LOG_FILE=""
 BUILD_ROOT=""
 REPO_URL="https://github.com/dsteppp/free_karaoke.git"
 REQUIRED_PYTHON_VER="3.11"
+CMAKE_VERSION="3.24.3"
 
 # ------------------------------------------------------------------------------
 # Функции логирования
@@ -88,7 +89,7 @@ LOG_FILE="$BUILD_ROOT/logs/build_script.log"
 log "Рабочая директория: $BUILD_ROOT"
 
 # ------------------------------------------------------------------------------
-# Шаг 2: Установка системных зависимостей (OS-Agnostic)
+# Шаг 2: Установка системных зависимостей
 # ------------------------------------------------------------------------------
 log "Проверка менеджера пакетов и зависимостей..."
 INSTALL_CMD=""
@@ -100,22 +101,50 @@ else log_error_exit "Не найден поддерживаемый менедж
 
 PACKAGES=()
 if [[ "$INSTALL_CMD" == *"yay"* || "$INSTALL_CMD" == *"pacman"* ]]; then
-    PACKAGES=(python311 jdk17-openjdk git zip unzip libffi openssl zlib gcc base-devel pkgconf gstreamer wget cmake ninja apksigner)
+    PACKAGES=(python311 jdk17-openjdk git zip unzip libffi openssl zlib gcc base-devel pkgconf gstreamer wget ninja)
 elif [[ "$INSTALL_CMD" == *"apt"* ]]; then
-    PACKAGES=(python3.11 openjdk-17-jdk git zip unzip libffi-dev libssl-dev zlib1g-dev gcc build-essential pkg-config wget cmake ninja-build apksigner)
+    PACKAGES=(python3.11 openjdk-17-jdk git zip unzip libffi-dev libssl-dev zlib1g-dev gcc build-essential pkg-config wget ninja-build)
 fi
 
-if ! command -v apksigner &> /dev/null || ! command -v cmake &> /dev/null; then
+if ! command -v ninja &> /dev/null; then
     log "Установка системных пакетов (может потребоваться пароль sudo)..."
     eval "$INSTALL_CMD ${PACKAGES[*]}" || log "Некоторые пакеты уже установлены или недоступны." "WARN"
 fi
 
-if ! command -v java &> /dev/null; then log_error_exit "Java не найдена. Ошибка установки."; fi
-export JAVA_HOME=$(dirname $(dirname $(readlink -f $(which java))))
+if [ -d "/usr/lib/jvm/java-17-openjdk" ]; then
+    export JAVA_HOME="/usr/lib/jvm/java-17-openjdk"
+elif [ -d "/usr/lib/jvm/java-17-openjdk-amd64" ]; then
+    export JAVA_HOME="/usr/lib/jvm/java-17-openjdk-amd64"
+elif [ -d "/usr/lib/jvm/jre-17-openjdk" ]; then
+    export JAVA_HOME="/usr/lib/jvm/jre-17-openjdk"
+else
+    export JAVA_HOME=$(dirname $(dirname $(readlink -f $(which java))))
+fi
 export PATH="$JAVA_HOME/bin:$PATH"
+log "Используется Java: $JAVA_HOME" "SUCCESS"
 
 # ------------------------------------------------------------------------------
-# Шаг 3: Работа с репозиторием
+# Шаг 3: Подготовка CMake 3.24.3
+# ------------------------------------------------------------------------------
+log "Настройка изолированной среды CMake $CMAKE_VERSION..."
+CMAKE_DIR="$BUILD_ROOT/tools/cmake-$CMAKE_VERSION-linux-x86_64"
+
+if [ ! -d "$CMAKE_DIR" ]; then
+    CMAKE_TARBALL="cmake-$CMAKE_VERSION-linux-x86_64.tar.gz"
+    CMAKE_URL="https://github.com/Kitware/CMake/releases/download/v$CMAKE_VERSION/$CMAKE_TARBALL"
+    cd "$BUILD_ROOT/tools"
+    if ! wget -q --show-progress "$CMAKE_URL" -O "$CMAKE_TARBALL"; then
+        log_error_exit "Не удалось загрузить CMake. Проверьте соединение."
+    fi
+    tar -xzf "$CMAKE_TARBALL"
+    rm "$CMAKE_TARBALL"
+fi
+
+export PATH="$CMAKE_DIR/bin:$PATH"
+export CMAKE_POLICY_VERSION_MINIMUM=3.5
+
+# ------------------------------------------------------------------------------
+# Шаг 4: Работа с репозиторием
 # ------------------------------------------------------------------------------
 PROJECT_DIR="$BUILD_ROOT/src/project_src"
 log "Загрузка актуального кода проекта..."
@@ -125,46 +154,39 @@ if [ -d "$PROJECT_DIR/.git" ]; then
     git fetch --all && git reset --hard origin/main || git reset --hard origin/master
     git pull
 else
+    cd "$BUILD_ROOT"
     rm -rf "$PROJECT_DIR"
     git clone "$REPO_URL" "$PROJECT_DIR"
 fi
-
 cd "$BUILD_ROOT"
 
 # ------------------------------------------------------------------------------
-# Шаг 4: Виртуальное окружение
+# Шаг 5: Виртуальное окружение
 # ------------------------------------------------------------------------------
 log "Создание изолированного Python окружения..."
 if [ -d "env" ]; then rm -rf env; fi
 python3.11 -m venv env
 source env/bin/activate
-
 pip install --upgrade pip setuptools wheel
 pip install "Cython<3.0" requests packaging
 pip install --upgrade "git+https://github.com/kivy/buildozer.git"
 
 # ------------------------------------------------------------------------------
-# Шаг 5: Очистка кэша сборки
+# Шаг 6: Глубокая очистка
 # ------------------------------------------------------------------------------
-log "Глубокая очистка предыдущих билдов..."
-rm -rf "$PROJECT_DIR/.buildozer/android/platform/build-"* 2>/dev/null || true
-rm -rf "$PROJECT_DIR/.buildozer/android/app" 2>/dev/null || true
-rm -f "$PROJECT_DIR/bin/"*.apk 2>/dev/null || true
+log "Очистка кэша сборки (без удаления скачанных SDK/NDK)..."
+rm -rf "$PROJECT_DIR/.buildozer" 2>/dev/null || true
+rm -rf "$PROJECT_DIR/bin" 2>/dev/null || true
 
 # ------------------------------------------------------------------------------
-# Шаг 6: Интеллектуальный парсинг зависимостей и патчинг кода (PYTHON BLOCK)
+# Шаг 7: Патчинг кода
 # ------------------------------------------------------------------------------
 log "Модификация бэкенда: отключение ML и настройка WebView..."
-
 export PROJECT_DIR
-
 python3 << 'PYEOF'
 import os
-import re
 
 project_dir = os.environ.get('PROJECT_DIR', '.')
-
-# 1. Формируем список легковесных зависимостей, вырезая ML
 req_path = os.path.join(project_dir, 'requirements.txt')
 safe_reqs = ['python3', 'fastapi', 'uvicorn', 'jinja2', 'requests', 'pyjnius', 'android', 'kivy==2.3.0', 'mutagen', 'pillow', 'aiofiles']
 blocked_libs = ['torch', 'torchaudio', 'torchvision', 'whisper', 'demucs', 'librosa', 'onnx', 'numba', 'soundfile', 'scipy']
@@ -178,9 +200,7 @@ if os.path.exists(req_path):
             safe_reqs.append(lib)
 
 req_string = ','.join(safe_reqs)
-print(f"Android Dependencies: {req_string}")
 
-# 2. Создаем buildozer.spec (ИСПРАВЛЕН ORIENTATION И ДОБАВЛЕН NDK)
 spec_content = f"""[app]
 title = Free Karaoke
 package.name = freekaraoke
@@ -196,6 +216,7 @@ android.ndk = 25b
 android.permissions = INTERNET, READ_EXTERNAL_STORAGE, WRITE_EXTERNAL_STORAGE, MANAGE_EXTERNAL_STORAGE, RECORD_AUDIO, MODIFY_AUDIO_SETTINGS
 requirements = {req_string}
 android.accept_all_licenses = True
+android.release_artifact = apk
 android.add_args = --orientation=sensorLandscape
 [buildozer]
 log_level = 2
@@ -204,29 +225,25 @@ warn_on_root = 1
 with open(os.path.join(project_dir, 'buildozer.spec'), 'w', encoding='utf-8') as f:
     f.write(spec_content)
 
-# 3. Создаем главный файл для Android (main.py)
 main_py_code = """
 import sys
 import os
 import threading
 import time
 
-# --- Настройка путей для Android ---
 try:
     from jnius import autoclass
     Environment = autoclass('android.os.Environment')
     music_dir = os.path.join(Environment.getExternalStorageDirectory().getAbsolutePath(), 'Music', 'free_karaoke_library')
     os.makedirs(music_dir, exist_ok=True)
-    os.environ['FREE_KARAOKE_LIBRARY_PATH'] = music_dir # Подменяем путь
+    os.environ['FREE_KARAOKE_LIBRARY_PATH'] = music_dir
 except Exception as e:
     print("Ошибка настройки путей JNI:", e)
 
-# --- Бэкенд (FastAPI) ---
 import uvicorn
 from fastapi import Request
 from fastapi.responses import JSONResponse
 
-# Пытаемся импортировать твой основной объект FastAPI
 try:
     from main import app as original_app
 except ImportError:
@@ -235,10 +252,9 @@ except ImportError:
     except ImportError:
         from core.main import app as original_app
 
-# Внедряем Middleware для перехвата ML-функций
 @original_app.middleware("http")
 async def block_ml_features(request: Request, call_next):
-    ml_endpoints = ["separate", "transcribe", "rescan", "fix"] # Ключевые слова в URL ML-роутов
+    ml_endpoints = ["separate", "transcribe", "rescan", "fix"]
     path = request.url.path.lower()
     
     if any(endpoint in path for endpoint in ml_endpoints):
@@ -251,18 +267,15 @@ async def block_ml_features(request: Request, call_next):
 def run_server():
     uvicorn.run(original_app, host="127.0.0.1", port=8000, log_level="info")
 
-# Запускаем сервер в фоновом потоке
 server_thread = threading.Thread(target=run_server, daemon=True)
 server_thread.start()
 
-# --- Фронтенд (Android WebView) ---
 from kivy.app import App
 from kivy.clock import Clock
 from kivy.utils import platform
 
 class WebWrapperApp(App):
     def build(self):
-        # Даем серверу секунду на старт
         Clock.schedule_once(self.open_webview, 1)
         from kivy.uix.label import Label
         return Label(text="Запуск сервера Free Karaoke...")
@@ -282,12 +295,11 @@ class WebWrapperApp(App):
                 settings = webview.getSettings()
                 settings.setJavaScriptEnabled(True)
                 settings.setDomStorageEnabled(True)
-                settings.setMediaPlaybackRequiresUserGesture(False) # Разрешаем звук без клика
+                settings.setMediaPlaybackRequiresUserGesture(False)
                 
                 webview.setWebViewClient(WebViewClient())
                 webview.loadUrl('http://127.0.0.1:8000')
                 
-                # Заменяем Kivy UI на WebView
                 activity.setContentView(webview)
             
             create_webview()
@@ -296,7 +308,6 @@ if __name__ == '__main__':
     WebWrapperApp().run()
 """
 
-# Переименовываем оригинальный main.py чтобы не конфликтовать
 orig_main = os.path.join(project_dir, 'main.py')
 if os.path.exists(orig_main):
     os.rename(orig_main, os.path.join(project_dir, 'desktop_main.py'))
@@ -304,13 +315,12 @@ if os.path.exists(orig_main):
 with open(orig_main, 'w', encoding='utf-8') as f:
     f.write(main_py_code)
 
-print("Python-патчинг успешно завершен. Создан Android WebView и ML-Middleware.")
 PYEOF
 
 log "Генерация конфигурации завершена." "SUCCESS"
 
 # ------------------------------------------------------------------------------
-# Шаг 7: Генерация Keystore (Для релизной подписи)
+# Шаг 8: Генерация Keystore
 # ------------------------------------------------------------------------------
 KEYSTORE_PATH="$BUILD_ROOT/keystore/freekaraoke.keystore"
 KEY_PASS="karaokepass123"
@@ -324,20 +334,34 @@ if [ ! -f "$KEYSTORE_PATH" ]; then
 fi
 
 # ------------------------------------------------------------------------------
-# Шаг 8: Сборка и подпись APK
+# Шаг 9: Сборка и подпись APK
 # ------------------------------------------------------------------------------
 cd "$PROJECT_DIR"
-export CMAKE_POLICY_VERSION_MINIMUM=3.5
-log "НАЧАЛО СБОРКИ RELEASE APK (Это займет от 10 до 30 минут)..."
-log "Качаются NDK, SDK и компилируется код. Не закрывайте терминал!"
+log "НАЧАЛО СБОРКИ RELEASE APK..."
 
 set +e
-buildozer -v android release 2>&1 | tee "$BUILD_ROOT/logs/buildozer_output.log"
-BUILD_CODE=${PIPESTATUS[0]}
+trap - ERR
+
+MAX_RETRIES=10
+RETRY_COUNT=0
+BUILD_CODE=1
+
+while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+    buildozer -v android release 2>&1 | tee "$BUILD_ROOT/logs/buildozer_output.log"
+    BUILD_CODE=${PIPESTATUS[0]}
+    if [ $BUILD_CODE -eq 0 ]; then break; fi
+    RETRY_COUNT=$((RETRY_COUNT+1))
+    if [ $RETRY_COUNT -lt $MAX_RETRIES ]; then
+        log "Ошибка сборки (Код: $BUILD_CODE). Попытка $RETRY_COUNT из $MAX_RETRIES через 10 секунд..." "WARN"
+        sleep 10
+    fi
+done
+
 set -e
+trap 'last_line=$LINENO; log "Критическая ошибка на строке $last_line. Проверьте логи: $LOG_FILE" "ERROR"; read -p "Нажмите Enter для выхода..."; exit 1' ERR
 
 if [ $BUILD_CODE -ne 0 ]; then
-    log_error_exit "Сборка завершилась с ошибкой. Проверьте $BUILD_ROOT/logs/buildozer_output.log"
+    log_error_exit "Сборка завершилась с ошибкой. Проверьте логи."
 fi
 
 log "Сборка успешна. Поиск не подписанного APK..."
@@ -347,28 +371,40 @@ if [ -n "$UNSIGNED_APK" ]; then
     log "Подписываем APK..."
     FINAL_APK="$BUILD_ROOT/output/FreeKaraoke-Release-Signed.apk"
     
-    # Выравнивание (zipalign) если доступно
-    if command -v zipalign &> /dev/null; then
-        zipalign -v -p 4 "$UNSIGNED_APK" "bin/aligned.apk"
-        apksigner sign --ks "$KEYSTORE_PATH" --ks-pass "pass:$KEY_PASS" --out "$FINAL_APK" "bin/aligned.apk"
+    # Ищем apksigner и zipalign во внутренних инструментах Android SDK (Скачанных Buildozer)
+    ZIPALIGN_CMD="zipalign"
+    if ! command -v zipalign &> /dev/null; then
+        ZIPALIGN_CMD=$(find ~/.buildozer/android/platform/android-sdk/build-tools -name "zipalign" | sort -r | head -n 1 || echo "")
+    fi
+
+    APKSIGNER_CMD="apksigner"
+    if ! command -v apksigner &> /dev/null; then
+        APKSIGNER_CMD=$(find ~/.buildozer/android/platform/android-sdk/build-tools -name "apksigner" | sort -r | head -n 1 || echo "")
+    fi
+
+    if [ -z "$APKSIGNER_CMD" ] || [ ! -x "$APKSIGNER_CMD" ]; then
+        log_error_exit "Не удалось найти apksigner. Сборка завершена, но APK не подписан!"
+    fi
+
+    log "Используется apksigner: $APKSIGNER_CMD"
+    
+    if [ -n "$ZIPALIGN_CMD" ] && [ -x "$ZIPALIGN_CMD" ]; then
+        log "Выравнивание APK ($ZIPALIGN_CMD)..."
+        "$ZIPALIGN_CMD" -v -p 4 "$UNSIGNED_APK" "bin/aligned.apk"
+        "$APKSIGNER_CMD" sign --ks "$KEYSTORE_PATH" --ks-pass "pass:$KEY_PASS" --out "$FINAL_APK" "bin/aligned.apk"
     else
-        apksigner sign --ks "$KEYSTORE_PATH" --ks-pass "pass:$KEY_PASS" --out "$FINAL_APK" "$UNSIGNED_APK"
+        log "zipalign не найден, подписываем напрямую..." "WARN"
+        "$APKSIGNER_CMD" sign --ks "$KEYSTORE_PATH" --ks-pass "pass:$KEY_PASS" --out "$FINAL_APK" "$UNSIGNED_APK"
     fi
     
     log "РЕЛИЗ ГОТОВ!" "SUCCESS"
     log "Файл находится здесь: $FINAL_APK" "SUCCESS"
 else
-    AAB_FILE=$(find bin/ -name "*.aab" | head -n 1)
-    if [ -n "$AAB_FILE" ]; then
-        cp "$AAB_FILE" "$BUILD_ROOT/output/"
-        log "Buildozer собрал AAB вместо APK: $BUILD_ROOT/output/$(basename "$AAB_FILE")" "WARN"
-    else
-        log_error_exit "Не удалось найти итоговый файл в папке bin/"
-    fi
+    log_error_exit "Не удалось найти итоговый apk файл в папке bin/"
 fi
 
 # ------------------------------------------------------------------------------
-# Шаг 9: Завершение
+# Шаг 10: Завершение
 # ------------------------------------------------------------------------------
 echo ""
 read -p "Удалить тяжелые временные файлы Buildozer (исходники, NDK/SDK)? (y/n): " CLEANUP
@@ -376,6 +412,7 @@ if [[ "$CLEANUP" =~ ^[Yy]$ ]]; then
     log "Очистка временных файлов..."
     rm -rf "$PROJECT_DIR"
     rm -rf "$BUILD_ROOT/env"
+    rm -rf "$BUILD_ROOT/tools"
     log "Очистка завершена." "SUCCESS"
 else
     log "Временные файлы сохранены в $BUILD_ROOT/src"
