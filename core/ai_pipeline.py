@@ -636,6 +636,9 @@ def compress_stem_mp3(file_path: str) -> None:
 # ──────────────────────────────────────────────────────────────────────────────
 def separate_vocals(mp3_path: str) -> tuple[str, str]:
     import time
+    import logging
+    import gc
+    
     t_start = time.time()
 
     basedir  = os.path.dirname(mp3_path)
@@ -646,51 +649,111 @@ def separate_vocals(mp3_path: str) -> tuple[str, str]:
 
     sep_model_dir = os.path.join(MODELS_DIR, "audio_separator")
 
-    def _run_separation(model_filename: str, label: str) -> tuple:
+    # Класс-перехватчик для логов audio-separator
+    class LogCapture(logging.Handler):
+        def __init__(self):
+            super().__init__()
+            self.messages = []
+        
+        def emit(self, record):
+            msg = self.format(record)
+            self.messages.append(msg)
+
+    def _run_separation(model_filename: str, label: str, force_cpu_fallback: bool = False) -> tuple:
         """Запускает сепарацию с указанной моделью."""
         log.info("   📦 Модель: %s", label)
         t_load = time.time()
-        separator = Separator(
-            model_file_dir=sep_model_dir,
-            output_dir=basedir,
-            output_format="MP3",
-            normalization_threshold=0.9,
-        )
-        separator.load_model(model_filename=model_filename)
-        log.info("   ⏱ Загрузка модели: %.1fс", time.time() - t_load)
+        
+        # Настраиваем перехват логов только для этой библиотеки
+        logger_name = "audio_separator" 
+        # Иногда библиотека логируется как root или под другими именами, но обычно это audio_separator
+        # Также ловим логи от underlying библиотек, если они пробрасываются
+        target_loggers = [logging.getLogger("audio_separator"), logging.getLogger("separator")]
+        
+        capture_handler = LogCapture()
+        capture_handler.setLevel(logging.INFO) # Ловим INFO и WARNING
+        
+        for lg in target_loggers:
+            lg.addHandler(capture_handler)
+            lg.setLevel(logging.INFO)
 
-        t_infer = time.time()
-        output_files = separator.separate(mp3_path)
-        log.info("   ⏱ Inference: %.1fс", time.time() - t_infer)
+        try:
+            separator = Separator(
+                model_file_dir=sep_model_dir,
+                output_dir=basedir,
+                output_format="MP3",
+                normalization_threshold=0.9,
+            )
+            separator.load_model(model_filename=model_filename)
+            
+            # Анализируем перехваченные логи сразу после загрузки
+            cpu_detected = False
+            full_log_text = "\n".join(capture_handler.messages)
+            
+            # Ключевые маркеры отказа от GPU
+            if "No hardware acceleration could be configured" in full_log_text or \
+               "running in CPU mode" in full_log_text or \
+               "Hardware acceleration not available" in full_log_text:
+                cpu_detected = True
+            
+            # Дополнительная проверка через атрибуты объекта (если библиотека их экспонирует)
+            if not cpu_detected and not force_cpu_fallback:
+                dev = getattr(separator, 'model_device', None)
+                if dev is None and hasattr(separator, 'model'):
+                    dev = getattr(separator.model, 'device', None)
+                
+                # Проверка для torch устройств
+                if dev:
+                    dev_str = str(dev).lower()
+                    if dev_str.startswith('cpu') or 'cpu' in dev_str:
+                        cpu_detected = True
 
-        del separator
-        gc.collect()
+            if cpu_detected and not force_cpu_fallback:
+                log.warning("   ⚠️  MDX23C не смогла использовать GPU (детектировано в логах/атрибутах) — переходим к Kim_Vocal_1...")
+                del separator
+                gc.collect()
+                return None  # Триггер фолбэка
 
-        found_vocals = None
-        found_instrumental = None
-        for item in output_files:
-            out_path = item if os.path.isabs(item) else os.path.join(basedir, item)
-            name_lc = out_path.lower()
-            if "vocals" in name_lc: found_vocals = out_path
-            elif "instrumental" in name_lc or "no_vocals" in name_lc: found_instrumental = out_path
+            log.info("   ⏱ Загрузка модели: %.1fс", time.time() - t_load)
 
-        if not found_vocals or not found_instrumental:
-            raise RuntimeError("audio-separator не вернул нужные файлы.")
+            t_infer = time.time()
+            output_files = separator.separate(mp3_path)
+            log.info("   ⏱ Inference: %.1fс", time.time() - t_infer)
 
-        if found_vocals != vocals_final:
-            if os.path.exists(vocals_final): os.remove(vocals_final)
-            os.rename(found_vocals, vocals_final)
-        if found_instrumental != instrumental_final:
-            if os.path.exists(instrumental_final): os.remove(instrumental_final)
-            os.rename(found_instrumental, instrumental_final)
+            del separator
+            gc.collect()
 
-        t_compress = time.time()
-        log.info("   Сжатие стемов...")
-        compress_stem_mp3(vocals_final)
-        compress_stem_mp3(instrumental_final)
-        log.info("   ⏱️ Сжатие: %.1fс", time.time() - t_compress)
+            found_vocals = None
+            found_instrumental = None
+            for item in output_files:
+                out_path = item if os.path.isabs(item) else os.path.join(basedir, item)
+                name_lc = out_path.lower()
+                if "vocals" in name_lc: found_vocals = out_path
+                elif "instrumental" in name_lc or "no_vocals" in name_lc: found_instrumental = out_path
 
-        return vocals_final, instrumental_final
+            if not found_vocals or not found_instrumental:
+                raise RuntimeError("audio-separator не вернул нужные файлы.")
+
+            if found_vocals != vocals_final:
+                if os.path.exists(vocals_final): os.remove(vocals_final)
+                os.rename(found_vocals, vocals_final)
+            if found_instrumental != instrumental_final:
+                if os.path.exists(instrumental_final): os.remove(instrumental_final)
+                os.rename(found_instrumental, instrumental_final)
+
+            t_compress = time.time()
+            log.info("   Сжатие стемов...")
+            compress_stem_mp3(vocals_final)
+            compress_stem_mp3(instrumental_final)
+            log.info("   ⏱️ Сжатие: %.1fс", time.time() - t_compress)
+
+            return vocals_final, instrumental_final
+            
+        finally:
+            # Обязательно убираем хендлеры, чтобы не дублировать логи в будущем
+            for lg in target_loggers:
+                if capture_handler in lg.handlers:
+                    lg.removeHandler(capture_handler)
 
     # ── Попытка 1: MDX23C GPU ──────────────────────────────────────────
     mdx_model = os.path.join(sep_model_dir, "MDX23C-8KFFT-InstVoc_HQ.ckpt")
@@ -704,7 +767,15 @@ def separate_vocals(mp3_path: str) -> tuple[str, str]:
             except Exception:
                 pass
             log.info("Запуск сепарации аудио (%s, модель MDX23C)...", device_name)
-            return _run_separation("MDX23C-8KFFT-InstVoc_HQ.ckpt", "MDX23C (офлайн)")
+            
+            result = _run_separation("MDX23C-8KFFT-InstVoc_HQ.ckpt", "MDX23C (офлайн)")
+            
+            if result is not None:
+                return result  # Успешная сепарация на GPU
+            
+            # Если результат None — значит модель загрузилась на CPU, переходим к фолбэку
+            log.info("   ↪ Активирован фолбэк на Kim_Vocal_1 из-за отсутствия GPU у MDX23C")
+            
         except RuntimeError as e:
             err_msg = str(e)
             # Детектируем HIP/ROCm ошибки
@@ -719,13 +790,13 @@ def separate_vocals(mp3_path: str) -> tuple[str, str]:
     kim_model = os.path.join(sep_model_dir, "Kim_Vocal_1.onnx")
     if os.path.exists(kim_model):
         log.info("Запуск сепарации аудио (CPU, модель Kim_Vocal_1 ONNX — fallback)...")
-        return _run_separation("Kim_Vocal_1.onnx", "Kim_Vocal_1 ONNX (CPU fallback)")
+        return _run_separation("Kim_Vocal_1.onnx", "Kim_Vocal_1 ONNX (CPU fallback)", force_cpu_fallback=True)
     else:
         log.info("   📥 Kim_Vocal_1 ONNX не найдена — загрузка из интернета...")
         # Последняя попытка: загрузить Kim_Vocal_1 из интернета
         try:
             log.info("Запуск сепарации аудио (CPU, модель Kim_Vocal_1 ONNX — скачивание)...")
-            return _run_separation("Kim_Vocal_1.onnx", "Kim_Vocal_1 ONNX (download + CPU)")
+            return _run_separation("Kim_Vocal_1.onnx", "Kim_Vocal_1 ONNX (download + CPU)", force_cpu_fallback=True)
         except Exception:
             pass
 
