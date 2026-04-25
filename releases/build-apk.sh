@@ -2,7 +2,7 @@
 
 # ==============================================================================
 # Free Karaoke Android Release Builder
-# Версия: 40.0 (Perfect Native Harmony: Sync, Dialogs & GPU Accel)
+# Версия: 44.3 (CSS Injection Fix & Bulletproof Mock)
 # ==============================================================================
 
 set -euo pipefail
@@ -116,7 +116,7 @@ fi
 clear
 echo -e "${GREEN}==============================================${NC}"
 echo -e "${GREEN}  Free Karaoke Native Android Builder         ${NC}"
-echo -e "${GREEN}  [ 40.0 - Perfect Native Harmony ]           ${NC}"
+echo -e "${GREEN}  [ 44.3 - CSS Injection Fix ]                ${NC}"
 echo -e "${GREEN}==============================================${NC}"
 log "Инициализация чистой среды сборки..."
 
@@ -152,7 +152,7 @@ export XDG_CACHE_HOME="$BUILD_ROOT/tools/pip_cache"
 export PIP_CACHE_DIR="$BUILD_ROOT/tools/pip_cache"
 export ANDROID_HOME="$BUILD_ROOT/tools/android_sdk"
 
-log "Проверка системных пакетов..."
+log "Проверка систем пакетов..."
 INSTALL_CMD=""
 if command -v yay &> /dev/null; then INSTALL_CMD="yay -S --noconfirm --needed"
 elif command -v pacman &> /dev/null; then INSTALL_CMD="sudo pacman -S --noconfirm --needed"
@@ -392,15 +392,14 @@ cat << 'EOF' > app/src/main/res/mipmap/ic_launcher.xml
     android:height="192dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-    <path
-        android:fillColor="#121212"
-        android:pathData="M0,0h108v108h-108z"/>
-    <path
-        android:fillColor="#BB86FC"
-        android:pathData="M54,10A44,44 0 1,0 98,54A44,44 0 0,0 54,10Z"/>
-    <path
-        android:fillColor="#121212"
-        android:pathData="M65,34 L47,38 L47,62 A10,10 0 1,0 53,71 L53,46 L65,43 Z"/>
+    <group android:scaleX="1.07" android:scaleY="1.07" android:pivotX="54" android:pivotY="54">
+        <path
+            android:fillColor="#BB86FC"
+            android:pathData="M54,10A44,44 0 1,0 98,54A44,44 0 0,0 54,10Z"/>
+        <path
+            android:fillColor="#121212"
+            android:pathData="M65,34 L47,38 L47,62 A10,10 0 1,0 53,71 L53,46 L65,43 Z"/>
+    </group>
 </vector>
 EOF
 
@@ -444,7 +443,6 @@ class MainActivity : AppCompatActivity() {
         webView = WebView(this)
         setContentView(webView)
         
-        // Включение аппаратного ускорения для плавного закрашивания слов
         webView.setLayerType(View.LAYER_TYPE_HARDWARE, null)
 
         importLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
@@ -491,7 +489,6 @@ class MainActivity : AppCompatActivity() {
             }
         }
         
-        // Лаунчер для загрузки обложек (заменяет системный input file)
         fileChooserLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
             if (result.resultCode == Activity.RESULT_OK) {
                 filePathCallback?.onReceiveValue(WebChromeClient.FileChooserParams.parseResult(result.resultCode, result.data))
@@ -521,7 +518,6 @@ class MainActivity : AppCompatActivity() {
                 return true
             }
             
-            // Нативные диалоги вместо страшных http://127.0.0.1
             override fun onJsAlert(view: WebView?, url: String?, message: String?, result: android.webkit.JsResult?): Boolean {
                 android.app.AlertDialog.Builder(this@MainActivity)
                     .setMessage(message)
@@ -541,7 +537,6 @@ class MainActivity : AppCompatActivity() {
                 return true
             }
             
-            // Перехват клика по загрузке обложки
             override fun onShowFileChooser(
                 webView: WebView?,
                 filePathCallback: android.webkit.ValueCallback<Array<android.net.Uri>>?,
@@ -710,17 +705,33 @@ class PatchedZipFile(_orig_zipfile):
 zipfile.ZipFile = PatchedZipFile
 
 # ======================================================================================
-# ML MOCKS (Фикс ошибки "not enough values to unpack")
+# ML MOCKS (Абсолютная защита от любых вызовов Librosa)
 # ======================================================================================
 
-class MockLibrosa:
-    def load(self, *args, **kwargs):
-        # Возвращаем правильный кортеж (audio, sr), чтобы распаковка не падала
-        return (None, 22050)
-    def get_duration(self, *args, **kwargs):
-        return 0.0
+class DummyEffects:
+    def preemphasis(self, y, *args, **kwargs):
+        return y
+    def split(self, y, *args, **kwargs):
+        return [[0, 22050]]
 
+class DummyAudio:
+    """Эмулирует numpy-массив для librosa"""
+    def __len__(self): return 22050
+    @property
+    def shape(self): return (22050,)
+    def __getitem__(self, key): return 0.0
+
+class MockLibrosa:
+    def __init__(self):
+        self.effects = DummyEffects()
+    def load(self, *args, **kwargs):
+        return (DummyAudio(), 22050)
+    def get_duration(self, *args, **kwargs):
+        return 1.0
+
+# Двойная защита от прямых и вложенных импортов
 sys.modules['librosa'] = MockLibrosa()
+sys.modules['librosa.effects'] = DummyEffects()
 
 blocked_libs = [
     'torch', 'torchaudio', 'torchvision', 'onnx', 'onnxruntime', 'whisper', 'openai_whisper', 
@@ -757,6 +768,26 @@ JS_PATCH = """
 <script>
 window.mobile_patch_applied = true;
 
+const originalFetch = window.fetch;
+window.fetch = async function() {
+    let [resource, config] = arguments;
+    if (typeof resource === 'string' && (resource.includes('/edit_lyrics') || resource.includes('/edit_metadata'))) {
+        if (config && config.body) {
+            try {
+                let bodyObj = JSON.parse(config.body);
+                if (bodyObj.rescan === true) {
+                    console.log('[FK_BYPASS] Стелс-перехватчик: отмена rescan на фронтенде');
+                    bodyObj.rescan = false;
+                    config.body = JSON.stringify(bodyObj);
+                }
+            } catch(e) {
+                console.error('[FK_BYPASS] Ошибка парсинга JSON', e);
+            }
+        }
+    }
+    return originalFetch.apply(this, arguments);
+};
+
 window.pywebview = {
     api: {
         open_file_dialog: function(multiple, filter) {
@@ -781,14 +812,26 @@ document.addEventListener("DOMContentLoaded", () => {
         input, textarea { user-select: auto !important; -webkit-user-select: auto !important; }
         ::-webkit-scrollbar { display: none !important; }
         
-        /* Хардверное ускорение рендеринга текста караоке */
         .lyrics-container, .word, .line { 
             transform: translateZ(0); 
             will-change: transform, opacity; 
         }
         
-        /* Скрываем опасные ML-кнопки (чтобы избежать ошибок распаковки) */
         label[for="audio-files"], #scan-btn, #ep-btn-rescan, [data-tooltip*="Пересинхронизировать"] { display: none !important; }
+        #global-tooltip { display: none !important; opacity: 0 !important; visibility: hidden !important; }
+        #cancel-btn { display: none !important; }
+        
+        /* Блокировка маркеров ручного редактирования вне режима редактора */
+        body:not(.edit-mode) .word.manual-start::before,
+        body:not(.edit-mode) .word.manual-end::after {
+            display: none !important;
+            content: none !important;
+        }
+        body:not(.edit-mode) .word.manual-text {
+            border-bottom: none !important;
+            text-decoration: none !important;
+            color: inherit !important;
+        }
     `;
     document.head.appendChild(style);
 
@@ -797,7 +840,6 @@ document.addEventListener("DOMContentLoaded", () => {
         else alert(msg);
     };
     
-    // Агрессивный синхронизатор аудиодорожек
     setInterval(() => {
         const audios = document.querySelectorAll('audio');
         if (audios.length >= 2) {
@@ -876,10 +918,53 @@ if not original_app:
     def read_root(): return {"status": "FastAPI Not Found."}
 
 # ======================================================================================
-# ASGI MIDDLEWARE (Идеальная перемотка аудио)
+# DEEP ROUTE PATCHING (Удаляем VAD, мгновенно пишем JSON напрямую)
+# ======================================================================================
+routes_to_keep = []
+for route in getattr(original_app.router, "routes", []):
+    if hasattr(route, "path") and route.path == "/api/tracks/{track_id}/edit_lyrics" and "POST" in getattr(route, "methods", []):
+        print(f"[FK_BYPASS] Удален десктопный маршрут {route.path}")
+        continue
+    routes_to_keep.append(route)
+original_app.router.routes = routes_to_keep
+
+# ВНИМАНИЕ: track_id: str полностью лечит Pydantic Validation Error "422 [object Object]"
+@original_app.post("/api/tracks/{track_id}/edit_lyrics")
+async def mobile_edit_lyrics(track_id: str, request: fastapi.Request):
+    try:
+        data = await request.json()
+        from database import SessionLocal, Track
+        
+        with SessionLocal() as session:
+            track = session.query(Track).filter(Track.id == track_id).first()
+            if not track:
+                return fastapi.responses.JSONResponse(status_code=404, content={"detail": "Track not found"})
+            
+            json_path = track.karaoke_json_path
+            if not json_path or not os.path.exists(json_path):
+                base_name = os.path.splitext(track.filename)[0]
+                library_dir = os.environ.get("FK_LIBRARY_DIR", os.path.join(APP_DIR, "library"))
+                json_path = os.path.join(library_dir, f"{base_name}_(Karaoke Lyrics).json")
+                
+            if json_path:
+                with open(json_path, "w", encoding="utf-8") as f:
+                    lyrics_payload = data.get("words", data)
+                    json.dump(lyrics_payload, f, ensure_ascii=False, indent=2)
+                    
+            session.commit()
+            print(f"[FK_BYPASS] Успех! Тайминги записаны напрямую в: {json_path}")
+            
+        return {"status": "success", "message": "Lyrics perfectly saved (Mobile Fast-Path)"}
+    except Exception as e:
+        print(f"[FK_BYPASS] Ошибка быстрого сохранения: {e}")
+        import traceback
+        traceback.print_exc()
+        return fastapi.responses.JSONResponse(status_code=500, content={"detail": str(e)})
+
+# ======================================================================================
+# ASGI MIDDLEWARE: AudioHeaderMiddleware (Идеальная перемотка аудио)
 # ======================================================================================
 class AudioHeaderMiddleware:
-    """Заставляет Android WebView уважать Range-запросы и не кэшировать битые куски аудио"""
     def __init__(self, app):
         self.app = app
 
