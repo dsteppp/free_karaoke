@@ -2,12 +2,12 @@
 
 # ==============================================================================
 # Free Karaoke Android Release Builder
-# Версия: 31.0 (Fix Kotlin comment syntax)
+# Версия: 33.2 (Smart UI + XML Vector Icon Fix)
 # ==============================================================================
 
 set -euo pipefail
 
-# Цвета для вывода
+# Цвета
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -116,7 +116,7 @@ fi
 clear
 echo -e "${GREEN}==============================================${NC}"
 echo -e "${GREEN}  Free Karaoke Native Android Builder         ${NC}"
-echo -e "${GREEN}  [ 100% Изолированная сборка без мусора ]    ${NC}"
+echo -e "${GREEN}  [ 33.2 - ADB Logs, No-Logs, XML Icon ]      ${NC}"
 echo -e "${GREEN}==============================================${NC}"
 log "Инициализация чистой среды сборки..."
 
@@ -162,7 +162,7 @@ else log_error_exit "Не найден поддерживаемый менедж
 
 PACKAGES=()
 if [[ "$INSTALL_CMD" == *"yay"* || "$INSTALL_CMD" == *"pacman"* ]]; then
-    PACKAGES=(jdk17-openjdk git zip unzip wget curl base64)
+    PACKAGES=(jdk17-openjdk git zip unzip wget curl coreutils)
 elif [[ "$INSTALL_CMD" == *"apt"* ]]; then
     PACKAGES=(openjdk-17-jdk git zip unzip wget curl coreutils)
 fi
@@ -303,7 +303,6 @@ android {
 
 chaquopy {
     defaultConfig {
-        // ПОВЫСИЛИ ВЕРСИЮ ДО 3.11 ДЛЯ ПОДДЕРЖКИ СИНТАКСИСА str | None
         version = "3.11"
         buildPython("python3")
         pip {
@@ -334,6 +333,7 @@ dependencies {
     implementation("androidx.appcompat:appcompat:1.6.1")
     implementation("com.google.android.material:material:1.11.0")
     implementation("androidx.webkit:webkit:1.10.0")
+    implementation("androidx.activity:activity-ktx:1.8.2")
 }
 EOF
 
@@ -357,7 +357,7 @@ cat << 'EOF' > app/src/main/AndroidManifest.xml
         <activity
             android:name=".MainActivity"
             android:exported="true"
-            android:screenOrientation="sensorLandscape"
+            android:screenOrientation="fullUser"
             android:configChanges="orientation|keyboardHidden|screenSize">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -386,21 +386,46 @@ cat << 'EOF' > app/src/main/res/values/themes.xml
 </resources>
 EOF
 
-echo "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=" | base64 -d > app/src/main/res/mipmap/ic_launcher.png
+# ИСПОЛЬЗУЕМ ВЕКТОРНУЮ ИКОНКУ XML ВМЕСТО PNG
+cat << 'EOF' > app/src/main/res/mipmap/ic_launcher.xml
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="192dp"
+    android:height="192dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="#121212"
+        android:pathData="M0,0h108v108h-108z"/>
+    <path
+        android:fillColor="#BB86FC"
+        android:pathData="M54,10A44,44 0 1,0 98,54A44,44 0 0,0 54,10Z"/>
+    <path
+        android:fillColor="#121212"
+        android:pathData="M65,34 L47,38 L47,62 A10,10 0 1,0 53,71 L53,46 L65,43 Z"/>
+</vector>
+EOF
 
 cat << 'EOF' > app/src/main/java/org/dstep/freekaraoke/MainActivity.kt
 package org.dstep.freekaraoke
 
+import android.app.Activity
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
 import android.os.Environment
+import android.provider.DocumentsContract
 import android.provider.Settings
+import android.util.Log
+import android.webkit.ConsoleMessage
+import android.webkit.JavascriptInterface
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.Toast
+import androidx.activity.result.ActivityResultLauncher
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import com.chaquo.python.Python
 import com.chaquo.python.android.AndroidPlatform
@@ -408,11 +433,38 @@ import com.chaquo.python.android.AndroidPlatform
 class MainActivity : AppCompatActivity() {
     private lateinit var webView: WebView
     private var isServerRunning = false
+    private var permissionRequested = false
+    
+    private lateinit var importLauncher: ActivityResultLauncher<Intent>
+    private lateinit var exportLauncher: ActivityResultLauncher<Intent>
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         webView = WebView(this)
         setContentView(webView)
+
+        importLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+            if (result.resultCode == Activity.RESULT_OK) {
+                result.data?.data?.let { uri ->
+                    val path = resolvePosixPath(uri)
+                    if (path.isNotEmpty()) {
+                        runOnUiThread { webView.evaluateJavascript("window.executeMobileImport('$path');", null) }
+                    } else Toast.makeText(this, "Ошибка чтения пути", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+
+        exportLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+            if (result.resultCode == Activity.RESULT_OK) {
+                result.data?.data?.let { uri ->
+                    val dirPath = resolvePosixPath(uri)
+                    if (dirPath.isNotEmpty()) {
+                        val fullPath = "$dirPath/FreeKaraoke_Export.zip"
+                        runOnUiThread { webView.evaluateJavascript("window.executeMobileExport('$fullPath');", null) }
+                    } else Toast.makeText(this, "Ошибка определения папки", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
 
         webView.settings.apply {
             javaScriptEnabled = true
@@ -422,25 +474,43 @@ class MainActivity : AppCompatActivity() {
             mediaPlaybackRequiresUserGesture = false
         }
         
+        webView.addJavascriptInterface(AndroidBridge(), "AndroidBridge")
+        
         webView.webViewClient = object : WebViewClient() {
-            override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
-                return false
+            override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?) = false
+        }
+        
+        webView.webChromeClient = object : WebChromeClient() {
+            override fun onConsoleMessage(consoleMessage: ConsoleMessage): Boolean {
+                Log.d("FreeKaraoke-JS", consoleMessage.message())
+                return true
             }
         }
-        webView.webChromeClient = WebChromeClient()
         
         checkStoragePermission()
     }
 
     override fun onResume() {
         super.onResume()
-        if (!isServerRunning) checkStoragePermission()
+        if (!isServerRunning && Environment.isExternalStorageManager()) {
+            startApp()
+        }
+    }
+
+    private fun resolvePosixPath(uri: Uri): String {
+        try {
+            val docId = if (uri.toString().contains("/tree/")) DocumentsContract.getTreeDocumentId(uri) else DocumentsContract.getDocumentId(uri)
+            val split = docId.split(":")
+            if (split.size >= 2 && split[0].equals("primary", true)) return Environment.getExternalStorageDirectory().absolutePath + "/" + split[1]
+        } catch (e: Exception) { e.printStackTrace() }
+        return ""
     }
 
     private fun checkStoragePermission() {
         if (Environment.isExternalStorageManager()) {
             startApp()
-        } else {
+        } else if (!permissionRequested) {
+            permissionRequested = true
             try {
                 val intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION)
                 intent.data = Uri.parse("package:$packageName")
@@ -449,26 +519,25 @@ class MainActivity : AppCompatActivity() {
                 val intent = Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION)
                 startActivity(intent)
             }
-            Toast.makeText(this, "Требуется доступ ко всем файлам для базы данных", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "Требуется доступ ко всем файлам для библиотеки", Toast.LENGTH_LONG).show()
         }
     }
 
     private fun startApp() {
         if (isServerRunning) return
         try {
-            if (!Python.isStarted()) {
-                Python.start(AndroidPlatform(this))
-            }
-            val py = Python.getInstance()
-            val module = py.getModule("mobile_server")
-            module.callAttr("start_server")
+            if (!Python.isStarted()) Python.start(AndroidPlatform(this))
+            Python.getInstance().getModule("mobile_server").callAttr("start_server")
             isServerRunning = true
-            
-            Thread.sleep(2000)
+            Thread.sleep(1500)
             webView.loadUrl("http://127.0.0.1:8000")
-        } catch (e: Exception) {
-            Toast.makeText(this, "Ошибка запуска: \${e.message}", Toast.LENGTH_LONG).show()
-        }
+        } catch (e: Exception) { Toast.makeText(this, "Ошибка запуска: ${e.message}", Toast.LENGTH_LONG).show() }
+    }
+
+    inner class AndroidBridge {
+        @JavascriptInterface fun triggerImport() { importLauncher.launch(Intent(Intent.ACTION_OPEN_DOCUMENT).apply { addCategory(Intent.CATEGORY_OPENABLE); type = "application/zip" }) }
+        @JavascriptInterface fun triggerExport() { exportLauncher.launch(Intent(Intent.ACTION_OPEN_DOCUMENT_TREE)) }
+        @JavascriptInterface fun showToast(message: String) { runOnUiThread { Toast.makeText(this@MainActivity, message, Toast.LENGTH_SHORT).show() } }
     }
 }
 EOF
@@ -486,16 +555,20 @@ from unittest.mock import MagicMock
 import json
 import traceback
 import importlib.util
+import logging
+
+class NoOpFileHandler(logging.NullHandler):
+    def __init__(self, *args, **kwargs):
+        super().__init__()
+logging.FileHandler = NoOpFileHandler
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 os.chdir(APP_DIR)
-if APP_DIR not in sys.path:
-    sys.path.insert(0, APP_DIR)
+if APP_DIR not in sys.path: sys.path.insert(0, APP_DIR)
 
 for subdir in ['core', 'server', 'app', 'backend', 'db']:
     subpath = os.path.join(APP_DIR, subdir)
-    if os.path.isdir(subpath) and subpath not in sys.path:
-        sys.path.insert(0, subpath)
+    if os.path.isdir(subpath) and subpath not in sys.path: sys.path.insert(0, subpath)
 
 blocked_libs = [
     'torch', 'torchaudio', 'torchvision', 'onnx', 'onnxruntime', 'whisper', 'openai_whisper', 
@@ -509,7 +582,6 @@ blocked_libs = [
     'rapidfuzz'
 ]
 
-# УЛЬТИМАТИВНЫЙ ПЕРЕХВАТЧИК ИМПОРТОВ (PEP 302/451)
 class MockImporter:
     def __init__(self, blocked):
         self.blocked = set()
@@ -518,19 +590,107 @@ class MockImporter:
             self.blocked.add(b.replace('_', '-'))
             
     def find_spec(self, fullname, path, target=None):
-        base_name = fullname.split('.')[0]
-        if base_name in self.blocked:
+        if fullname.split('.')[0] in self.blocked:
             class MockLoader:
                 def create_module(self, spec):
                     m = MagicMock()
-                    m.__path__ = []  # Теперь Python думает, что это настоящий пакет
+                    m.__path__ = [] 
                     return m
-                def exec_module(self, module):
-                    pass
+                def exec_module(self, module): pass
             return importlib.util.spec_from_loader(fullname, MockLoader())
         return None
 
 sys.meta_path.insert(0, MockImporter(blocked_libs))
+
+JS_PATCH = """
+<script>
+window.mobile_patch_applied = true;
+document.addEventListener("DOMContentLoaded", () => {
+    const style = document.createElement('style');
+    style.innerHTML = `
+        * { touch-action: manipulation !important; -webkit-touch-callout: none; }
+        input, textarea { user-select: auto !important; -webkit-user-select: auto !important; }
+        ::-webkit-scrollbar { display: none !important; }
+    `;
+    document.head.appendChild(style);
+
+    window.showAndroidToast = (msg) => {
+        if (window.AndroidBridge) AndroidBridge.showToast(msg);
+        else alert(msg);
+    };
+
+    document.addEventListener('click', (e) => {
+        const target = e.target.closest('button, label, input, a');
+        if (!target) return;
+
+        const elText = (target.textContent || '').trim();
+        const tooltip = target.getAttribute('data-tooltip') || '';
+        
+        console.log(`[FK_ACTION] Клик по элементу. ID=${target.id}, Текст=${elText.substring(0, 15)}`);
+
+        const isMLBtn = target.matches('label[for="audio-files"]') || 
+                        target.id === 'scan-btn' || 
+                        target.id === 'ep-btn-rescan' ||
+                        tooltip.includes('Пересинхронизировать') ||
+                        elText.includes('Пересинхронизировать');
+                        
+        if (isMLBtn) {
+            e.preventDefault(); e.stopPropagation();
+            console.log("[FK_ACTION] ЗАБЛОКИРОВАНО: Требуются нейросети.");
+            window.showAndroidToast("Функция требует нейросетей (только на ПК)");
+            return;
+        }
+
+        if (target.id === 'meta-rescan-toggle' || target.matches('input[type="checkbox"]#meta-rescan-toggle')) {
+            e.preventDefault(); e.stopPropagation();
+            if (target.checked) target.checked = false; 
+            console.log("[FK_ACTION] ЗАБЛОКИРОВАНО: Тумблер рескана.");
+            window.showAndroidToast("Пересканирование недоступно на Android");
+            return;
+        }
+
+        if (target.id === 'import-btn' || elText.includes('Импорт')) {
+            e.preventDefault(); e.stopPropagation();
+            console.log("[FK_ACTION] ВЫЗОВ: Импорт ZIP");
+            if (window.AndroidBridge) AndroidBridge.triggerImport();
+            return;
+        }
+        
+        if (target.id === 'export-btn' || elText.includes('Экспорт')) {
+            e.preventDefault(); e.stopPropagation();
+            console.log("[FK_ACTION] ВЫЗОВ: Экспорт ZIP");
+            if (window.AndroidBridge) AndroidBridge.triggerExport();
+            return;
+        }
+    }, true);
+});
+
+window.executeMobileImport = (path) => {
+    console.log("[FK_ACTION] API Request: Import " + path);
+    window.showAndroidToast("Начат импорт архива...");
+    fetch('/mobile_api/import', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({path: path}) });
+};
+window.executeMobileExport = (path) => {
+    console.log("[FK_ACTION] API Request: Export " + path);
+    window.showAndroidToast("Начат экспорт архива...");
+    fetch('/mobile_api/export', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({path: path}) });
+};
+</script>
+"""
+
+def inject_html_patch():
+    for root, dirs, files in os.walk(APP_DIR):
+        for file in files:
+            if file.endswith('.html'):
+                filepath = os.path.join(root, file)
+                with open(filepath, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                if 'mobile_patch_applied' not in content:
+                    content = content.replace('</body>', JS_PATCH + '\n</body>')
+                    with open(filepath, 'w', encoding='utf-8') as f:
+                        f.write(content)
+
+inject_html_patch()
 
 def setup_storage():
     music_dir = "/storage/emulated/0/Music/free_karaoke_library"
@@ -540,18 +700,16 @@ def setup_storage():
     internal_data_dir = os.path.join(APP_DIR, "app_data")
     os.makedirs(internal_data_dir, exist_ok=True)
     os.environ['FK_DB_DIR'] = internal_data_dir
-    os.environ['FK_LOGS_DIR'] = internal_data_dir
     os.environ['FK_CACHE_DIR'] = internal_data_dir
-    
+    os.environ['FK_LOGS_DIR'] = internal_data_dir 
     return music_dir
 
-LIBRARY_DIR = setup_storage()
+setup_storage()
 
 import fastapi
+from a2wsgi import ASGIMiddleware
 original_app = None
-import_errors = {}
 
-# Импортируем роуты безопасно
 for module_path in ['desktop_main', 'server', 'core.main', 'main']:
     try:
         if '.' in module_path:
@@ -560,54 +718,53 @@ for module_path in ['desktop_main', 'server', 'core.main', 'main']:
             target_mod = getattr(mod, attr)
         else:
             target_mod = __import__(module_path)
-            
         for name in dir(target_mod):
             attr = getattr(target_mod, name)
             if isinstance(attr, fastapi.FastAPI):
                 original_app = attr
                 break
         if original_app: break
-    except Exception as e:
-        import_errors[module_path] = traceback.format_exc()
-        print("==================================================", file=sys.stderr)
-        print(f"[SERVER] IMPORT ERROR in {module_path}:", file=sys.stderr)
-        print(import_errors[module_path], file=sys.stderr)
-        print("==================================================", file=sys.stderr)
-        continue
+    except Exception: continue
 
 if not original_app:
     original_app = fastapi.FastAPI()
     @original_app.get("/")
-    def read_root(): 
-        return {
-            "status": "FastAPI Not Found. Check imports.",
-            "traceback": import_errors
-        }
+    def read_root(): return {"status": "FastAPI Not Found."}
 
-from a2wsgi import ASGIMiddleware
 wsgi_app = ASGIMiddleware(original_app)
 
 def proxy_app(environ, start_response):
     path = environ.get('PATH_INFO', '').lower()
-    # Блокируем вызов ML функций из мобильного UI, так как они вырезаны
-    ml_endpoints = ['/upload', '/fix', '/rescan', '/lyrics', '/separate', '/transcribe', '/ml']
-    
-    if any(endpoint in path for endpoint in ml_endpoints):
-        response_body = json.dumps({"error": "Эта функция доступна только в десктопной версии. Телефон работает только как плеер."}).encode('utf-8')
-        start_response('400 Bad Request', [('Content-Type', 'application/json'), ('Content-Length', str(len(response_body)))])
-        return [response_body]
-        
+    if environ['REQUEST_METHOD'] == 'POST' and path in ['/mobile_api/import', '/mobile_api/export']:
+        try:
+            length = int(environ.get('CONTENT_LENGTH', '0'))
+            data = json.loads(environ['wsgi.input'].read(length))
+            filepath = data.get('path')
+            from core.tasks import import_library_task, export_library_task
+            
+            print(f"[FK_ACTION_PYTHON] Запуск задачи {'Импорт' if 'import' in path else 'Экспорт'}: {filepath}")
+            if path == '/mobile_api/import':
+                threading.Thread(target=import_library_task, args=(filepath,), daemon=True).start()
+            else:
+                threading.Thread(target=export_library_task, args=(filepath,), daemon=True).start()
+                
+            res = json.dumps({"status": "Task submitted"}).encode('utf-8')
+            start_response('200 OK', [('Content-Type', 'application/json'), ('Content-Length', str(len(res)))])
+            return [res]
+        except Exception as e:
+            res = json.dumps({"error": str(e)}).encode('utf-8')
+            start_response('500 Error', [('Content-Type', 'application/json')])
+            return [res]
     return wsgi_app(environ, start_response)
 
 def start_server():
     from werkzeug.serving import make_server
     try:
         server = make_server('127.0.0.1', 8000, proxy_app)
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
-        thread.start()
-        print("[SERVER] Mobile proxy server started on 8000", file=sys.stdout)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        print("[FK_SERVER] Mobile Server Started Successfully")
     except Exception as e:
-        print("[SERVER] Error starting proxy:", traceback.format_exc(), file=sys.stderr)
+        print("[FK_SERVER] Error:", traceback.format_exc())
 EOF
 
 log "Скрипты внедрены." "SUCCESS"
@@ -660,4 +817,6 @@ if [[ "$CLEANUP" =~ ^[Yy]$ ]]; then
 fi
 
 echo -e "\n${GREEN}Установка завершена. Скопируйте APK на Android устройство и установите.${NC}"
+echo -e "${YELLOW}Для отладки событий кнопок через ADB используйте команду:${NC}"
+echo -e "${YELLOW}adb logcat -s FreeKaraoke-JS python FK_SERVER FK_ACTION_PYTHON${NC}\n"
 read -p "Нажмите Enter для выхода из скрипта..."
