@@ -37,7 +37,6 @@ releases/core/
 dist/
 build/
 *.AppImage
-*.apk
 *.aab
 Free_Karaoke/
 FreeKaraoke/
