@@ -2,7 +2,7 @@
 
 # ==============================================================================
 # Free Karaoke Android Release Builder
-# Версия: 35.0 (Smart UI + Zero-Copy I/O + Fixes)
+# Версия: 38.0 (Double Bypass + Low-Level I/O Zero-Copy)
 # ==============================================================================
 
 set -euo pipefail
@@ -116,7 +116,7 @@ fi
 clear
 echo -e "${GREEN}==============================================${NC}"
 echo -e "${GREEN}  Free Karaoke Native Android Builder         ${NC}"
-echo -e "${GREEN}  [ 35.0 - Zero-Copy I/O, Safe Logs, Fixes ]  ${NC}"
+echo -e "${GREEN}  [ 38.0 - Double Bypass + In-Memory FD ]     ${NC}"
 echo -e "${GREEN}==============================================${NC}"
 log "Инициализация чистой среды сборки..."
 
@@ -386,7 +386,6 @@ cat << 'EOF' > app/src/main/res/values/themes.xml
 </resources>
 EOF
 
-# ИСПОЛЬЗУЕМ ВЕКТОРНУЮ ИКОНКУ XML ВМЕСТО PNG
 cat << 'EOF' > app/src/main/res/mipmap/ic_launcher.xml
 <?xml version="1.0" encoding="utf-8"?>
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
@@ -428,9 +427,6 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import com.chaquo.python.Python
 import com.chaquo.python.android.AndroidPlatform
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 
 class MainActivity : AppCompatActivity() {
     private lateinit var webView: WebView
@@ -454,12 +450,17 @@ class MainActivity : AppCompatActivity() {
                         if (pfd != null) {
                             val fd = pfd.detachFd() // Отсоединяем для безопасной работы из Python
                             val path = "/proc/self/fd/$fd"
-                            runOnUiThread { webView.evaluateJavascript("window.executeMobileImport('$path');", null) }
+                            runOnUiThread { webView.evaluateJavascript("if(window._fileDialogResolve) { window._fileDialogResolve('$path'); window._fileDialogResolve = null; }", null) }
+                        } else {
+                            runOnUiThread { webView.evaluateJavascript("if(window._fileDialogResolve) { window._fileDialogResolve(null); window._fileDialogResolve = null; }", null) }
                         }
                     } catch (e: Exception) {
+                        runOnUiThread { webView.evaluateJavascript("if(window._fileDialogResolve) { window._fileDialogResolve(null); window._fileDialogResolve = null; }", null) }
                         Toast.makeText(this, "Ошибка доступа к файлу архива", Toast.LENGTH_SHORT).show()
                     }
-                }
+                } ?: runOnUiThread { webView.evaluateJavascript("if(window._fileDialogResolve) { window._fileDialogResolve(null); window._fileDialogResolve = null; }", null) }
+            } else {
+                runOnUiThread { webView.evaluateJavascript("if(window._fileDialogResolve) { window._fileDialogResolve(null); window._fileDialogResolve = null; }", null) }
             }
         }
 
@@ -472,12 +473,17 @@ class MainActivity : AppCompatActivity() {
                         if (pfd != null) {
                             val fd = pfd.detachFd()
                             val path = "/proc/self/fd/$fd"
-                            runOnUiThread { webView.evaluateJavascript("window.executeMobileExport('$path');", null) }
+                            runOnUiThread { webView.evaluateJavascript("if(window._fileDialogResolve) { window._fileDialogResolve('$path'); window._fileDialogResolve = null; }", null) }
+                        } else {
+                            runOnUiThread { webView.evaluateJavascript("if(window._fileDialogResolve) { window._fileDialogResolve(null); window._fileDialogResolve = null; }", null) }
                         }
                     } catch (e: Exception) {
+                        runOnUiThread { webView.evaluateJavascript("if(window._fileDialogResolve) { window._fileDialogResolve(null); window._fileDialogResolve = null; }", null) }
                         Toast.makeText(this, "Ошибка создания файла экспорта", Toast.LENGTH_SHORT).show()
                     }
-                }
+                } ?: runOnUiThread { webView.evaluateJavascript("if(window._fileDialogResolve) { window._fileDialogResolve(null); window._fileDialogResolve = null; }", null) }
+            } else {
+                runOnUiThread { webView.evaluateJavascript("if(window._fileDialogResolve) { window._fileDialogResolve(null); window._fileDialogResolve = null; }", null) }
             }
         }
 
@@ -541,7 +547,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     inner class AndroidBridge {
-        @JavascriptInterface fun triggerImport() { 
+        @JavascriptInterface fun openFileDialog() { 
             val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply { 
                 addCategory(Intent.CATEGORY_OPENABLE)
                 type = "application/zip" 
@@ -549,12 +555,11 @@ class MainActivity : AppCompatActivity() {
             importLauncher.launch(intent) 
         }
         
-        @JavascriptInterface fun triggerExport() { 
+        @JavascriptInterface fun saveFileDialog(defaultName: String) { 
             val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
                 addCategory(Intent.CATEGORY_OPENABLE)
                 type = "application/zip"
-                val timeStamp = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date())
-                putExtra(Intent.EXTRA_TITLE, "FreeKaraoke_Library_$timeStamp.zip")
+                putExtra(Intent.EXTRA_TITLE, defaultName)
             }
             exportLauncher.launch(intent) 
         }
@@ -574,19 +579,20 @@ rm -rf "$ANDROID_DIR/app/src/main/python/.buildozer" 2>/dev/null || true
 cat << 'EOF' > "$ANDROID_DIR/app/src/main/python/mobile_server.py"
 import sys
 import os
+import io
+import json
 import threading
 from unittest.mock import MagicMock
-import json
 import traceback
 import importlib.util
 import logging
 import warnings
+import builtins
+import zipfile
 
-# Скрываем спам предупреждений, чтобы не засорять ADB logcat
 warnings.filterwarnings("ignore", category=PendingDeprecationWarning)
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
-# Перехватываем файловые логи приложения, чтобы оно не засоряло память устройства
 class NoOpFileHandler(logging.NullHandler):
     def __init__(self, *args, **kwargs):
         super().__init__()
@@ -599,6 +605,70 @@ if APP_DIR not in sys.path: sys.path.insert(0, APP_DIR)
 for subdir in ['core', 'server', 'app', 'backend', 'db']:
     subpath = os.path.join(APP_DIR, subdir)
     if os.path.isdir(subpath) and subpath not in sys.path: sys.path.insert(0, subpath)
+
+# ======================================================================================
+# DOUBLE BYPASS ARCHITECTURE (Monkey-Patching File System for Zero-Copy & SELinux Evasion)
+# ======================================================================================
+
+# 1. Патчим проверки существования файлов, чтобы они не падали на путях /proc/self/fd/
+_orig_exists = os.path.exists
+_orig_getsize = os.path.getsize
+
+def _patched_exists(path):
+    if isinstance(path, str) and str(path).startswith('/proc/self/fd/'):
+        return True
+    return _orig_exists(path)
+
+def _patched_getsize(path):
+    if isinstance(path, str) and str(path).startswith('/proc/self/fd/'):
+        try:
+            fd = int(str(path).replace('/proc/self/fd/', '').strip('/'))
+            return os.fstat(fd).st_size
+        except Exception:
+            return 0
+    return _orig_getsize(path)
+
+os.path.exists = _patched_exists
+os.path.getsize = _patched_getsize
+
+# 2. Главный патч модуля zipfile. 
+# Если ему дают строку /proc/self/fd/42, мы подменяем строку на открытый файловый объект (os.fdopen).
+# SELinux не блокирует уже открытые дескрипторы. ZipFile читает/пишет прямо в память!
+_orig_zipfile = zipfile.ZipFile
+
+class PatchedZipFile(_orig_zipfile):
+    def __init__(self, file, mode="r", compression=zipfile.ZIP_STORED, allowZip64=True,
+                 compresslevel=None, **kwargs):
+        
+        close_fd_on_exit = False
+        if isinstance(file, str) and file.startswith('/proc/self/fd/'):
+            try:
+                fd = int(file.replace('/proc/self/fd/', '').strip('/'))
+                print(f"[FK_BYPASS] Перехват zipfile для FD: {fd}, mode: {mode}")
+                
+                io_mode = 'wb' if 'w' in mode else 'rb'
+                # Вызываем низкоуровневое открытие дескриптора. 
+                file = os.fdopen(fd, io_mode)
+                close_fd_on_exit = True
+            except Exception as e:
+                print(f"[FK_BYPASS] Ошибка извлечения FD: {e}")
+
+        # Передаем оригинальной функции (уже не строку, а объект, если это был fd)
+        super().__init__(file, mode, compression, allowZip64, compresslevel, **kwargs)
+        
+        # Заставляем ZipFile принудительно закрывать наш дескриптор при завершении работы, 
+        # чтобы не было утечек памяти (т.к. мы делали detachFd в Kotlin)
+        if close_fd_on_exit:
+            _orig_close = self.close
+            def _patched_close():
+                _orig_close()
+                try: file.close()
+                except: pass
+            self.close = _patched_close
+
+zipfile.ZipFile = PatchedZipFile
+
+# ======================================================================================
 
 blocked_libs = [
     'torch', 'torchaudio', 'torchvision', 'onnx', 'onnxruntime', 'whisper', 'openai_whisper', 
@@ -635,6 +705,26 @@ sys.meta_path.insert(0, MockImporter(blocked_libs))
 JS_PATCH = """
 <script>
 window.mobile_patch_applied = true;
+
+window.pywebview = {
+    api: {
+        open_file_dialog: function(multiple, filter) {
+            return new Promise(resolve => {
+                window._fileDialogResolve = resolve;
+                if (window.AndroidBridge) AndroidBridge.openFileDialog();
+                else resolve(null);
+            });
+        },
+        save_file_dialog: function(title, defaultName) {
+            return new Promise(resolve => {
+                window._fileDialogResolve = resolve;
+                if (window.AndroidBridge) AndroidBridge.saveFileDialog(defaultName);
+                else resolve(null);
+            });
+        }
+    }
+};
+
 document.addEventListener("DOMContentLoaded", () => {
     const style = document.createElement('style');
     style.innerHTML = `
@@ -656,8 +746,6 @@ document.addEventListener("DOMContentLoaded", () => {
         const elText = (target.textContent || '').trim();
         const tooltip = target.getAttribute('data-tooltip') || '';
         
-        console.log(`[FK_ACTION] Клик по элементу. ID=${target.id}, Текст=${elText.substring(0, 15)}`);
-
         const isMLBtn = target.matches('label[for="audio-files"]') || 
                         target.id === 'scan-btn' || 
                         target.id === 'ep-btn-rescan' ||
@@ -674,37 +762,11 @@ document.addEventListener("DOMContentLoaded", () => {
         if (target.id === 'meta-rescan-toggle' || target.matches('input[type="checkbox"]#meta-rescan-toggle')) {
             e.preventDefault(); e.stopPropagation();
             if (target.checked) target.checked = false; 
-            console.log("[FK_ACTION] ЗАБЛОКИРОВАНО: Тумблер рескана.");
             window.showAndroidToast("Пересканирование недоступно на Android");
-            return;
-        }
-
-        if (target.id === 'import-btn' || elText.includes('Импорт')) {
-            e.preventDefault(); e.stopPropagation();
-            console.log("[FK_ACTION] ВЫЗОВ: Импорт ZIP");
-            if (window.AndroidBridge) AndroidBridge.triggerImport();
-            return;
-        }
-        
-        if (target.id === 'export-btn' || elText.includes('Экспорт')) {
-            e.preventDefault(); e.stopPropagation();
-            console.log("[FK_ACTION] ВЫЗОВ: Экспорт ZIP");
-            if (window.AndroidBridge) AndroidBridge.triggerExport();
             return;
         }
     }, true);
 });
-
-window.executeMobileImport = (path) => {
-    console.log("[FK_ACTION] API Request: Import " + path);
-    window.showAndroidToast("Начат импорт архива...");
-    fetch('/mobile_api/import', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({path: path}) });
-};
-window.executeMobileExport = (path) => {
-    console.log("[FK_ACTION] API Request: Export " + path);
-    window.showAndroidToast("Начат экспорт архива...");
-    fetch('/mobile_api/export', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({path: path}) });
-};
 </script>
 """
 
@@ -731,7 +793,6 @@ def setup_storage():
     os.makedirs(internal_data_dir, exist_ok=True)
     os.environ['FK_DB_DIR'] = internal_data_dir
     os.environ['FK_CACHE_DIR'] = internal_data_dir
-    # Возвращено на internal_data_dir как в 33.2, чтобы os.makedirs в приложении не падал с NotADirectoryError!
     os.environ['FK_LOGS_DIR'] = internal_data_dir 
     return music_dir
 
@@ -756,7 +817,6 @@ for module_path in ['desktop_main', 'server', 'core.main', 'main']:
                 break
         if original_app: break
     except Exception as e:
-        # Добавлен вывод реальной ошибки инициализации для отладки
         print(f"[SERVER_INIT] Пропуск {module_path}: {e}")
         continue
 
@@ -768,32 +828,50 @@ if not original_app:
 wsgi_app = ASGIMiddleware(original_app)
 
 def proxy_app(environ, start_response):
+    """
+    WSGI-прослойка (HTTP Bypass).
+    Перехватывает запросы к эндпоинтам импорта/экспорта. Не пускает их в FastAPI 
+    (чтобы обойти проверку расширения файла), а напрямую запускает задачи в очереди Huey.
+    """
     path = environ.get('PATH_INFO', '').lower()
-    if environ['REQUEST_METHOD'] == 'POST' and path in ['/mobile_api/import', '/mobile_api/export']:
+    if environ['REQUEST_METHOD'] == 'POST' and path in ['/api/library/import/start', '/api/library/export/start']:
         try:
             length = int(environ.get('CONTENT_LENGTH', '0'))
-            data = json.loads(environ['wsgi.input'].read(length))
-            filepath = data.get('path')
-            from core.tasks import import_library_task, export_library_task
+            body = environ['wsgi.input'].read(length) if length > 0 else b''
             
-            print(f"[FK_ACTION_PYTHON] Запуск задачи {'Импорт' if 'import' in path else 'Экспорт'}: {filepath}")
-            if path == '/mobile_api/import':
-                threading.Thread(target=import_library_task, args=(filepath,), daemon=True).start()
-            else:
-                threading.Thread(target=export_library_task, args=(filepath,), daemon=True).start()
+            if body:
+                data = json.loads(body)
+                from core.tasks import import_library_task, export_library_task
                 
-            res = json.dumps({"status": "Task submitted"}).encode('utf-8')
-            start_response('200 OK', [('Content-Type', 'application/json'), ('Content-Length', str(len(res)))])
-            return [res]
+                if path == '/api/library/import/start':
+                    fd_path = data.get('path', '')
+                    print(f"[FK_HTTP_BYPASS] Запуск ИМПОРТА напрямую в Huey: {fd_path}")
+                    import_library_task(fd_path)
+                    
+                elif path == '/api/library/export/start':
+                    fd_path = data.get('output_path', '')
+                    print(f"[FK_HTTP_BYPASS] Запуск ЭКСПОРТА напрямую в Huey: {fd_path}")
+                    export_library_task(fd_path)
+                
+                res = json.dumps({"message": "Task started successfully", "status": "ok"}).encode('utf-8')
+                start_response('200 OK', [('Content-Type', 'application/json'), ('Content-Length', str(len(res)))])
+                return [res]
         except Exception as e:
-            res = json.dumps({"error": str(e)}).encode('utf-8')
-            start_response('500 Error', [('Content-Type', 'application/json')])
+            print(f"[FK_HTTP_BYPASS] Ошибка: {e}")
+            res = json.dumps({"detail": str(e)}).encode('utf-8')
+            start_response('500 Internal Server Error', [('Content-Type', 'application/json')])
             return [res]
+            
     return wsgi_app(environ, start_response)
 
 def start_server():
     from werkzeug.serving import make_server
     try:
+        from huey_config import huey
+        consumer = huey.create_consumer(workers=1, worker_type='thread')
+        threading.Thread(target=consumer.run, daemon=True).start()
+        print("[FK_SERVER] Huey Worker Started Successfully")
+        
         server = make_server('127.0.0.1', 8000, proxy_app)
         threading.Thread(target=server.serve_forever, daemon=True).start()
         print("[FK_SERVER] Mobile Server Started Successfully")
@@ -852,5 +930,5 @@ fi
 
 echo -e "\n${GREEN}Установка завершена. Скопируйте APK на Android устройство и установите.${NC}"
 echo -e "${YELLOW}Для отладки событий кнопок через ADB используйте команду:${NC}"
-echo -e "${YELLOW}adb logcat -s FreeKaraoke-JS python FK_SERVER FK_ACTION_PYTHON${NC}\n"
+echo -e "${YELLOW}adb logcat -v color | grep -iE 'python|FK_'${NC}\n"
 read -p "Нажмите Enter для выхода из скрипта..."
