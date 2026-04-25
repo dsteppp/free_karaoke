@@ -1,8 +1,8 @@
 #!/bin/bash
 
 # ==============================================================================
-# Free Karaoke Android Release Builder (FastAPI + WebView Edition)
-# Версия: 12.0 (Ultimate Edition: Fix Greenlet Py3.11 C-API & minapi)
+# Free Karaoke Android Release Builder
+# Версия: 31.0 (Fix Kotlin comment syntax)
 # ==============================================================================
 
 set -euo pipefail
@@ -17,8 +17,57 @@ NC='\033[0m'
 LOG_FILE=""
 BUILD_ROOT=""
 REPO_URL="https://github.com/dsteppp/free_karaoke.git"
-REQUIRED_PYTHON_VER="3.11"
-CMAKE_VERSION="3.24.3"
+ANDROID_COMPILE_SDK="34"
+ANDROID_BUILD_TOOLS="34.0.0"
+
+# --- ULTIMATE АВТО-АНАЛИЗАТОР ОШИБОК ---
+print_diagnostics() {
+    local logfile="$BUILD_ROOT/logs/gradle_build.log"
+    if [ -n "$BUILD_ROOT" ] && [ -f "$logfile" ]; then
+        echo -e "\n${RED}======================================================================${NC}"
+        echo -e "${RED}                      АВТО-АНАЛИЗАТОР ОШИБОК                          ${NC}"
+        echo -e "${RED}======================================================================${NC}"
+        
+        local found_error=false
+
+        if grep -q "Traceback (most recent call last):" "$logfile"; then
+            echo -e "${YELLOW}[!] НАЙДЕН PYTHON TRACEBACK (КРИТИЧЕСКАЯ ОШИБКА СКРИПТОВ):${NC}"
+            awk '/Traceback \(most recent call last\):/{flag=1} /Chaquopy: Exit status/{print; flag=0; next} /BUILD FAILED/{flag=0} flag' "$logfile" | sed 's/^/    /'
+            echo ""
+            found_error=true
+        fi
+
+        if grep -q "Caused by: com.chaquo.python" "$logfile"; then
+            echo -e "${YELLOW}[!] ОШИБКА ПЛАГИНА CHAQUOPY:${NC}"
+            grep -A 15 "Caused by: com.chaquo.python" "$logfile" | sed 's/^/    /'
+            echo ""
+            found_error=true
+        fi
+
+        if grep -E -qi "Failed to build wheel|pip failed|error: subprocess-exited-with-error|ERROR: Could not build wheels" "$logfile"; then
+            echo -e "${YELLOW}[!] НАЙДЕНА ОШИБКА УСТАНОВКИ PYTHON-БИБЛИОТЕК (PIP):${NC}"
+            grep -E -i -B 2 -A 15 "Failed to build wheel|pip failed|error: subprocess-exited-with-error" "$logfile" | tail -n 25 | sed 's/^/    /'
+            echo ""
+            found_error=true
+        fi
+
+        if grep -q "\* What went wrong:" "$logfile"; then
+            echo -e "${YELLOW}[!] ОТЧЕТ GRADLE О ПРИЧИНЕ ОШИБКИ:${NC}"
+            awk '/\* What went wrong:/{flag=1} /\* Try:/{flag=0} flag' "$logfile" | sed 's/^/    /'
+            echo ""
+            found_error=true
+        fi
+
+        if [ "$found_error" = false ]; then
+            echo -e "    ${YELLOW}Не удалось автоматически извлечь точную ошибку.${NC}"
+            echo -e "    ${YELLOW}Последние 20 строк лога:${NC}"
+            tail -n 20 "$logfile" | sed 's/^/    /'
+        fi
+
+        echo -e "${RED}======================================================================${NC}"
+        echo -e "Полный лог сохранен в: ${BLUE}$logfile${NC}"
+    fi
+}
 
 log() {
     local msg="$1"
@@ -39,12 +88,13 @@ log() {
 
 log_error_exit() {
     log "$1" "ERROR"
+    print_diagnostics
     echo ""
     read -p "Нажмите Enter для выхода..."
     exit 1
 }
 
-trap 'last_line=$LINENO; log "Критическая ошибка на строке $last_line. Проверьте логи: $LOG_FILE" "ERROR"; read -p "Нажмите Enter для выхода..."; exit 1' ERR
+trap 'last_line=$LINENO; log "Критическая ошибка на строке $last_line." "ERROR"; print_diagnostics; read -p "Нажмите Enter для выхода..."; exit 1' ERR
 
 if [ -z "${TERM:-}" ] || [ "$TERM" == "dumb" ]; then
     TERMINALS=("konsole" "gnome-terminal" "xfce4-terminal" "alacritty" "kitty" "xterm")
@@ -65,79 +115,91 @@ fi
 
 clear
 echo -e "${GREEN}==============================================${NC}"
-echo -e "${GREEN}  Free Karaoke Android Builder (Release)      ${NC}"
+echo -e "${GREEN}  Free Karaoke Native Android Builder         ${NC}"
+echo -e "${GREEN}  [ 100% Изолированная сборка без мусора ]    ${NC}"
 echo -e "${GREEN}==============================================${NC}"
-log "Инициализация среды сборки APK..."
+log "Инициализация чистой среды сборки..."
 
 while true; do
     read -p "Введите полный путь к папке для сборки (например, /home/$USER/apk_build): " BUILD_ROOT
     if [ -z "$BUILD_ROOT" ]; then continue; fi
-    # Папки для изолированного Rust включены
-    if mkdir -p "$BUILD_ROOT"/{src,logs,output,env,tools/rustup,tools/cargo,keystore} 2>/dev/null; then break; else log "Ошибка доступа к директории." "ERROR"; fi
+    if mkdir -p "$BUILD_ROOT"/{src,logs,output,tools/android_sdk,tools/gradle,tools/gradle_cache,tools/android_cache,tools/pip_cache,keystore} 2>/dev/null; then break; else log "Ошибка доступа к директории." "ERROR"; fi
 done
 
 LOG_FILE="$BUILD_ROOT/logs/build_script.log"
 : > "$LOG_FILE"
 log "Рабочая директория: $BUILD_ROOT"
 
-export RUSTUP_HOME="$BUILD_ROOT/tools/rustup"
-export CARGO_HOME="$BUILD_ROOT/tools/cargo"
-export PATH="$CARGO_HOME/bin:$PATH"
+log "Проверка/создание Polyfill-заглушки для модуля cgi..."
+mkdir -p "$BUILD_ROOT/tools/python_polyfills"
+cat << 'EOF' > "$BUILD_ROOT/tools/python_polyfills/cgi.py"
+def parse_header(line):
+    if not line: return '', {}
+    parts = [x.strip() for x in line.split(';')]
+    key = parts[0].lower()
+    pdict = {}
+    for part in parts[1:]:
+        if '=' in part:
+            k, v = part.split('=', 1)
+            pdict[k.strip().lower()] = v.strip().strip('"')
+    return key, pdict
+EOF
+export PYTHONPATH="$BUILD_ROOT/tools/python_polyfills:${PYTHONPATH:-}"
 
-log "Проверка менеджера пакетов и зависимостей..."
+export GRADLE_USER_HOME="$BUILD_ROOT/tools/gradle_cache"
+export ANDROID_USER_HOME="$BUILD_ROOT/tools/android_cache"
+export XDG_CACHE_HOME="$BUILD_ROOT/tools/pip_cache"
+export PIP_CACHE_DIR="$BUILD_ROOT/tools/pip_cache"
+export ANDROID_HOME="$BUILD_ROOT/tools/android_sdk"
+
+log "Проверка системных пакетов..."
 INSTALL_CMD=""
 if command -v yay &> /dev/null; then INSTALL_CMD="yay -S --noconfirm --needed"
 elif command -v pacman &> /dev/null; then INSTALL_CMD="sudo pacman -S --noconfirm --needed"
 elif command -v apt &> /dev/null; then INSTALL_CMD="sudo apt update && sudo apt install -y"
 elif command -v dnf &> /dev/null; then INSTALL_CMD="sudo dnf install -y"
-else log_error_exit "Не найден поддерживаемый менеджер пакетов (yay, pacman, apt, dnf)."; fi
+else log_error_exit "Не найден поддерживаемый менеджер пакетов."; fi
 
 PACKAGES=()
 if [[ "$INSTALL_CMD" == *"yay"* || "$INSTALL_CMD" == *"pacman"* ]]; then
-    PACKAGES=(python311 jdk17-openjdk git zip unzip libffi openssl zlib gcc base-devel pkgconf gstreamer wget ninja curl)
+    PACKAGES=(jdk17-openjdk git zip unzip wget curl base64)
 elif [[ "$INSTALL_CMD" == *"apt"* ]]; then
-    PACKAGES=(python3.11 openjdk-17-jdk git zip unzip libffi-dev libssl-dev zlib1g-dev gcc build-essential pkg-config wget ninja-build curl)
+    PACKAGES=(openjdk-17-jdk git zip unzip wget curl coreutils)
 fi
 
-if ! command -v ninja &> /dev/null || ! command -v curl &> /dev/null; then
-    log "Установка системных пакетов (может потребоваться пароль sudo)..."
-    eval "$INSTALL_CMD ${PACKAGES[*]}" || log "Некоторые пакеты уже установлены или недоступны." "WARN"
-fi
+eval "$INSTALL_CMD ${PACKAGES[*]}" || log "Системные пакеты готовы." "SUCCESS"
 
-if ! command -v cargo &> /dev/null; then
-    log "Установка изолированного Rust (требуется для компиляции ядра Pydantic V2)..."
-    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path
-fi
-
-if [ -d "/usr/lib/jvm/java-17-openjdk" ]; then
-    export JAVA_HOME="/usr/lib/jvm/java-17-openjdk"
-elif [ -d "/usr/lib/jvm/java-17-openjdk-amd64" ]; then
-    export JAVA_HOME="/usr/lib/jvm/java-17-openjdk-amd64"
-elif [ -d "/usr/lib/jvm/jre-17-openjdk" ]; then
-    export JAVA_HOME="/usr/lib/jvm/jre-17-openjdk"
-else
-    export JAVA_HOME=$(dirname $(dirname $(readlink -f $(which java))))
-fi
+if [ -d "/usr/lib/jvm/java-17-openjdk" ]; then export JAVA_HOME="/usr/lib/jvm/java-17-openjdk"
+elif [ -d "/usr/lib/jvm/java-17-openjdk-amd64" ]; then export JAVA_HOME="/usr/lib/jvm/java-17-openjdk-amd64"
+elif command -v java &> /dev/null; then export JAVA_HOME=$(dirname $(dirname $(readlink -f $(which java))))
+else log_error_exit "Java 17 не найдена."; fi
 export PATH="$JAVA_HOME/bin:$PATH"
-log "Используется Java: $JAVA_HOME" "SUCCESS"
 
-log "Настройка CMake $CMAKE_VERSION..."
-CMAKE_DIR="$BUILD_ROOT/tools/cmake-$CMAKE_VERSION-linux-x86_64"
-if [ ! -d "$CMAKE_DIR" ]; then
-    CMAKE_TARBALL="cmake-$CMAKE_VERSION-linux-x86_64.tar.gz"
-    CMAKE_URL="https://github.com/Kitware/CMake/releases/download/v$CMAKE_VERSION/$CMAKE_TARBALL"
+if [ ! -f "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" ]; then
+    log "Загрузка Android SDK Command-line Tools..."
     cd "$BUILD_ROOT/tools"
-    if ! wget -q --show-progress "$CMAKE_URL" -O "$CMAKE_TARBALL"; then
-        log_error_exit "Не удалось загрузить CMake. Проверьте соединение."
-    fi
-    tar -xzf "$CMAKE_TARBALL"
-    rm "$CMAKE_TARBALL"
+    wget -q --show-progress "https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip" -O cmdline.zip
+    unzip -q cmdline.zip -d "$ANDROID_HOME"
+    mkdir -p "$ANDROID_HOME/cmdline-tools/latest"
+    mv "$ANDROID_HOME/cmdline-tools/bin" "$ANDROID_HOME/cmdline-tools/lib" "$ANDROID_HOME/cmdline-tools/source.properties" "$ANDROID_HOME/cmdline-tools/latest/" 2>/dev/null || true
+    rm cmdline.zip
 fi
-export PATH="$CMAKE_DIR/bin:$PATH"
-export CMAKE_POLICY_VERSION_MINIMUM=3.5
+
+yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null 2>&1 || true
+"$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platform-tools" "platforms;android-$ANDROID_COMPILE_SDK" "build-tools;$ANDROID_BUILD_TOOLS" > /dev/null
+
+GRADLE_DIR="$BUILD_ROOT/tools/gradle/gradle-8.5"
+if [ ! -d "$GRADLE_DIR" ]; then
+    log "Загрузка Gradle..."
+    cd "$BUILD_ROOT/tools/gradle"
+    wget -q --show-progress "https://services.gradle.org/distributions/gradle-8.5-bin.zip" -O gradle.zip
+    unzip -q gradle.zip
+    rm gradle.zip
+fi
+export PATH="$GRADLE_DIR/bin:$PATH"
 
 PROJECT_DIR="$BUILD_ROOT/src/project_src"
-log "Загрузка актуального кода проекта..."
+log "Синхронизация кода проекта..."
 if [ -d "$PROJECT_DIR/.git" ]; then
     cd "$PROJECT_DIR"
     git fetch --all && git reset --hard origin/main || git reset --hard origin/master
@@ -147,82 +209,283 @@ else
     rm -rf "$PROJECT_DIR"
     git clone "$REPO_URL" "$PROJECT_DIR"
 fi
-cd "$BUILD_ROOT"
 
-log "Создание изолированного Python окружения и установка Buildozer..."
-if [ -d "env" ]; then rm -rf env; fi
-python3.11 -m venv env
-source env/bin/activate
+log "Очистка старой сборки Android..."
+ANDROID_DIR="$BUILD_ROOT/android_project"
+rm -rf "$ANDROID_DIR" 2>/dev/null || true
+mkdir -p "$ANDROID_DIR/app/src/main/java/org/dstep/freekaraoke"
+mkdir -p "$ANDROID_DIR/app/src/main/python"
+mkdir -p "$ANDROID_DIR/app/src/main/res/values"
+mkdir -p "$ANDROID_DIR/app/src/main/res/mipmap"
 
-for i in 1 2 3; do
-    if pip install --upgrade pip setuptools wheel Cython==0.29.37 requests packaging buildozer; then
-        log "Buildozer успешно установлен." "SUCCESS"
-        break
-    else
-        log "Ошибка загрузки pip пакетов. Попытка $i из 3..." "WARN"
-        sleep 5
-    fi
-    if [ "$i" -eq 3 ]; then log_error_exit "Не удалось установить pip зависимости (проверьте интернет)."; fi
-done
+cd "$ANDROID_DIR"
 
-log "Очистка кэша сборки..."
-rm -rf "$PROJECT_DIR/.buildozer" 2>/dev/null || true
-rm -rf "$PROJECT_DIR/bin" 2>/dev/null || true
+log "Генерация файлов проекта..."
 
-log "Генерация конфигурации..."
-export PROJECT_DIR
-python3 << 'PYEOF'
-import os
+cat << 'EOF' > gradle.properties
+android.useAndroidX=true
+android.enableJetifier=true
+org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
+EOF
 
-project_dir = os.environ.get('PROJECT_DIR', '.')
+cat << 'EOF' > settings.gradle.kts
+pluginManagement {
+    repositories { 
+        gradlePluginPortal()
+        google()
+        mavenCentral()
+        maven { url = uri("https://chaquo.com/maven") }
+    }
+}
+dependencyResolutionManagement {
+    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+    repositories { 
+        google()
+        mavenCentral()
+        maven { url = uri("https://chaquo.com/maven") }
+    }
+}
+rootProject.name = "FreeKaraoke"
+include(":app")
+EOF
 
-# ИСПРАВЛЕНО: Жестко зафиксированы версии C-расширений (greenlet, markupsafe, regex),
-# чтобы Buildozer не пытался скомпилировать древние версии под Python 3.11
-req_string = (
-    "python3,sqlite3,openssl,android,pyjnius,kivy==2.3.0,"
-    "fastapi,pydantic,uvicorn,starlette,aiofiles,python-multipart,jinja2,markupsafe==2.1.5,"
-    "sqlalchemy,greenlet==3.1.1,aiosqlite,databases,huey,"
-    "typing-extensions,typing-inspection,lazy-loader,pooch,"
-    "requests,httpx,httpcore,urllib3,certifi,charset-normalizer,idna,h11,anyio,"
-    "beautifulsoup4,soupsieve,lyricsgenius,"
-    "tinytag,mutagen,python-dotenv,pyyaml,regex==2024.5.15,tqdm,packaging,click,rich,pygments,"
-    "six,decorator,platformdirs,pillow,msgpack,rapidfuzz,cffi,pycparser"
-)
+cat << 'EOF' > build.gradle.kts
+buildscript {
+    repositories {
+        google()
+        mavenCentral()
+        maven { url = uri("https://chaquo.com/maven") }
+    }
+    dependencies {
+        classpath("com.android.tools.build:gradle:8.2.2")
+        classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:1.9.22")
+        classpath("com.chaquo.python:gradle:15.0.1")
+    }
+}
 
-# ИСПРАВЛЕНО: 'android.minapi = 24' вместо 'min_android_version = 24'
-spec_content = f"""[app]
-title = Free Karaoke
-package.name = freekaraoke
-package.domain = org.dstep
-version = 1.0.0
-source.dir = .
-source.include_exts = py,png,jpg,svg,ico,kv,atlas,json,ttf,woff,woff2,eot,wav,mp3,html,js,css,map
-orientation = landscape
-osx.python_version = 3.11
-android.minapi = 24
-android.api = 34
-android.ndk = 25b
-android.archs = arm64-v8a, armeabi-v7a
-android.permissions = INTERNET, READ_EXTERNAL_STORAGE, WRITE_EXTERNAL_STORAGE, MANAGE_EXTERNAL_STORAGE, READ_MEDIA_AUDIO
-requirements = {req_string}
-android.accept_all_licenses = True
-android.release_artifact = apk
-android.manifest.application_meta_data = android:usesCleartextTraffic=true
-android.add_args = --orientation=sensorLandscape
-[buildozer]
-log_level = 2
-warn_on_root = 1
-"""
-with open(os.path.join(project_dir, 'buildozer.spec'), 'w', encoding='utf-8') as f:
-    f.write(spec_content)
+tasks.register("clean", Delete::class) {
+    delete(rootProject.layout.buildDirectory)
+}
+EOF
 
-main_py_code = """
+cat << 'EOF' > app/build.gradle.kts
+plugins {
+    id("com.android.application")
+    id("kotlin-android")
+    id("com.chaquo.python")
+}
+
+android {
+    namespace = "org.dstep.freekaraoke"
+    compileSdk = 34
+
+    defaultConfig {
+        applicationId = "org.dstep.freekaraoke"
+        minSdk = 24
+        targetSdk = 34
+        versionCode = 1
+        versionName = "1.0.0"
+        ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a") }
+    }
+
+    buildTypes {
+        release {
+            isMinifyEnabled = false
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+        }
+    }
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+    kotlinOptions { jvmTarget = "17" }
+}
+
+chaquopy {
+    defaultConfig {
+        // ПОВЫСИЛИ ВЕРСИЮ ДО 3.11 ДЛЯ ПОДДЕРЖКИ СИНТАКСИСА str | None
+        version = "3.11"
+        buildPython("python3")
+        pip {
+            install("pydantic==1.10.13")
+            install("fastapi==0.110.0")
+            install("python-multipart")
+            install("a2wsgi")
+            install("werkzeug")
+            install("sqlalchemy")
+            install("aiosqlite")
+            install("mutagen")
+            install("tinytag")
+            install("python-dotenv")
+            install("pyyaml")
+            install("lyricsgenius")
+            install("beautifulsoup4")
+            install("requests")
+            install("httpx")
+            install("huey")
+            install("platformdirs")
+            install("aiofiles")
+        }
+    }
+}
+
+dependencies {
+    implementation("androidx.core:core-ktx:1.12.0")
+    implementation("androidx.appcompat:appcompat:1.6.1")
+    implementation("com.google.android.material:material:1.11.0")
+    implementation("androidx.webkit:webkit:1.10.0")
+}
+EOF
+
+cat << 'EOF' > app/src/main/AndroidManifest.xml
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" tools:ignore="ScopedStorage" />
+    <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
+
+    <application
+        android:allowBackup="true"
+        android:icon="@mipmap/ic_launcher"
+        android:label="Free Karaoke"
+        android:theme="@style/Theme.AppCompat.NoActionBar"
+        android:usesCleartextTraffic="true"
+        android:requestLegacyExternalStorage="true">
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:screenOrientation="sensorLandscape"
+            android:configChanges="orientation|keyboardHidden|screenSize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>
+EOF
+
+cat << 'EOF' > app/src/main/res/values/strings.xml
+<resources>
+    <string name="app_name">Free Karaoke</string>
+</resources>
+EOF
+
+cat << 'EOF' > app/src/main/res/values/themes.xml
+<resources>
+    <style name="Theme.AppCompat.NoActionBar" parent="Theme.AppCompat.Light.NoActionBar">
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:windowActionBar">false</item>
+        <item name="android:windowFullscreen">true</item>
+        <item name="android:windowDrawsSystemBarBackgrounds">true</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+    </style>
+</resources>
+EOF
+
+echo "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=" | base64 -d > app/src/main/res/mipmap/ic_launcher.png
+
+cat << 'EOF' > app/src/main/java/org/dstep/freekaraoke/MainActivity.kt
+package org.dstep.freekaraoke
+
+import android.content.Intent
+import android.net.Uri
+import android.os.Bundle
+import android.os.Environment
+import android.provider.Settings
+import android.webkit.WebChromeClient
+import android.webkit.WebResourceRequest
+import android.webkit.WebView
+import android.webkit.WebViewClient
+import android.widget.Toast
+import androidx.appcompat.app.AppCompatActivity
+import com.chaquo.python.Python
+import com.chaquo.python.android.AndroidPlatform
+
+class MainActivity : AppCompatActivity() {
+    private lateinit var webView: WebView
+    private var isServerRunning = false
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        webView = WebView(this)
+        setContentView(webView)
+
+        webView.settings.apply {
+            javaScriptEnabled = true
+            domStorageEnabled = true
+            allowFileAccess = true
+            allowContentAccess = true
+            mediaPlaybackRequiresUserGesture = false
+        }
+        
+        webView.webViewClient = object : WebViewClient() {
+            override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
+                return false
+            }
+        }
+        webView.webChromeClient = WebChromeClient()
+        
+        checkStoragePermission()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (!isServerRunning) checkStoragePermission()
+    }
+
+    private fun checkStoragePermission() {
+        if (Environment.isExternalStorageManager()) {
+            startApp()
+        } else {
+            try {
+                val intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION)
+                intent.data = Uri.parse("package:$packageName")
+                startActivity(intent)
+            } catch (e: Exception) {
+                val intent = Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION)
+                startActivity(intent)
+            }
+            Toast.makeText(this, "Требуется доступ ко всем файлам для базы данных", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    private fun startApp() {
+        if (isServerRunning) return
+        try {
+            if (!Python.isStarted()) {
+                Python.start(AndroidPlatform(this))
+            }
+            val py = Python.getInstance()
+            val module = py.getModule("mobile_server")
+            module.callAttr("start_server")
+            isServerRunning = true
+            
+            Thread.sleep(2000)
+            webView.loadUrl("http://127.0.0.1:8000")
+        } catch (e: Exception) {
+            Toast.makeText(this, "Ошибка запуска: \${e.message}", Toast.LENGTH_LONG).show()
+        }
+    }
+}
+EOF
+
+log "Копирование Python-кода проекта в Android-сборку..."
+cp -r "$PROJECT_DIR"/* "$ANDROID_DIR/app/src/main/python/"
+rm -rf "$ANDROID_DIR/app/src/main/python/.git"
+rm -rf "$ANDROID_DIR/app/src/main/python/.buildozer" 2>/dev/null || true
+
+cat << 'EOF' > "$ANDROID_DIR/app/src/main/python/mobile_server.py"
 import sys
 import os
 import threading
-import time
-import traceback
 from unittest.mock import MagicMock
+import json
+import traceback
+import importlib.util
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 os.chdir(APP_DIR)
@@ -235,313 +498,119 @@ for subdir in ['core', 'server', 'app', 'backend', 'db']:
         sys.path.insert(0, subpath)
 
 blocked_libs = [
-    'torch', 'torchaudio', 'torchvision', 'onnx', 'onnxruntime', 'whisper', 'openai_whisper', 'stable_ts', 'stable-ts', 'tiktoken', 
-    'demucs', 'librosa', 'ctranslate2', 'tokenizers', 'audio_separator', 'audio-separator', 'pydub', 'audioread', 'soxr', 'samplerate', 'resampy', 'julius', 'av', 
-    'huggingface_hub', 'huggingface-hub', 'hf_xet', 'hf-xet', 'numpy', 'scipy', 'scikit_learn', 'scikit-learn', 'numba', 'llvmlite', 
-    'einops', 'safetensors', 'diffq', 'rotary_embedding_torch', 'rotary-embedding-torch', 'faiss', 'mpmath', 'sympy', 'networkx', 'threadpoolctl', 'joblib', 
-    'pywebview', 'webview', 'PyQt6', 'PyQt6_WebEngine', 'PyQt6-WebEngine', 'qtpy', 'psutil', 'pytube', 'yt_dlp'
+    'torch', 'torchaudio', 'torchvision', 'onnx', 'onnxruntime', 'whisper', 'openai_whisper', 
+    'stable_ts', 'stable-ts', 'stable_whisper', 'tiktoken', 'demucs', 'librosa', 'ctranslate2', 'tokenizers', 
+    'audio_separator', 'audio-separator', 'pydub', 'audioread', 'soxr', 'samplerate', 'resampy', 
+    'julius', 'av', 'huggingface_hub', 'huggingface-hub', 'hf_xet', 'hf-xet', 'numpy', 'scipy', 
+    'scikit_learn', 'scikit-learn', 'numba', 'llvmlite', 'einops', 'safetensors', 'diffq', 
+    'rotary_embedding_torch', 'faiss', 'mpmath', 'sympy', 'networkx', 'threadpoolctl', 'joblib', 
+    'pywebview', 'webview', 'PyQt6', 'PyQt6_WebEngine', 'qtpy', 'psutil', 'pytube', 'yt_dlp',
+    'uvicorn', 'colorama', 'click', 'rich', 'websockets', 'soundfile', 'transformers', 'accelerate',
+    'rapidfuzz'
 ]
 
-for lib in blocked_libs:
-    sys.modules[lib] = MagicMock()
-    sys.modules[lib.replace('_', '-')] = MagicMock()
-    sys.modules[lib.replace('-', '_')] = MagicMock()
+# УЛЬТИМАТИВНЫЙ ПЕРЕХВАТЧИК ИМПОРТОВ (PEP 302/451)
+class MockImporter:
+    def __init__(self, blocked):
+        self.blocked = set()
+        for b in blocked:
+            self.blocked.add(b)
+            self.blocked.add(b.replace('_', '-'))
+            
+    def find_spec(self, fullname, path, target=None):
+        base_name = fullname.split('.')[0]
+        if base_name in self.blocked:
+            class MockLoader:
+                def create_module(self, spec):
+                    m = MagicMock()
+                    m.__path__ = []  # Теперь Python думает, что это настоящий пакет
+                    return m
+                def exec_module(self, module):
+                    pass
+            return importlib.util.spec_from_loader(fullname, MockLoader())
+        return None
 
-print("[APP] Starting Free Karaoke Android Initialization")
+sys.meta_path.insert(0, MockImporter(blocked_libs))
 
 def setup_storage():
-    try:
-        from jnius import autoclass
-        Environment = autoclass('android.os.Environment')
-        music_dir = os.path.join(Environment.getExternalStorageDirectory().getAbsolutePath(), 'Music', 'free_karaoke_library')
-        os.makedirs(music_dir, exist_ok=True)
-        os.environ['FREE_KARAOKE_LIBRARY_PATH'] = music_dir
-        print("[STORAGE] Env path set to:", music_dir)
-        return music_dir
-    except Exception as e:
-        print("[STORAGE] Error setting env path:", e)
-        return '.'
+    music_dir = "/storage/emulated/0/Music/free_karaoke_library"
+    os.makedirs(music_dir, exist_ok=True)
+    os.environ['FK_LIBRARY_DIR'] = music_dir
+
+    internal_data_dir = os.path.join(APP_DIR, "app_data")
+    os.makedirs(internal_data_dir, exist_ok=True)
+    os.environ['FK_DB_DIR'] = internal_data_dir
+    os.environ['FK_LOGS_DIR'] = internal_data_dir
+    os.environ['FK_CACHE_DIR'] = internal_data_dir
+    
+    return music_dir
 
 LIBRARY_DIR = setup_storage()
 
-try:
-    import sqlite3
-    orig_sqlite3_connect = sqlite3.connect
-    def patched_sqlite3_connect(database, *args, **kwargs):
-        if isinstance(database, str) and not database.startswith('/') and database != ':memory:':
-            database = os.path.join(LIBRARY_DIR, os.path.basename(database))
-        return orig_sqlite3_connect(database, *args, **kwargs)
-    sqlite3.connect = patched_sqlite3_connect
-except Exception as e:
-    pass
-
-try:
-    import sqlalchemy
-    orig_create_engine = sqlalchemy.create_engine
-    def patched_create_engine(*args, **kwargs):
-        if args and isinstance(args[0], str) and args[0].startswith('sqlite:///'):
-            db_path = args[0].replace('sqlite:///', '')
-            if not db_path.startswith('/'):
-                new_path = os.path.join(LIBRARY_DIR, os.path.basename(db_path))
-                args = (f"sqlite:///{new_path}",) + args[1:]
-        return orig_create_engine(*args, **kwargs)
-    sqlalchemy.create_engine = patched_create_engine
-except Exception as e:
-    pass
-
-try:
-    import huey
-    orig_huey_init = huey.Huey.__init__
-    def patched_huey_init(self, *args, **kwargs):
-        kwargs['immediate'] = True
-        orig_huey_init(self, *args, **kwargs)
-    huey.Huey.__init__ = patched_huey_init
-except Exception as e:
-    pass
-
 import fastapi
-import uvicorn
-from fastapi import Request
-from fastapi.responses import JSONResponse
-
-SERVER_STARTED = False
 original_app = None
+import_errors = {}
 
-def find_fastapi_app(mod):
-    for name in ['app', 'api', 'server', 'application']:
-        if hasattr(mod, name):
-            attr = getattr(mod, name)
-            if isinstance(attr, fastapi.FastAPI):
-                return attr
-    for attr_name in dir(mod):
-        attr = getattr(mod, attr_name)
-        if isinstance(attr, fastapi.FastAPI):
-            return attr
-    return None
-
-def show_android_toast(message):
+# Импортируем роуты безопасно
+for module_path in ['desktop_main', 'server', 'core.main', 'main']:
     try:
-        from jnius import autoclass
-        from android.runnable import run_on_ui_thread
-        Toast = autoclass('android.widget.Toast')
-        String = autoclass('java.lang.String')
-        activity = autoclass('org.kivy.android.PythonActivity').mActivity
-        
-        @run_on_ui_thread
-        def make_toast():
-            Toast.makeText(activity, String(message), Toast.LENGTH_LONG).show()
-            
-        make_toast()
-    except Exception as e:
-        pass
-
-try:
-    for module_path in ['desktop_main', 'server', 'core.main', 'main']:
-        try:
-            if '.' in module_path:
-                mod_name, attr = module_path.rsplit('.', 1)
-                mod = __import__(mod_name, fromlist=[attr])
-                target_mod = getattr(mod, attr)
-            else:
-                target_mod = __import__(module_path)
-            
-            app_instance = find_fastapi_app(target_mod)
-            if app_instance:
-                original_app = app_instance
-                break
-        except Exception as e:
-            continue
-    
-    if not original_app:
-        raise ImportError("Could not locate FastAPI app instance in any backend files.")
-
-    @original_app.get("/health")
-    async def health_check():
-        return {"status": "ok", "server": "android"}
-
-    @original_app.middleware("http")
-    async def block_ml_features(request: Request, call_next):
-        ml_endpoints = ["upload", "fix", "rescan", "lyrics", "separate", "transcribe", "ml"]
-        path = request.url.path.lower()
-        if any(endpoint in path for endpoint in ml_endpoints):
-            show_android_toast("Эта функция доступна только в десктопной версии.")
-            return JSONResponse(
-                status_code=400,
-                content={"error": "Эта функция доступна только в десктопной версии.", "detail": "blocked"}
-            )
-        return await call_next(request)
-
-    def run_server():
-        global SERVER_STARTED
-        try:
-            uvicorn.run(original_app, host="0.0.0.0", port=8000, log_level="info")
-        except Exception as e:
-            traceback.print_exc()
-
-    server_thread = threading.Thread(target=run_server, daemon=True)
-    server_thread.start()
-    time.sleep(4)
-    SERVER_STARTED = True
-    
-except Exception as e:
-    traceback.print_exc()
-    SERVER_STARTED = False
-
-from kivy.app import App
-from kivy.clock import Clock
-from kivy.utils import platform
-from kivy.uix.label import Label
-
-class WebWrapperApp(App):
-    def build(self):
-        self.label = Label(text="Запуск сервера Free Karaoke...\\n\\nПожалуйста, подождите.", font_size='20sp', halign='center')
-        
-        if platform == 'android':
-            try:
-                from android.permissions import request_permissions, Permission
-                request_permissions([
-                    Permission.INTERNET,
-                    Permission.READ_EXTERNAL_STORAGE,
-                    Permission.WRITE_EXTERNAL_STORAGE,
-                    "android.permission.READ_MEDIA_AUDIO"
-                ], self.on_permissions_callback)
-            except Exception as e:
-                self.on_permissions_callback([], [])
+        if '.' in module_path:
+            mod_name, attr = module_path.rsplit('.', 1)
+            mod = __import__(mod_name, fromlist=[attr])
+            target_mod = getattr(mod, attr)
         else:
-            Clock.schedule_once(self.open_webview, 2)
+            target_mod = __import__(module_path)
             
-        if not SERVER_STARTED:
-            self.label.text = "Ошибка запуска сервера.\\nПроверьте логи (adb logcat -s python)."
-            
-        return self.label
+        for name in dir(target_mod):
+            attr = getattr(target_mod, name)
+            if isinstance(attr, fastapi.FastAPI):
+                original_app = attr
+                break
+        if original_app: break
+    except Exception as e:
+        import_errors[module_path] = traceback.format_exc()
+        print("==================================================", file=sys.stderr)
+        print(f"[SERVER] IMPORT ERROR in {module_path}:", file=sys.stderr)
+        print(import_errors[module_path], file=sys.stderr)
+        print("==================================================", file=sys.stderr)
+        continue
 
-    def on_permissions_callback(self, permissions, results):
-        self.check_manage_storage()
+if not original_app:
+    original_app = fastapi.FastAPI()
+    @original_app.get("/")
+    def read_root(): 
+        return {
+            "status": "FastAPI Not Found. Check imports.",
+            "traceback": import_errors
+        }
 
-    def check_manage_storage(self):
-        if platform != 'android':
-            Clock.schedule_once(self.open_webview, 1)
-            return
-            
-        try:
-            from jnius import autoclass
-            from android.runnable import run_on_ui_thread
-            
-            Environment = autoclass('android.os.Environment')
-            activity = autoclass('org.kivy.android.PythonActivity').mActivity
-            
-            if hasattr(Environment, 'isExternalStorageManager'):
-                if not Environment.isExternalStorageManager():
-                    @run_on_ui_thread
-                    def launch_settings():
-                        Intent = autoclass('android.content.Intent')
-                        Uri = autoclass('android.net.Uri')
-                        try:
-                            intent = Intent(Intent.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION)
-                            intent.setData(Uri.parse("package:" + activity.getPackageName()))
-                            activity.startActivity(intent)
-                        except:
-                            intent = Intent(Intent.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION)
-                            activity.startActivity(intent)
-                    
-                    launch_settings()
-                    self.label.text = (
-                        "Требуется доступ к файлам\\n\\n"
-                        "1. Включите 'Разрешить управление всеми файлами'\\n"
-                        "2. Вернитесь в приложение (кнопка Назад)\\n\\n"
-                        "Загрузка продолжится автоматически."
-                    )
-                    return
-        except Exception as e:
-            pass
+from a2wsgi import ASGIMiddleware
+wsgi_app = ASGIMiddleware(original_app)
+
+def proxy_app(environ, start_response):
+    path = environ.get('PATH_INFO', '').lower()
+    # Блокируем вызов ML функций из мобильного UI, так как они вырезаны
+    ml_endpoints = ['/upload', '/fix', '/rescan', '/lyrics', '/separate', '/transcribe', '/ml']
+    
+    if any(endpoint in path for endpoint in ml_endpoints):
+        response_body = json.dumps({"error": "Эта функция доступна только в десктопной версии. Телефон работает только как плеер."}).encode('utf-8')
+        start_response('400 Bad Request', [('Content-Type', 'application/json'), ('Content-Length', str(len(response_body)))])
+        return [response_body]
         
-        Clock.schedule_once(self.open_webview, 2)
+    return wsgi_app(environ, start_response)
 
-    def open_webview(self, dt):
-        if not SERVER_STARTED:
-            return
-            
-        if platform != 'android':
-            import webbrowser
-            webbrowser.open('http://127.0.0.1:8000')
-            return
-            
-        try:
-            from jnius import autoclass, PythonJavaClass, java_method
-            from android.runnable import run_on_ui_thread
-            import urllib.request
-            
-            WebView = autoclass('android.webkit.WebView')
-            WebViewClient = autoclass('android.webkit.WebViewClient')
-            WebChromeClient = autoclass('android.webkit.WebChromeClient')
-            WebSettings = autoclass('android.webkit.WebSettings')
-            activity = autoclass('org.kivy.android.PythonActivity').mActivity
-            
-            def wait_for_server(max_attempts=30):
-                for i in range(max_attempts):
-                    try:
-                        urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=1)
-                        return True
-                    except:
-                        time.sleep(1)
-                return False
+def start_server():
+    from werkzeug.serving import make_server
+    try:
+        server = make_server('127.0.0.1', 8000, proxy_app)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        print("[SERVER] Mobile proxy server started on 8000", file=sys.stdout)
+    except Exception as e:
+        print("[SERVER] Error starting proxy:", traceback.format_exc(), file=sys.stderr)
+EOF
 
-            class MyWebChromeClient(PythonJavaClass):
-                __javainterfaces__ = ['android/webkit/WebChromeClient']
-                __javacontext__ = 'app'
-                
-                @java_method('(Landroid/webkit/WebView;Landroid/webkit/ValueCallback;Landroid/webkit/WebChromeClient$FileChooserParams;)Z')
-                def onShowFileChooser(self, webview, uploadMsg, fileChooserParams):
-                    return False
-            
-            @run_on_ui_thread
-            def create_webview():
-                if not wait_for_server():
-                    self.label.text = "Таймаут: сервер не ответил за 30 сек."
-                    return
-                    
-                try:
-                    webview = WebView(activity)
-                    settings = webview.getSettings()
-                    settings.setJavaScriptEnabled(True)
-                    settings.setDomStorageEnabled(True)
-                    settings.setMediaPlaybackRequiresUserGesture(False)
-                    settings.setAllowFileAccess(True)
-                    settings.setAllowContentAccess(True)
-                    settings.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW)
-                    
-                    webview.setWebViewClient(WebViewClient())
-                    webview.setWebChromeClient(MyWebChromeClient())
-                    webview.loadUrl('http://127.0.0.1:8000')
-                    activity.setContentView(webview)
-                    
-                except Exception as e:
-                    self.label.text = "Ошибка WebView: " + str(e)
-            
-            create_webview()
-            
-        except Exception as e:
-            self.label.text = "Ошибка: " + str(e)
-
-    def on_resume(self):
-        if platform == 'android' and SERVER_STARTED:
-            Clock.schedule_once(lambda dt: self.open_webview(dt), 2)
-        return True
-
-if __name__ == '__main__':
-    WebWrapperApp().run()
-"""
-
-orig_main = os.path.join(project_dir, 'main.py')
-if os.path.exists(orig_main):
-    os.rename(orig_main, os.path.join(project_dir, 'desktop_main.py'))
-
-with open(orig_main, 'w', encoding='utf-8') as f:
-    f.write(main_py_code)
-
-PYEOF
-
-log "Генерация конфигурации завершена." "SUCCESS"
+log "Скрипты внедрены." "SUCCESS"
 
 KEYSTORE_PATH="$BUILD_ROOT/keystore/freekaraoke.keystore"
 KEY_PASS="karaokepass123"
@@ -554,86 +623,40 @@ if [ ! -f "$KEYSTORE_PATH" ]; then
         -dname "CN=Free Karaoke, OU=Android, O=FreeKaraoke, C=RU"
 fi
 
-cd "$PROJECT_DIR"
-log "НАЧАЛО СБОРКИ RELEASE APK..."
+log "НАЧАЛО СБОРКИ RELEASE APK ЧЕРЕЗ GRADLE..."
+cd "$ANDROID_DIR"
 
-set +e
-trap - ERR
+chmod +x "$GRADLE_DIR/bin/gradle"
 
-# ЗАЩИТА ПК ОТ ПЕРЕЗАГРУЗКИ / ПЕРЕГРЕВА
-export P4A_MAKE_JOBS=2
-export MAKEFLAGS="-j2"
-export NINJA_STATUS="[%f/%t] "
+"$GRADLE_DIR/bin/gradle" assembleRelease --stacktrace --info 2>&1 | tee "$BUILD_ROOT/logs/gradle_build.log"
 
-MAX_RETRIES=5
-RETRY_COUNT=0
-BUILD_CODE=1
-
-while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-    P4A_RECIPE_DIR="$PROJECT_DIR/.buildozer/android/platform/python-for-android/pythonforandroid/recipes/sqlalchemy"
-    if [ -d "$P4A_RECIPE_DIR" ]; then
-        rm -rf "$P4A_RECIPE_DIR"
-        rm -rf "$PROJECT_DIR/.buildozer/android/platform/build-"*"/build/other_builds/sqlalchemy" 2>/dev/null || true
-    fi
-
-    buildozer -v android release 2>&1 | tee "$BUILD_ROOT/logs/buildozer_output.log"
-    BUILD_CODE=${PIPESTATUS[0]}
-    
-    if [ $BUILD_CODE -eq 0 ]; then break; fi
-    
-    RETRY_COUNT=$((RETRY_COUNT+1))
-    if [ $RETRY_COUNT -lt $MAX_RETRIES ]; then
-        log "Ошибка сборки (Код: $BUILD_CODE). Попытка $RETRY_COUNT из $MAX_RETRIES через 10 секунд..." "WARN"
-        sleep 10
-    fi
-done
-
-set -e
-trap 'last_line=$LINENO; log "Критическая ошибка на строке $last_line. Проверьте логи: $LOG_FILE" "ERROR"; read -p "Нажмите Enter для выхода..."; exit 1' ERR
-
-if [ $BUILD_CODE -ne 0 ]; then
-    log_error_exit "Сборка завершилась с ошибкой. Проверьте логи."
+if [ ${PIPESTATUS[0]} -ne 0 ]; then
+    log_error_exit "Сборка Gradle завершилась с ошибкой! (Смотри анализ выше)"
 fi
 
-log "Сборка успешна. Поиск не подписанного APK..."
-UNSIGNED_APK=$(find bin/ -name "*-release-unsigned.apk" | head -n 1)
+UNSIGNED_APK="$ANDROID_DIR/app/build/outputs/apk/release/app-release-unsigned.apk"
 
-if [ -n "$UNSIGNED_APK" ]; then
+if [ -f "$UNSIGNED_APK" ]; then
     log "Подписываем APK..."
-    FINAL_APK="$BUILD_ROOT/output/FreeKaraoke-Release-Signed.apk"
+    FINAL_APK="$BUILD_ROOT/output/FreeKaraoke-Native-Release.apk"
     
-    ZIPALIGN_CMD="zipalign"
-    if ! command -v zipalign &> /dev/null; then
-        ZIPALIGN_CMD=$(find ~/.buildozer/android/platform/android-sdk/build-tools -name "zipalign" | sort -r | head -n 1 || echo "")
-    fi
-
-    APKSIGNER_CMD="apksigner"
-    if ! command -v apksigner &> /dev/null; then
-        APKSIGNER_CMD=$(find ~/.buildozer/android/platform/android-sdk/build-tools -name "apksigner" | sort -r | head -n 1 || echo "")
-    fi
-
-    if [ -z "$APKSIGNER_CMD" ] || [ ! -x "$APKSIGNER_CMD" ]; then
-        log_error_exit "Не удалось найти apksigner. Сборка завершена, но APK не подписан!"
-    fi
+    ZIPALIGN_CMD="$ANDROID_HOME/build-tools/$ANDROID_BUILD_TOOLS/zipalign"
+    APKSIGNER_CMD="$ANDROID_HOME/build-tools/$ANDROID_BUILD_TOOLS/apksigner"
     
-    if [ -n "$ZIPALIGN_CMD" ] && [ -x "$ZIPALIGN_CMD" ]; then
-        "$ZIPALIGN_CMD" -f -v -p 4 "$UNSIGNED_APK" "bin/aligned.apk"
-        "$APKSIGNER_CMD" sign --ks "$KEYSTORE_PATH" --ks-pass "pass:$KEY_PASS" --out "$FINAL_APK" "bin/aligned.apk"
-    else
-        "$APKSIGNER_CMD" sign --ks "$KEYSTORE_PATH" --ks-pass "pass:$KEY_PASS" --out "$FINAL_APK" "$UNSIGNED_APK"
-    fi
+    "$ZIPALIGN_CMD" -f -v -p 4 "$UNSIGNED_APK" "$ANDROID_DIR/aligned.apk" > /dev/null
+    "$APKSIGNER_CMD" sign --ks "$KEYSTORE_PATH" --ks-pass "pass:$KEY_PASS" --out "$FINAL_APK" "$ANDROID_DIR/aligned.apk"
     
     log "РЕЛИЗ ГОТОВ!" "SUCCESS"
     log "Файл находится здесь: $FINAL_APK" "SUCCESS"
 else
-    log_error_exit "Не удалось найти итоговый apk файл в папке bin/"
+    log_error_exit "Не удалось найти итоговый apk."
 fi
 
 echo ""
-read -p "Удалить тяжелые временные файлы Buildozer и Rust (исходники, NDK/SDK)? (y/n): " CLEANUP
+read -p "Удалить тяжелые временные файлы (Android SDK, исходники, Gradle и ВСЕ кэши)? (y/n): " CLEANUP
 if [[ "$CLEANUP" =~ ^[Yy]$ ]]; then
-    rm -rf "$PROJECT_DIR" "$BUILD_ROOT/env" "$BUILD_ROOT/tools"
-    log "Очистка завершена." "SUCCESS"
+    rm -rf "$ANDROID_DIR" "$PROJECT_DIR" "$BUILD_ROOT/tools"
+    log "Очистка завершена. Система абсолютно чиста." "SUCCESS"
 fi
 
 echo -e "\n${GREEN}Установка завершена. Скопируйте APK на Android устройство и установите.${NC}"
