@@ -2,7 +2,7 @@
 
 # ==============================================================================
 # Free Karaoke Android Release Builder
-# Версия: 38.0 (Double Bypass + Low-Level I/O Zero-Copy)
+# Версия: 39.0 (Perfect Symmetry: Uvicorn + JS-Level FD Routing)
 # ==============================================================================
 
 set -euo pipefail
@@ -116,7 +116,7 @@ fi
 clear
 echo -e "${GREEN}==============================================${NC}"
 echo -e "${GREEN}  Free Karaoke Native Android Builder         ${NC}"
-echo -e "${GREEN}  [ 38.0 - Double Bypass + In-Memory FD ]     ${NC}"
+echo -e "${GREEN}  [ 39.0 - Perfect Symmetry (Uvicorn) ]       ${NC}"
 echo -e "${GREEN}==============================================${NC}"
 log "Инициализация чистой среды сборки..."
 
@@ -309,8 +309,7 @@ chaquopy {
             install("pydantic==1.10.13")
             install("fastapi==0.110.0")
             install("python-multipart")
-            install("a2wsgi")
-            install("werkzeug")
+            install("uvicorn==0.28.0")
             install("sqlalchemy")
             install("aiosqlite")
             install("mutagen")
@@ -582,6 +581,7 @@ import os
 import io
 import json
 import threading
+import asyncio
 from unittest.mock import MagicMock
 import traceback
 import importlib.util
@@ -607,22 +607,22 @@ for subdir in ['core', 'server', 'app', 'backend', 'db']:
     if os.path.isdir(subpath) and subpath not in sys.path: sys.path.insert(0, subpath)
 
 # ======================================================================================
-# DOUBLE BYPASS ARCHITECTURE (Monkey-Patching File System for Zero-Copy & SELinux Evasion)
+# FILE SYSTEM BYPASS (Monkey-Patching)
 # ======================================================================================
 
-# 1. Патчим проверки существования файлов, чтобы они не падали на путях /proc/self/fd/
 _orig_exists = os.path.exists
 _orig_getsize = os.path.getsize
 
 def _patched_exists(path):
-    if isinstance(path, str) and str(path).startswith('/proc/self/fd/'):
+    if isinstance(path, str) and '/proc/self/fd/' in str(path):
         return True
     return _orig_exists(path)
 
 def _patched_getsize(path):
-    if isinstance(path, str) and str(path).startswith('/proc/self/fd/'):
+    if isinstance(path, str) and '/proc/self/fd/' in str(path):
         try:
-            fd = int(str(path).replace('/proc/self/fd/', '').strip('/'))
+            fd_str = str(path).split('/proc/self/fd/')[1].replace('.zip', '').strip('/')
+            fd = int(fd_str)
             return os.fstat(fd).st_size
         except Exception:
             return 0
@@ -631,9 +631,6 @@ def _patched_getsize(path):
 os.path.exists = _patched_exists
 os.path.getsize = _patched_getsize
 
-# 2. Главный патч модуля zipfile. 
-# Если ему дают строку /proc/self/fd/42, мы подменяем строку на открытый файловый объект (os.fdopen).
-# SELinux не блокирует уже открытые дескрипторы. ZipFile читает/пишет прямо в память!
 _orig_zipfile = zipfile.ZipFile
 
 class PatchedZipFile(_orig_zipfile):
@@ -641,23 +638,20 @@ class PatchedZipFile(_orig_zipfile):
                  compresslevel=None, **kwargs):
         
         close_fd_on_exit = False
-        if isinstance(file, str) and file.startswith('/proc/self/fd/'):
+        if isinstance(file, str) and '/proc/self/fd/' in file:
             try:
-                fd = int(file.replace('/proc/self/fd/', '').strip('/'))
+                fd_str = file.split('/proc/self/fd/')[1].replace('.zip', '').strip('/')
+                fd = int(fd_str)
                 print(f"[FK_BYPASS] Перехват zipfile для FD: {fd}, mode: {mode}")
                 
                 io_mode = 'wb' if 'w' in mode else 'rb'
-                # Вызываем низкоуровневое открытие дескриптора. 
                 file = os.fdopen(fd, io_mode)
                 close_fd_on_exit = True
             except Exception as e:
                 print(f"[FK_BYPASS] Ошибка извлечения FD: {e}")
 
-        # Передаем оригинальной функции (уже не строку, а объект, если это был fd)
         super().__init__(file, mode, compression, allowZip64, compresslevel, **kwargs)
         
-        # Заставляем ZipFile принудительно закрывать наш дескриптор при завершении работы, 
-        # чтобы не было утечек памяти (т.к. мы делали detachFd в Kotlin)
         if close_fd_on_exit:
             _orig_close = self.close
             def _patched_close():
@@ -678,7 +672,7 @@ blocked_libs = [
     'scikit_learn', 'scikit-learn', 'numba', 'llvmlite', 'einops', 'safetensors', 'diffq', 
     'rotary_embedding_torch', 'faiss', 'mpmath', 'sympy', 'networkx', 'threadpoolctl', 'joblib', 
     'pywebview', 'webview', 'PyQt6', 'PyQt6_WebEngine', 'qtpy', 'psutil', 'pytube', 'yt_dlp',
-    'uvicorn', 'colorama', 'click', 'rich', 'websockets', 'soundfile', 'transformers', 'accelerate',
+    'colorama', 'click', 'rich', 'websockets', 'soundfile', 'transformers', 'accelerate',
     'rapidfuzz'
 ]
 
@@ -702,6 +696,7 @@ class MockImporter:
 
 sys.meta_path.insert(0, MockImporter(blocked_libs))
 
+# Идеальный обман FastAPI прямо в JavaScript: мы прозрачно дописываем .zip к /proc/self/fd/42
 JS_PATCH = """
 <script>
 window.mobile_patch_applied = true;
@@ -710,14 +705,20 @@ window.pywebview = {
     api: {
         open_file_dialog: function(multiple, filter) {
             return new Promise(resolve => {
-                window._fileDialogResolve = resolve;
+                window._fileDialogResolve = function(path) {
+                    if (path) resolve(path + ".zip"); 
+                    else resolve(null);
+                };
                 if (window.AndroidBridge) AndroidBridge.openFileDialog();
                 else resolve(null);
             });
         },
         save_file_dialog: function(title, defaultName) {
             return new Promise(resolve => {
-                window._fileDialogResolve = resolve;
+                window._fileDialogResolve = function(path) {
+                    if (path) resolve(path + ".zip");
+                    else resolve(null);
+                };
                 if (window.AndroidBridge) AndroidBridge.saveFileDialog(defaultName);
                 else resolve(null);
             });
@@ -799,7 +800,6 @@ def setup_storage():
 setup_storage()
 
 import fastapi
-from a2wsgi import ASGIMiddleware
 original_app = None
 
 for module_path in ['desktop_main', 'server', 'core.main', 'main']:
@@ -825,56 +825,24 @@ if not original_app:
     @original_app.get("/")
     def read_root(): return {"status": "FastAPI Not Found."}
 
-wsgi_app = ASGIMiddleware(original_app)
-
-def proxy_app(environ, start_response):
-    """
-    WSGI-прослойка (HTTP Bypass).
-    Перехватывает запросы к эндпоинтам импорта/экспорта. Не пускает их в FastAPI 
-    (чтобы обойти проверку расширения файла), а напрямую запускает задачи в очереди Huey.
-    """
-    path = environ.get('PATH_INFO', '').lower()
-    if environ['REQUEST_METHOD'] == 'POST' and path in ['/api/library/import/start', '/api/library/export/start']:
-        try:
-            length = int(environ.get('CONTENT_LENGTH', '0'))
-            body = environ['wsgi.input'].read(length) if length > 0 else b''
-            
-            if body:
-                data = json.loads(body)
-                from core.tasks import import_library_task, export_library_task
-                
-                if path == '/api/library/import/start':
-                    fd_path = data.get('path', '')
-                    print(f"[FK_HTTP_BYPASS] Запуск ИМПОРТА напрямую в Huey: {fd_path}")
-                    import_library_task(fd_path)
-                    
-                elif path == '/api/library/export/start':
-                    fd_path = data.get('output_path', '')
-                    print(f"[FK_HTTP_BYPASS] Запуск ЭКСПОРТА напрямую в Huey: {fd_path}")
-                    export_library_task(fd_path)
-                
-                res = json.dumps({"message": "Task started successfully", "status": "ok"}).encode('utf-8')
-                start_response('200 OK', [('Content-Type', 'application/json'), ('Content-Length', str(len(res)))])
-                return [res]
-        except Exception as e:
-            print(f"[FK_HTTP_BYPASS] Ошибка: {e}")
-            res = json.dumps({"detail": str(e)}).encode('utf-8')
-            start_response('500 Internal Server Error', [('Content-Type', 'application/json')])
-            return [res]
-            
-    return wsgi_app(environ, start_response)
+def start_uvicorn():
+    """Запуск чистого ASGI-сервера Uvicorn для идеальной работы плеера и Range-запросов"""
+    import uvicorn
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    config = uvicorn.Config(app=original_app, host="127.0.0.1", port=8000, log_level="info", loop="asyncio")
+    server = uvicorn.Server(config)
+    server.run()
 
 def start_server():
-    from werkzeug.serving import make_server
     try:
         from huey_config import huey
         consumer = huey.create_consumer(workers=1, worker_type='thread')
         threading.Thread(target=consumer.run, daemon=True).start()
         print("[FK_SERVER] Huey Worker Started Successfully")
         
-        server = make_server('127.0.0.1', 8000, proxy_app)
-        threading.Thread(target=server.serve_forever, daemon=True).start()
-        print("[FK_SERVER] Mobile Server Started Successfully")
+        threading.Thread(target=start_uvicorn, daemon=True).start()
+        print("[FK_SERVER] Uvicorn ASGI Server Started Successfully")
     except Exception as e:
         print("[FK_SERVER] Error:", traceback.format_exc())
 EOF
