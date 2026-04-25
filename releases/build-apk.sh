@@ -2,7 +2,7 @@
 
 # ==============================================================================
 # Free Karaoke Android Release Builder
-# Версия: 33.2 (Smart UI + XML Vector Icon Fix)
+# Версия: 35.0 (Smart UI + Zero-Copy I/O + Fixes)
 # ==============================================================================
 
 set -euo pipefail
@@ -116,7 +116,7 @@ fi
 clear
 echo -e "${GREEN}==============================================${NC}"
 echo -e "${GREEN}  Free Karaoke Native Android Builder         ${NC}"
-echo -e "${GREEN}  [ 33.2 - ADB Logs, No-Logs, XML Icon ]      ${NC}"
+echo -e "${GREEN}  [ 35.0 - Zero-Copy I/O, Safe Logs, Fixes ]  ${NC}"
 echo -e "${GREEN}==============================================${NC}"
 log "Инициализация чистой среды сборки..."
 
@@ -414,7 +414,6 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
 import android.os.Environment
-import android.provider.DocumentsContract
 import android.provider.Settings
 import android.util.Log
 import android.webkit.ConsoleMessage
@@ -429,6 +428,9 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import com.chaquo.python.Python
 import com.chaquo.python.android.AndroidPlatform
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 class MainActivity : AppCompatActivity() {
     private lateinit var webView: WebView
@@ -443,25 +445,38 @@ class MainActivity : AppCompatActivity() {
         webView = WebView(this)
         setContentView(webView)
 
+        // ИМПОРТ - Чтение потока (File Descriptor) напрямую, обход проблем с путями контента
         importLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
             if (result.resultCode == Activity.RESULT_OK) {
                 result.data?.data?.let { uri ->
-                    val path = resolvePosixPath(uri)
-                    if (path.isNotEmpty()) {
-                        runOnUiThread { webView.evaluateJavascript("window.executeMobileImport('$path');", null) }
-                    } else Toast.makeText(this, "Ошибка чтения пути", Toast.LENGTH_SHORT).show()
+                    try {
+                        val pfd = contentResolver.openFileDescriptor(uri, "r")
+                        if (pfd != null) {
+                            val fd = pfd.detachFd() // Отсоединяем для безопасной работы из Python
+                            val path = "/proc/self/fd/$fd"
+                            runOnUiThread { webView.evaluateJavascript("window.executeMobileImport('$path');", null) }
+                        }
+                    } catch (e: Exception) {
+                        Toast.makeText(this, "Ошибка доступа к файлу архива", Toast.LENGTH_SHORT).show()
+                    }
                 }
             }
         }
 
+        // ЭКСПОРТ - Создание нативного файла (Create Document) с автоименем
         exportLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
             if (result.resultCode == Activity.RESULT_OK) {
                 result.data?.data?.let { uri ->
-                    val dirPath = resolvePosixPath(uri)
-                    if (dirPath.isNotEmpty()) {
-                        val fullPath = "$dirPath/FreeKaraoke_Export.zip"
-                        runOnUiThread { webView.evaluateJavascript("window.executeMobileExport('$fullPath');", null) }
-                    } else Toast.makeText(this, "Ошибка определения папки", Toast.LENGTH_SHORT).show()
+                    try {
+                        val pfd = contentResolver.openFileDescriptor(uri, "w")
+                        if (pfd != null) {
+                            val fd = pfd.detachFd()
+                            val path = "/proc/self/fd/$fd"
+                            runOnUiThread { webView.evaluateJavascript("window.executeMobileExport('$path');", null) }
+                        }
+                    } catch (e: Exception) {
+                        Toast.makeText(this, "Ошибка создания файла экспорта", Toast.LENGTH_SHORT).show()
+                    }
                 }
             }
         }
@@ -497,15 +512,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun resolvePosixPath(uri: Uri): String {
-        try {
-            val docId = if (uri.toString().contains("/tree/")) DocumentsContract.getTreeDocumentId(uri) else DocumentsContract.getDocumentId(uri)
-            val split = docId.split(":")
-            if (split.size >= 2 && split[0].equals("primary", true)) return Environment.getExternalStorageDirectory().absolutePath + "/" + split[1]
-        } catch (e: Exception) { e.printStackTrace() }
-        return ""
-    }
-
     private fun checkStoragePermission() {
         if (Environment.isExternalStorageManager()) {
             startApp()
@@ -535,9 +541,27 @@ class MainActivity : AppCompatActivity() {
     }
 
     inner class AndroidBridge {
-        @JavascriptInterface fun triggerImport() { importLauncher.launch(Intent(Intent.ACTION_OPEN_DOCUMENT).apply { addCategory(Intent.CATEGORY_OPENABLE); type = "application/zip" }) }
-        @JavascriptInterface fun triggerExport() { exportLauncher.launch(Intent(Intent.ACTION_OPEN_DOCUMENT_TREE)) }
-        @JavascriptInterface fun showToast(message: String) { runOnUiThread { Toast.makeText(this@MainActivity, message, Toast.LENGTH_SHORT).show() } }
+        @JavascriptInterface fun triggerImport() { 
+            val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply { 
+                addCategory(Intent.CATEGORY_OPENABLE)
+                type = "application/zip" 
+            }
+            importLauncher.launch(intent) 
+        }
+        
+        @JavascriptInterface fun triggerExport() { 
+            val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+                addCategory(Intent.CATEGORY_OPENABLE)
+                type = "application/zip"
+                val timeStamp = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date())
+                putExtra(Intent.EXTRA_TITLE, "FreeKaraoke_Library_$timeStamp.zip")
+            }
+            exportLauncher.launch(intent) 
+        }
+        
+        @JavascriptInterface fun showToast(message: String) { 
+            runOnUiThread { Toast.makeText(this@MainActivity, message, Toast.LENGTH_SHORT).show() } 
+        }
     }
 }
 EOF
@@ -556,7 +580,13 @@ import json
 import traceback
 import importlib.util
 import logging
+import warnings
 
+# Скрываем спам предупреждений, чтобы не засорять ADB logcat
+warnings.filterwarnings("ignore", category=PendingDeprecationWarning)
+warnings.filterwarnings("ignore", category=DeprecationWarning)
+
+# Перехватываем файловые логи приложения, чтобы оно не засоряло память устройства
 class NoOpFileHandler(logging.NullHandler):
     def __init__(self, *args, **kwargs):
         super().__init__()
@@ -701,6 +731,7 @@ def setup_storage():
     os.makedirs(internal_data_dir, exist_ok=True)
     os.environ['FK_DB_DIR'] = internal_data_dir
     os.environ['FK_CACHE_DIR'] = internal_data_dir
+    # Возвращено на internal_data_dir как в 33.2, чтобы os.makedirs в приложении не падал с NotADirectoryError!
     os.environ['FK_LOGS_DIR'] = internal_data_dir 
     return music_dir
 
@@ -724,7 +755,10 @@ for module_path in ['desktop_main', 'server', 'core.main', 'main']:
                 original_app = attr
                 break
         if original_app: break
-    except Exception: continue
+    except Exception as e:
+        # Добавлен вывод реальной ошибки инициализации для отладки
+        print(f"[SERVER_INIT] Пропуск {module_path}: {e}")
+        continue
 
 if not original_app:
     original_app = fastapi.FastAPI()
