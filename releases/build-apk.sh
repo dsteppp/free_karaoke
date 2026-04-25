@@ -2,7 +2,7 @@
 
 # ==============================================================================
 # Free Karaoke Android Release Builder
-# Версия: 39.0 (Perfect Symmetry: Uvicorn + JS-Level FD Routing)
+# Версия: 40.0 (Perfect Native Harmony: Sync, Dialogs & GPU Accel)
 # ==============================================================================
 
 set -euo pipefail
@@ -116,7 +116,7 @@ fi
 clear
 echo -e "${GREEN}==============================================${NC}"
 echo -e "${GREEN}  Free Karaoke Native Android Builder         ${NC}"
-echo -e "${GREEN}  [ 39.0 - Perfect Symmetry (Uvicorn) ]       ${NC}"
+echo -e "${GREEN}  [ 40.0 - Perfect Native Harmony ]           ${NC}"
 echo -e "${GREEN}==============================================${NC}"
 log "Инициализация чистой среды сборки..."
 
@@ -414,6 +414,7 @@ import android.os.Bundle
 import android.os.Environment
 import android.provider.Settings
 import android.util.Log
+import android.view.View
 import android.webkit.ConsoleMessage
 import android.webkit.JavascriptInterface
 import android.webkit.WebChromeClient
@@ -434,20 +435,25 @@ class MainActivity : AppCompatActivity() {
     
     private lateinit var importLauncher: ActivityResultLauncher<Intent>
     private lateinit var exportLauncher: ActivityResultLauncher<Intent>
+    private lateinit var fileChooserLauncher: ActivityResultLauncher<Intent>
+    
+    private var filePathCallback: android.webkit.ValueCallback<Array<android.net.Uri>>? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         webView = WebView(this)
         setContentView(webView)
+        
+        // Включение аппаратного ускорения для плавного закрашивания слов
+        webView.setLayerType(View.LAYER_TYPE_HARDWARE, null)
 
-        // ИМПОРТ - Чтение потока (File Descriptor) напрямую, обход проблем с путями контента
         importLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
             if (result.resultCode == Activity.RESULT_OK) {
                 result.data?.data?.let { uri ->
                     try {
                         val pfd = contentResolver.openFileDescriptor(uri, "r")
                         if (pfd != null) {
-                            val fd = pfd.detachFd() // Отсоединяем для безопасной работы из Python
+                            val fd = pfd.detachFd()
                             val path = "/proc/self/fd/$fd"
                             runOnUiThread { webView.evaluateJavascript("if(window._fileDialogResolve) { window._fileDialogResolve('$path'); window._fileDialogResolve = null; }", null) }
                         } else {
@@ -455,7 +461,7 @@ class MainActivity : AppCompatActivity() {
                         }
                     } catch (e: Exception) {
                         runOnUiThread { webView.evaluateJavascript("if(window._fileDialogResolve) { window._fileDialogResolve(null); window._fileDialogResolve = null; }", null) }
-                        Toast.makeText(this, "Ошибка доступа к файлу архива", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(this, "Ошибка доступа к архиву", Toast.LENGTH_SHORT).show()
                     }
                 } ?: runOnUiThread { webView.evaluateJavascript("if(window._fileDialogResolve) { window._fileDialogResolve(null); window._fileDialogResolve = null; }", null) }
             } else {
@@ -463,7 +469,6 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // ЭКСПОРТ - Создание нативного файла (Create Document) с автоименем
         exportLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
             if (result.resultCode == Activity.RESULT_OK) {
                 result.data?.data?.let { uri ->
@@ -485,6 +490,16 @@ class MainActivity : AppCompatActivity() {
                 runOnUiThread { webView.evaluateJavascript("if(window._fileDialogResolve) { window._fileDialogResolve(null); window._fileDialogResolve = null; }", null) }
             }
         }
+        
+        // Лаунчер для загрузки обложек (заменяет системный input file)
+        fileChooserLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+            if (result.resultCode == Activity.RESULT_OK) {
+                filePathCallback?.onReceiveValue(WebChromeClient.FileChooserParams.parseResult(result.resultCode, result.data))
+            } else {
+                filePathCallback?.onReceiveValue(null)
+            }
+            filePathCallback = null
+        }
 
         webView.settings.apply {
             javaScriptEnabled = true
@@ -503,6 +518,43 @@ class MainActivity : AppCompatActivity() {
         webView.webChromeClient = object : WebChromeClient() {
             override fun onConsoleMessage(consoleMessage: ConsoleMessage): Boolean {
                 Log.d("FreeKaraoke-JS", consoleMessage.message())
+                return true
+            }
+            
+            // Нативные диалоги вместо страшных http://127.0.0.1
+            override fun onJsAlert(view: WebView?, url: String?, message: String?, result: android.webkit.JsResult?): Boolean {
+                android.app.AlertDialog.Builder(this@MainActivity)
+                    .setMessage(message)
+                    .setPositiveButton(android.R.string.ok) { _, _ -> result?.confirm() }
+                    .setCancelable(false)
+                    .show()
+                return true
+            }
+
+            override fun onJsConfirm(view: WebView?, url: String?, message: String?, result: android.webkit.JsResult?): Boolean {
+                android.app.AlertDialog.Builder(this@MainActivity)
+                    .setMessage(message)
+                    .setPositiveButton(android.R.string.ok) { _, _ -> result?.confirm() }
+                    .setNegativeButton(android.R.string.cancel) { _, _ -> result?.cancel() }
+                    .setCancelable(false)
+                    .show()
+                return true
+            }
+            
+            // Перехват клика по загрузке обложки
+            override fun onShowFileChooser(
+                webView: WebView?,
+                filePathCallback: android.webkit.ValueCallback<Array<android.net.Uri>>?,
+                fileChooserParams: WebChromeClient.FileChooserParams?
+            ): Boolean {
+                this@MainActivity.filePathCallback = filePathCallback
+                try {
+                    val intent = fileChooserParams?.createIntent()
+                    fileChooserLauncher.launch(intent)
+                } catch (e: Exception) {
+                    this@MainActivity.filePathCallback?.onReceiveValue(null)
+                    return false
+                }
                 return true
             }
         }
@@ -636,22 +688,17 @@ _orig_zipfile = zipfile.ZipFile
 class PatchedZipFile(_orig_zipfile):
     def __init__(self, file, mode="r", compression=zipfile.ZIP_STORED, allowZip64=True,
                  compresslevel=None, **kwargs):
-        
         close_fd_on_exit = False
         if isinstance(file, str) and '/proc/self/fd/' in file:
             try:
                 fd_str = file.split('/proc/self/fd/')[1].replace('.zip', '').strip('/')
                 fd = int(fd_str)
-                print(f"[FK_BYPASS] Перехват zipfile для FD: {fd}, mode: {mode}")
-                
                 io_mode = 'wb' if 'w' in mode else 'rb'
                 file = os.fdopen(fd, io_mode)
                 close_fd_on_exit = True
             except Exception as e:
-                print(f"[FK_BYPASS] Ошибка извлечения FD: {e}")
-
+                pass
         super().__init__(file, mode, compression, allowZip64, compresslevel, **kwargs)
-        
         if close_fd_on_exit:
             _orig_close = self.close
             def _patched_close():
@@ -663,10 +710,21 @@ class PatchedZipFile(_orig_zipfile):
 zipfile.ZipFile = PatchedZipFile
 
 # ======================================================================================
+# ML MOCKS (Фикс ошибки "not enough values to unpack")
+# ======================================================================================
+
+class MockLibrosa:
+    def load(self, *args, **kwargs):
+        # Возвращаем правильный кортеж (audio, sr), чтобы распаковка не падала
+        return (None, 22050)
+    def get_duration(self, *args, **kwargs):
+        return 0.0
+
+sys.modules['librosa'] = MockLibrosa()
 
 blocked_libs = [
     'torch', 'torchaudio', 'torchvision', 'onnx', 'onnxruntime', 'whisper', 'openai_whisper', 
-    'stable_ts', 'stable-ts', 'stable_whisper', 'tiktoken', 'demucs', 'librosa', 'ctranslate2', 'tokenizers', 
+    'stable_ts', 'stable-ts', 'stable_whisper', 'tiktoken', 'demucs', 'ctranslate2', 'tokenizers', 
     'audio_separator', 'audio-separator', 'pydub', 'audioread', 'soxr', 'samplerate', 'resampy', 
     'julius', 'av', 'huggingface_hub', 'huggingface-hub', 'hf_xet', 'hf-xet', 'numpy', 'scipy', 
     'scikit_learn', 'scikit-learn', 'numba', 'llvmlite', 'einops', 'safetensors', 'diffq', 
@@ -682,7 +740,6 @@ class MockImporter:
         for b in blocked:
             self.blocked.add(b)
             self.blocked.add(b.replace('_', '-'))
-            
     def find_spec(self, fullname, path, target=None):
         if fullname.split('.')[0] in self.blocked:
             class MockLoader:
@@ -696,7 +753,6 @@ class MockImporter:
 
 sys.meta_path.insert(0, MockImporter(blocked_libs))
 
-# Идеальный обман FastAPI прямо в JavaScript: мы прозрачно дописываем .zip к /proc/self/fd/42
 JS_PATCH = """
 <script>
 window.mobile_patch_applied = true;
@@ -705,22 +761,14 @@ window.pywebview = {
     api: {
         open_file_dialog: function(multiple, filter) {
             return new Promise(resolve => {
-                window._fileDialogResolve = function(path) {
-                    if (path) resolve(path + ".zip"); 
-                    else resolve(null);
-                };
-                if (window.AndroidBridge) AndroidBridge.openFileDialog();
-                else resolve(null);
+                window._fileDialogResolve = function(path) { if (path) resolve(path + ".zip"); else resolve(null); };
+                if (window.AndroidBridge) AndroidBridge.openFileDialog(); else resolve(null);
             });
         },
         save_file_dialog: function(title, defaultName) {
             return new Promise(resolve => {
-                window._fileDialogResolve = function(path) {
-                    if (path) resolve(path + ".zip");
-                    else resolve(null);
-                };
-                if (window.AndroidBridge) AndroidBridge.saveFileDialog(defaultName);
-                else resolve(null);
+                window._fileDialogResolve = function(path) { if (path) resolve(path + ".zip"); else resolve(null); };
+                if (window.AndroidBridge) AndroidBridge.saveFileDialog(defaultName); else resolve(null);
             });
         }
     }
@@ -732,6 +780,15 @@ document.addEventListener("DOMContentLoaded", () => {
         * { touch-action: manipulation !important; -webkit-touch-callout: none; }
         input, textarea { user-select: auto !important; -webkit-user-select: auto !important; }
         ::-webkit-scrollbar { display: none !important; }
+        
+        /* Хардверное ускорение рендеринга текста караоке */
+        .lyrics-container, .word, .line { 
+            transform: translateZ(0); 
+            will-change: transform, opacity; 
+        }
+        
+        /* Скрываем опасные ML-кнопки (чтобы избежать ошибок распаковки) */
+        label[for="audio-files"], #scan-btn, #ep-btn-rescan, [data-tooltip*="Пересинхронизировать"] { display: none !important; }
     `;
     document.head.appendChild(style);
 
@@ -739,32 +796,27 @@ document.addEventListener("DOMContentLoaded", () => {
         if (window.AndroidBridge) AndroidBridge.showToast(msg);
         else alert(msg);
     };
+    
+    // Агрессивный синхронизатор аудиодорожек
+    setInterval(() => {
+        const audios = document.querySelectorAll('audio');
+        if (audios.length >= 2) {
+            const a1 = audios[0];
+            const a2 = audios[1];
+            if (!a1.paused && Math.abs(a1.currentTime - a2.currentTime) > 0.15) {
+                console.log("[FK_SYNC] Принудительная синхронизация аудио");
+                a2.currentTime = a1.currentTime;
+            }
+        }
+    }, 500);
 
     document.addEventListener('click', (e) => {
         const target = e.target.closest('button, label, input, a');
         if (!target) return;
-
-        const elText = (target.textContent || '').trim();
-        const tooltip = target.getAttribute('data-tooltip') || '';
-        
-        const isMLBtn = target.matches('label[for="audio-files"]') || 
-                        target.id === 'scan-btn' || 
-                        target.id === 'ep-btn-rescan' ||
-                        tooltip.includes('Пересинхронизировать') ||
-                        elText.includes('Пересинхронизировать');
-                        
-        if (isMLBtn) {
-            e.preventDefault(); e.stopPropagation();
-            console.log("[FK_ACTION] ЗАБЛОКИРОВАНО: Требуются нейросети.");
-            window.showAndroidToast("Функция требует нейросетей (только на ПК)");
-            return;
-        }
-
         if (target.id === 'meta-rescan-toggle' || target.matches('input[type="checkbox"]#meta-rescan-toggle')) {
             e.preventDefault(); e.stopPropagation();
             if (target.checked) target.checked = false; 
             window.showAndroidToast("Пересканирование недоступно на Android");
-            return;
         }
     }, true);
 });
@@ -789,7 +841,6 @@ def setup_storage():
     music_dir = "/storage/emulated/0/Music/free_karaoke_library"
     os.makedirs(music_dir, exist_ok=True)
     os.environ['FK_LIBRARY_DIR'] = music_dir
-
     internal_data_dir = os.path.join(APP_DIR, "app_data")
     os.makedirs(internal_data_dir, exist_ok=True)
     os.environ['FK_DB_DIR'] = internal_data_dir
@@ -817,7 +868,6 @@ for module_path in ['desktop_main', 'server', 'core.main', 'main']:
                 break
         if original_app: break
     except Exception as e:
-        print(f"[SERVER_INIT] Пропуск {module_path}: {e}")
         continue
 
 if not original_app:
@@ -825,8 +875,35 @@ if not original_app:
     @original_app.get("/")
     def read_root(): return {"status": "FastAPI Not Found."}
 
+# ======================================================================================
+# ASGI MIDDLEWARE (Идеальная перемотка аудио)
+# ======================================================================================
+class AudioHeaderMiddleware:
+    """Заставляет Android WebView уважать Range-запросы и не кэшировать битые куски аудио"""
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+            
+        async def custom_send(message):
+            if message["type"] == "http.response.start":
+                headers = message.get("headers", [])
+                is_audio = any(k == b"content-type" and b"audio" in v for k, v in headers)
+                if is_audio or b"/api/library/tracks/" in scope.get("path", "").encode():
+                    headers = [(k, v) for k, v in headers if k != b"cache-control"]
+                    headers.append((b"cache-control", b"no-store, no-cache, must-revalidate, max-age=0"))
+                    if not any(k == b"accept-ranges" for k, v in headers):
+                        headers.append((b"accept-ranges", b"bytes"))
+                    message["headers"] = headers
+            await send(message)
+            
+        return await self.app(scope, receive, custom_send)
+
+original_app = AudioHeaderMiddleware(original_app)
+
 def start_uvicorn():
-    """Запуск чистого ASGI-сервера Uvicorn для идеальной работы плеера и Range-запросов"""
     import uvicorn
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
@@ -839,10 +916,7 @@ def start_server():
         from huey_config import huey
         consumer = huey.create_consumer(workers=1, worker_type='thread')
         threading.Thread(target=consumer.run, daemon=True).start()
-        print("[FK_SERVER] Huey Worker Started Successfully")
-        
         threading.Thread(target=start_uvicorn, daemon=True).start()
-        print("[FK_SERVER] Uvicorn ASGI Server Started Successfully")
     except Exception as e:
         print("[FK_SERVER] Error:", traceback.format_exc())
 EOF
