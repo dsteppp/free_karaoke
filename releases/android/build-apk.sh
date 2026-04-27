@@ -2,7 +2,7 @@
 
 # ==============================================================================
 # Free Karaoke Android Release Builder
-# Версия: 44.7 (Always Awake Native Flag)
+# Версия: 44.10 (Native AudioContext + Object.defineProperty)
 # ==============================================================================
 
 set -euo pipefail
@@ -116,7 +116,7 @@ fi
 clear
 echo -e "${GREEN}==============================================${NC}"
 echo -e "${GREEN}  Free Karaoke Native Android Builder         ${NC}"
-echo -e "${GREEN}  [ 44.7 - Always Awake Native Flag ]         ${NC}"
+echo -e "${GREEN}  [ 44.10 - Native AudioContext Patch ]       ${NC}"
 echo -e "${GREEN}==============================================${NC}"
 log "Инициализация чистой среды сборки..."
 
@@ -622,10 +622,15 @@ class MainActivity : AppCompatActivity() {
 }
 EOF
 
-log "Копирование Python-кода проекта в Android-сборку..."
-cp -r "$PROJECT_DIR"/* "$ANDROID_DIR/app/src/main/python/"
-rm -rf "$ANDROID_DIR/app/src/main/python/.git"
-rm -rf "$ANDROID_DIR/app/src/main/python/.buildozer" 2>/dev/null || true
+log "Очистка исходников и копирование папки core..."
+cd "$PROJECT_DIR"
+# Жесткая очистка: удаляет всё, что не под гитом (модели, кэши, тестовые песни)
+git clean -fdx 
+
+# Копируем ТОЛЬКО папку core, как просил пользователь
+cp -r "$PROJECT_DIR/core" "$ANDROID_DIR/app/src/main/python/"
+# Удаляем скрытые папки кэша, если они вдруг проскочили
+find "$ANDROID_DIR/app/src/main/python" -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
 
 cat << 'EOF' > "$ANDROID_DIR/app/src/main/python/mobile_server.py"
 import sys
@@ -845,13 +850,79 @@ document.addEventListener("DOMContentLoaded", () => {
         else alert(msg);
     };
     
+    let sharedAudioContext = null;
+    
     setInterval(() => {
-        const audios = document.querySelectorAll('audio');
-        if (audios.length >= 2) {
-            const a1 = audios[0];
-            const a2 = audios[1];
-            if (!a1.paused && Math.abs(a1.currentTime - a2.currentTime) > 0.15) {
-                console.log("[FK_SYNC] Принудительная синхронизация аудио");
+        // Мы берем аудио напрямую из глобальных переменных твоего script.js!
+        const a1 = window.instAudio;
+        const a2 = window.vocAudio;
+        
+        if (a1 && a2) {
+            // 1. Аппаратное микширование через AudioContext с перехватом громкости
+            if (!a1._fkRouted && a1.src && a2.src) {
+                a1._fkRouted = true; // Метка защиты (ставится 1 раз за сессию)
+                
+                try {
+                    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+                    sharedAudioContext = new AudioCtx();
+                    
+                    const src1 = sharedAudioContext.createMediaElementSource(a1);
+                    const src2 = sharedAudioContext.createMediaElementSource(a2);
+                    
+                    // Создаем аппаратные усилители
+                    const gain1 = sharedAudioContext.createGain();
+                    const gain2 = sharedAudioContext.createGain();
+                    
+                    // Применяем текущую громкость ползунков интерфейса
+                    gain1.gain.value = a1.volume;
+                    gain2.gain.value = a2.volume;
+                    
+                    // Собираем цепь: Звук -> Усилитель -> Финальный выход браузера
+                    src1.connect(gain1).connect(sharedAudioContext.destination);
+                    src2.connect(gain2).connect(sharedAudioContext.destination);
+                    
+                    // Изымаем оригинальную функцию управления громкостью у тега
+                    const origVolDesc = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'volume') || 
+                                        Object.getOwnPropertyDescriptor(HTMLAudioElement.prototype, 'volume');
+                    
+                    // Перехватчик для 1-й дорожки (Инструментал)
+                    Object.defineProperty(a1, 'volume', {
+                        get: function() { return gain1.gain.value; },
+                        set: function(val) { 
+                            gain1.gain.value = val; // Напрямую управляем усилителем
+                            if(origVolDesc) origVolDesc.set.call(this, val); // Сохраняем состояние для Vue/Vanilla JS
+                        }
+                    });
+                    
+                    // Перехватчик для 2-й дорожки (Вокал)
+                    Object.defineProperty(a2, 'volume', {
+                        get: function() { return gain2.gain.value; },
+                        set: function(val) { 
+                            gain2.gain.value = val; 
+                            if(origVolDesc) origVolDesc.set.call(this, val); 
+                        }
+                    });
+                    
+                    console.log("[FK_SYNC] AudioContext с Gain-усилителями успешно запущен");
+                    
+                    // Легкое страховочное выравнивание при перемотке/паузах
+                    const syncTimes = () => {
+                        if (sharedAudioContext.state === 'suspended') sharedAudioContext.resume();
+                        if (Math.abs(a1.currentTime - a2.currentTime) > 0.05) {
+                            a2.currentTime = a1.currentTime;
+                        }
+                    };
+
+                    a1.addEventListener('play', syncTimes);
+                    a1.addEventListener('pause', syncTimes);
+                    a1.addEventListener('seeked', syncTimes);
+                } catch (e) {
+                    console.error("[FK_SYNC] Ошибка AudioContext", e);
+                }
+            }
+
+            // 2. Программная страховка на лету (только если разъехались сильно)
+            if (!a1.paused && !a2.paused && Math.abs(a1.currentTime - a2.currentTime) > 0.12) {
                 a2.currentTime = a1.currentTime;
             }
         }
