@@ -18,7 +18,7 @@ if [ ! -d "$VENV_DIR" ]; then
         echo "⚠️  .venv найден на уровень выше: $VENV_DIR"
     else
         echo "❌ Виртуальное окружение не найдено."
-        echo "   Запустите: bash reinstall.sh"
+        echo "   Запустите установщик заново: bash app_install.sh (Linux) или win_install.cmd (Windows)"
         exit 1
     fi
 fi
