@@ -68,11 +68,17 @@ free_karaoke/
 ## 📄 Документация
 
 - **[INSTALL.md](INSTALL.md)** — подробная инструкция по установке для всех платформ
-- **[releases/README.md](releases/README.md)** — описание Windows установщика
+- **[releases/README.md](releases/README.md)** — описание установщиков (Windows, Linux)
 - **[releases/android/README.md](releases/android/README.md)** — Android версия
 - **[shared/README.md](shared/README.md)** — спецификации форматов данных
 
-## Лицензия
+## ⚠️ Дисклеймер о разработке
+
+Этот проект создан с использованием AI-ассистентов («вайбкодинг»). Код работает и проверен, но может содержать неочевидные решения. Будьте внимательны при модификации — если что-то пойдёт не так, проверяйте логи и документацию.
+
+---
+
+## License
 
 [MIT](LICENSE)
 
@@ -151,9 +157,15 @@ Requires: **Python 3.11**, Genius token (`.env` file).
 ## 📄 Documentation
 
 - **[INSTALL.md](INSTALL.md)** — detailed installation guide for all platforms
-- **[releases/README.md](releases/README.md)** — Windows installer description
+- **[releases/README.md](releases/README.md)** — installers description (Windows, Linux)
 - **[releases/android/README.md](releases/android/README.md)** — Android version
 - **[shared/README.md](shared/README.md)** — data format specifications
+
+## ⚠️ Development Disclaimer
+
+This project was created using AI assistants ("vibecoding"). The code works and is tested, but may contain non-obvious solutions. Be careful when modifying — if something goes wrong, check logs and documentation.
+
+---
 
 ## License
 
