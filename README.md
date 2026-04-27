@@ -116,6 +116,13 @@ free_karaoke/
 └── 🔑 core/
     └── .env.example → Шаблон токенов
 ```
+## ⚠️ Отказ от ответственности
+
+> **RU:** Программа предоставляется **«как есть» (AS IS)**, без каких-либо явных или подразумеваемых гарантий. Автор не несет ответственности за любой ущерб, потерю данных, сбои в работе системы или иные последствия, возникшие в результате использования данного программного обеспечения. Используйте на свой страх и риск.
+
+## ℹ️ Статус проекта
+
+> **RU:** Проект распространяется в текущем виде (**«как есть»**). Активная поддержка и дальнейшее развитие **не запланированы**, но полностью **не исключены** в будущем. Обновления могут выходить нерегулярно или не выходить совсем.
 
 ## ⚠️ Дисклеймер о разработке
 
@@ -250,6 +257,13 @@ Requires: **Python 3.11**, Genius token (`.env` file).
 └── 🔑 core/
     └── .env.example → Token template
 ```
+## ⚠️ Disclaimer
+
+> The software is provided **"AS IS"**, without any express or implied warranties. The author is not liable for any damages, data loss, system failures, or other consequences arising from the use of this software. Use at your own risk.
+
+## ℹ️ Project Status
+
+> The project is distributed in its current state (**"as is"**). Active support and further development are **not planned**, but not completely **excluded** in the future. Updates may be released irregularly or not released in future.
 
 ## ⚠️ Development Disclaimer
 
