@@ -1,49 +1,49 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "Free Karaoke — Library Metadata JSON",
-  "description": "Метаданные библиотеки треков. Файл: {base_name}_library.json",
+  "description": "Метаданные библиотеки треков. Файл: {base_name}_library.json / Track library metadata. File: {base_name}_library.json",
   "type": "object",
   "required": ["title"],
   "properties": {
     "title": {
       "type": "string",
-      "description": "Название трека"
+      "description": "Название трека / Track title"
     },
     "artist": {
       "type": "string",
-      "description": "Имя исполнителя"
+      "description": "Имя исполнителя / Artist name"
     },
     "lyrics": {
       "type": "string",
-      "description": "Полный текст песни (Genius или из тегов)"
+      "description": "Полный текст песни (Genius или из тегов) / Full lyrics text (from Genius or tags)"
     },
     "album": {
       "type": "string",
-      "description": "Название альбома"
+      "description": "Название альбома / Album title"
     },
     "year": {
       "type": ["string", "number"],
-      "description": "Год выпуска"
+      "description": "Год выпуска / Release year"
     },
     "genre": {
       "type": "string",
-      "description": "Жанр"
+      "description": "Жанр / Genre"
     },
     "cover_url": {
       "type": "string",
-      "description": "URL или base64 обложки"
+      "description": "URL или base64 обложки / Cover URL or base64"
     },
     "bg_url": {
       "type": "string",
-      "description": "URL или base64 фона караоке"
+      "description": "URL или base64 фона караоке / Karaoke background URL or base64"
     },
     "duration": {
       "type": "number",
-      "description": "Длительность трека в секундах"
+      "description": "Длительность трека в секундах / Track duration in seconds"
     },
     "language": {
       "type": "string",
-      "description": "Код языка трека (en, ru, etc.)"
+      "description": "Код языка трека (en, ru, etc.) / Track language code (en, ru, etc.)"
     }
   },
   "additionalProperties": true,

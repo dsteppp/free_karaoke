@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "Free Karaoke — Karaoke Lyrics JSON",
-  "description": "Формат синхронизированных таймингов слов для караоке-плеера. Файл: {base_name}_(Karaoke Lyrics).json",
+  "description": "Формат синхронизированных таймингов слов для караоке-плеера. Файл: {base_name}_(Karaoke Lyrics).json / Synchronized word timings format for karaoke player. File: {base_name}_(Karaoke Lyrics).json",
   "type": "array",
   "items": {
     "type": "object",
@@ -9,26 +9,26 @@
     "properties": {
       "word": {
         "type": "string",
-        "description": "Текст слова или слога"
+        "description": "Текст слова или слога / Word or syllable text"
       },
       "start": {
         "type": "number",
-        "description": "Время начала слова в секундах от начала аудио",
+        "description": "Время начала слова в секундах от начала аудио / Start time in seconds from audio beginning",
         "minimum": 0
       },
       "end": {
         "type": "number",
-        "description": "Время окончания слова в секундах от начала аудио",
+        "description": "Время окончания слова в секундах от начала аудио / End time in seconds from audio beginning",
         "minimum": 0
       },
       "line_break": {
         "type": "boolean",
-        "description": "Если true — после этого слова начинать новую строку в караоке-плеере",
+        "description": "Если true — после этого слова начинать новую строку в караоке-плеере / If true, start new line after this word in karaoke player",
         "default": false
       },
       "letters": {
         "type": "array",
-        "description": "Побуквенная анимация (опционально, может быть пустым)",
+        "description": "Побуквенная анимация (опционально, может быть пустым) / Letter-by-letter animation (optional, can be empty)",
         "items": {
           "type": "object"
         }
