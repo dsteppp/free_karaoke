@@ -1,52 +1,51 @@
 ```
-# Environment files
+# Environment variables
 .env
 .env.local
-*.env.*
+.env.*
 
-# Logs and temporary files
-*.log
-*.tmp
-
-# Editors/IDEs
-.vscode/
-.idea/
-*.swp
-*.swo
-
-# Dependencies and build artifacts
-node_modules/
-venv/
-.venv/
+# Python
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
-dist/
-build/
-target/
-.gradle/
-.mypy_cache/
-.pytest_cache/
-coverage/
-htmlcov/
+*.py~
+*.py.class
+.Python
+env/
+venv/
+.venv/
+.venv.bak/
+pip-log.txt
+pip-delete-this-directory.txt
+.tox/
 .coverage
-
-# System files
-.DS_Store
-Thumbs.db
-
-# Compiled files
-*.class
-*.o
-*.exe
-*.dll
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.log
+*.pot
+*.pot.*
+*.mo
+*.mo.*
+.MF
+tags
+TAGS
+.idlerc/
+.python-version
 *.so
-*.a
+*.lib
+*.dll
+*.dylib
 *.obj
-*.out
-
-# Compressed files
+*.o
+*.a
+*.class
+*.jar
+*.war
+*.ear
 *.zip
 *.gz
 *.tar

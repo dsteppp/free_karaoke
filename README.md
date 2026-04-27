@@ -27,18 +27,19 @@
 free_karaoke/
 ├── core/              # 🔵 Desktop-приложение (FastAPI + PyWebview + ML)
 │   ├── main.py        #   FastAPI сервер
-│   ├── launcher.py    #   Точка входа (Huey + Uvicorn + PyWebview)
-│   ├── gpu_detect.py  #   Определение GPU
-│   ├── token_prompt.py#   Запрос Genius-токена
+│   ├── launcher.py    #   Точка входа (Huey + Uvicorn + PyWebview + Genius token prompt)
 │   ├── tasks.py       #   Huey-задачи обработки треков
 │   ├── ai_pipeline.py #   ML-пайплайн (сепарация, Genius, метаданные)
 │   ├── karaoke_aligner.py  #   Выравнивание Whisper → тайминги
+│   ├── aligner_orchestra.py  #   Дирижёр выравнивания (Numba acceleration)
 │   ├── app_logger.py  #   Система логирования
 │   ├── app_status.py  #   Отслеживание статуса задач
+│   ├── editor_backend.py   #   Бэкенд редактора таймингов
+│   ├── library_io.py  #   Импорт/экспорт библиотек
 │   ├── run.sh         #   Скрипт запуска для Linux
 │   ├── static/        #   HTML/CSS/JS интерфейс
 │   ├── .env.example   #   Шаблон переменных окружения
-│   └── ...            #   Другие модули (editor_backend, library_io, и т.д.)
+│   └── ...            #   Другие модули (aligner_utils, metadata_parser, и т.д.)
 ├── releases/          # 📦 Установщики и дистрибутивы
 │   ├── win_install.cmd    #   Windows установщик
 │   ├── app_install.sh     #   Linux установщик
@@ -109,18 +110,19 @@ free_karaoke/
 free_karaoke/
 ├── core/              # 🔵 Desktop app (FastAPI + PyWebview + ML)
 │   ├── main.py        #   FastAPI server
-│   ├── launcher.py    #   Entry point (Huey + Uvicorn + PyWebview)
-│   ├── gpu_detect.py  #   GPU detection
-│   ├── token_prompt.py#   Genius token prompt
+│   ├── launcher.py    #   Entry point (Huey + Uvicorn + PyWebview + Genius token prompt)
 │   ├── tasks.py       #   Huey track processing tasks
 │   ├── ai_pipeline.py #   ML pipeline (separation, Genius, metadata)
 │   ├── karaoke_aligner.py  #   Whisper → timing alignment
+│   ├── aligner_orchestra.py  #   Alignment orchestrator (Numba acceleration)
 │   ├── app_logger.py  #   Logging system
 │   ├── app_status.py  #   Task status tracking
+│   ├── editor_backend.py   #   Timing editor backend
+│   ├── library_io.py  #   Library import/export
 │   ├── run.sh         #   Launch script for Linux
 │   ├── static/        #   HTML/CSS/JS interface
 │   ├── .env.example   #   Environment variables template
-│   └── ...            #   Other modules (editor_backend, library_io, etc.)
+│   └── ...            #   Other modules (aligner_utils, metadata_parser, etc.)
 ├── releases/          # 📦 Installers and distributions
 │   ├── win_install.cmd    #   Windows installer
 │   ├── app_install.sh     #   Linux installer

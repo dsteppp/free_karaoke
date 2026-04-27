@@ -83,30 +83,6 @@ yay -S python311
 sudo dnf install python3.11 python3.11-devel
 ```
 
-### Ручная установка из исходников
-
-```bash
-# 1. Клонируйте репозиторий
-git clone https://github.com/dsteppp/free_karaoke.git
-cd free_karaoke/core
-
-# 2. Создайте виртуальное окружение (Python 3.11!)
-python3.11 -m venv .venv
-source .venv/bin/activate
-
-# 3. Установите зависимости (установщик создаст requirements.txt автоматически)
-pip install uv
-#requirements.txt будет создан скриптом установки
-uv pip install -r core/requirements.txt
-
-# 4. Настройте токены
-cp .env.example .env
-# Откройте .env и вставьте GENIUS_ACCESS_TOKEN
-
-# 5. Запустите
-./run.sh
-```
-
 ### Системные зависимости (Linux)
 
 Убедитесь, что установлены:
@@ -292,30 +268,6 @@ yay -S python311
 
 # Fedora
 sudo dnf install python3.11 python3.11-devel
-```
-
-### Manual Installation from Source
-
-```bash
-# 1. Clone repository
-git clone https://github.com/dsteppp/free_karaoke.git
-cd free_karaoke/core
-
-# 2. Create virtual environment (Python 3.11!)
-python3.11 -m venv .venv
-source .venv/bin/activate
-
-# 3. Install dependencies (installer will create requirements.txt automatically)
-pip install uv
-# requirements.txt will be created by the installer script
-uv pip install -r core/requirements.txt
-
-# 4. Configure tokens
-cp .env.example .env
-# Open .env and insert GENIUS_ACCESS_TOKEN
-
-# 5. Run
-./run.sh
 ```
 
 ### System Dependencies (Linux)
