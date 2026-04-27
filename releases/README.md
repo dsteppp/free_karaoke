@@ -53,12 +53,14 @@
 *   **Genius Native Window:** Внедряет вызов нативного окна Windows для удобного ввода API-токена Genius.
 
 ---
+
 <br>
 
 ---
 
 <!-- 🇬🇧 ENGLISH VERSION -->
-# 🇬🇧 English Version: Smart Windows Installer (`win_install.cmd`)
+# 🇬🇧 English Version
+Smart Windows Installer (`win_install.cmd`)
 
 This script is a fully autonomous, portable installer for running Free Karaoke on Windows. It handles all the heavy lifting: from setting up an isolated Python environment to adapting neural networks specifically for your graphics card.
 
