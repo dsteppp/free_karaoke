@@ -1,8 +1,20 @@
-# ⚡ Умный установщик для Windows (`win_install.cmd`)
+# 📦 Установщики Free Karaoke
 
 > **🇬 English version:** [scroll to the bottom](#-english-version)
 
-Данный скрипт — это полностью автономный, портативный инсталлятор для запуска Free Karaoke на ОС Windows. Он берет на себя всю грязную работу: от настройки Python до адаптации нейросетей под вашу видеокарту.
+В этой папке находятся установщики для всех поддерживаемых платформ.
+
+## Доступные установщики
+
+| Платформа | Файл | Описание |
+|-----------|------|----------|
+| 🪟 **Windows** | [`win_install.cmd`](#-установка-windows) | Полностью автоматический установщик |
+| 🐧 **Linux** | [`app_install.sh`](#-установка-linux) | Универсальный скрипт для любого дистрибутива |
+| 📱 **Android** | [`android/FreeKaraoke-Native-Release.apk`](android/FreeKaraoke-Native-Release.apk) | Готовый APK для установки |
+
+---
+
+# 🪟 Установка Windows (`win_install.cmd`)
 
 ## ⚠️ Важные предупреждения (Читать обязательно)
 
@@ -54,13 +66,47 @@
 
 ---
 
+# 🐧 Установка Linux (`app_install.sh`)
+
+Полный скрипт установки для Linux доступен в файле [`app_install.sh`](app_install.sh).
+
+**Особенности:**
+- Автоматически определяет дистрибутив (Ubuntu, Debian, Arch, Fedora, openSUSE и др.)
+- Проверяет и устанавливает Python 3.11 (строго требуется эта версия!)
+- Скачивает и настраивает `uv` (быстрый пакетный менеджер)
+- Определяет видеокарту (NVIDIA/AMD/CPU) и подбирает оптимальные зависимости
+- Создаёт изолированное виртуальное окружение
+- Загружает ML-модели (~2 ГБ)
+- Создаёт .desktop файл для запуска из меню приложений
+
+**Быстрый старт:**
+```bash
+chmod +x app_install.sh
+./app_install.sh
+```
+
+Подробные инструкции см. в **[INSTALL.md](../INSTALL.md#-linux)**.
+
+---
+
+# 📱 Android
+
+Готовый APK для установки на Android:  
+👉 **[FreeKaraoke-Native-Release.apk](android/FreeKaraoke-Native-Release.apk)**
+
+Для сборки APK из исходников (энтузиастам):  
+👉 **[build-apk.sh](android/build-apk.sh)**
+
+Подробности см. в **[releases/android/README.md](android/README.md)** и **[INSTALL.md](../INSTALL.md#-android)**.
+
+---
+
 <br>
 
 ---
 
 <!-- 🇬🇧 ENGLISH VERSION -->
-# 🇬🇧 English Version
-Smart Windows Installer (`win_install.cmd`)
+# 🇬🇧 Installers Overview
 
 This script is a fully autonomous, portable installer for running Free Karaoke on Windows. It handles all the heavy lifting: from setting up an isolated Python environment to adapting neural networks specifically for your graphics card.
 
@@ -111,3 +157,38 @@ The installer doesn't just download code from GitHub; it modifies it for the Win
 *   **Numba Patch V3:** Replaces a slow Python timing alignment loop (which could take up to 3 minutes) with JIT-compiled C-like code. Alignment now takes fractions of a second on any PC.
 *   **Diffq Patch:** Bypasses the need for Visual Studio C++ build tools by injecting fake setup files into the `diffq` tarball, allowing smooth installation.
 *   **Genius Native Window:** Injects a native Windows prompt for easy input of the Genius API token.
+
+---
+
+## 🐧 Linux Installation (`app_install.sh`)
+
+Full installation script for Linux: [`app_install.sh`](app_install.sh)
+
+**Features:**
+- Auto-detects distribution (Ubuntu, Debian, Arch, Fedora, openSUSE, etc.)
+- Verifies and installs Python 3.11 (strictly required!)
+- Downloads and configures `uv` (fast package manager)
+- Detects GPU (NVIDIA/AMD/CPU) and selects optimal dependencies
+- Creates isolated virtual environment
+- Downloads ML models (~2 GB)
+- Creates .desktop file for menu launch
+
+**Quick start:**
+```bash
+chmod +x app_install.sh
+./app_install.sh
+```
+
+See detailed instructions in **[INSTALL.md](../INSTALL.md#-linux)**.
+
+---
+
+## 📱 Android
+
+Ready-to-install APK:  
+👉 **[FreeKaraoke-Native-Release.apk](android/FreeKaraoke-Native-Release.apk)**
+
+For building APK from source (enthusiasts):  
+👉 **[build-apk.sh](android/build-apk.sh)**
+
+Details in **[releases/android/README.md](android/README.md)** and **[INSTALL.md](../INSTALL.md#-android)**.
