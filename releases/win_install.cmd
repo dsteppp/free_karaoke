@@ -87,33 +87,18 @@ function Patch-Pipeline-Model {
     if (-not (Test-Path $FilePath)) { return }
     $txt = [IO.File]::ReadAllText($FilePath)
 
-    # Самоочистка старых патчей
-    $txt = $txt -replace '(?s)# --- AMD.*?GLOBAL PATCH.*?# -+\r?\n?', ''
-    $txt = $txt -replace '(?s)# --- HARDWARE.*?GLOBAL PATCH.*?# -+\r?\n?', ''
-    $txt = $txt -replace 'cpu_detected = False # Patched for AMD DirectML', 'cpu_detected = True'
-    $txt = $txt -replace 'UVR-MDX-NET-Inst_HQ_3\.onnx', 'MDX23C-8KFFT-InstVoc_HQ.ckpt'
-    $txt = $txt -replace '"UVR-MDX-NET \(DirectML\)"', '"MDX23C (офлайн)"'
-    $txt = $txt -replace 'Kim_Vocal_1\.onnx', 'MDX23C-8KFFT-InstVoc_HQ.ckpt'
-    $txt = $txt -replace '"Kim_Vocal_1 \(CPU\)"', '"MDX23C (офлайн)"'
+    # Очистка возможных старых патчей
+    $txt = $txt -replace '(?m)^.*# Patched for AMD DirectML.*$', ''
 
-    # Подмена моделей сепаратора для Windows
-    if ($txt -match 'MDX23C-8KFFT-InstVoc_HQ\.ckpt') {
-        if ($GpuType -eq "AMD") {
-            $txt = $txt -replace 'MDX23C-8KFFT-InstVoc_HQ\.ckpt', 'UVR-MDX-NET-Inst_HQ_3.onnx'
-            $txt = $txt -replace '"MDX23C \(офлайн\)"', '"UVR-MDX-NET (DirectML)"'
-            Write-Log "Сепаратор ($FilePath) перенастроен на ONNX (AMD DirectML)" "SUCCESS"
-        } elseif ($GpuType -eq "CPU") {
-            $txt = $txt -replace 'MDX23C-8KFFT-InstVoc_HQ\.ckpt', 'Kim_Vocal_1.onnx'
-            $txt = $txt -replace '"MDX23C \(офлайн\)"', '"Kim_Vocal_1 (CPU)"'
-            Write-Log "Сепаратор ($FilePath) перенастроен на Kim_Vocal_1 (CPU Mode)" "SUCCESS"
-        } else {
-            Write-Log "Сепаратор ($FilePath) настроен на PyTorch (NVIDIA)" "SUCCESS"
-        }
-    }
-
-    # Отключаем прерывание фолбэка для AMD
-    if ($GpuType -eq "AMD") {
-        $txt = $txt -replace 'cpu_detected = True', 'cpu_detected = False # Patched for AMD DirectML'
+    # Если AMD — настраиваем ONNX сепаратор и отключаем CPU-фолбэк
+    if ($GpuType -eq "AMD" -and ($txt -match 'MDX23C-8KFFT-InstVoc_HQ\.ckpt')) {
+        $txt = $txt -replace 'MDX23C-8KFFT-InstVoc_HQ\.ckpt', 'UVR-MDX-NET-Inst_HQ_3.onnx'
+        $txt = $txt -replace '"MDX23C \(офлайн\)"', '"UVR-MDX-NET (DirectML)"'
+        
+        # Перехватываем новую логику отключения фолбэка из ai_pipeline.py
+        $txt = $txt -replace 'if cpu_detected and not force_cpu_fallback:', 'if False and not force_cpu_fallback: # Patched for AMD DirectML'
+        
+        Write-Log "Сепаратор ($FilePath) перенастроен на ONNX (AMD DirectML GPU)" "SUCCESS"
     }
 
     [IO.File]::WriteAllText($FilePath, $txt, (New-Object System.Text.UTF8Encoding($false)))
@@ -290,7 +275,8 @@ try {
     if (Test-Path ".t") { Remove-Item ".t" -Recurse -Force -ErrorAction SilentlyContinue }
     if (Test-Path "*.zip") { Remove-Item "*.zip" -Force -ErrorAction SilentlyContinue }
 
-    @("bin", "src", "core", ".cache\huggingface", ".cache\torch", ".cache\uv", "core\models\audio_separator", "core\models\whisper") | ForEach-Object {
+    # Создаем СТРОГО портативные папки
+    @("bin", "src", "core", ".cache\uv", "core\models\audio_separator", "core\models\whisper", "core\models\torch") | ForEach-Object {
         if (-not (Test-Path $_)) { New-Item -ItemType Directory -Force -Path $_ | Out-Null }
     }
 
@@ -317,7 +303,6 @@ try {
 
     # ==============================================================
     # ВСЕГДА обновляем исходный код проекта с GitHub при установке/обновлении.
-    # (Copy-Item перезапишет .py файлы, но безопасно сохранит тяжелые папки с моделями)
     Write-Log "Синхронизация актуального исходного кода..."
     if (Test-Path "source.zip") { Remove-Item "source.zip" -Force }
     if (Test-Path ".t") { Remove-Item ".t" -Recurse -Force }
@@ -357,9 +342,6 @@ try {
         $reqs += "--extra-index-url https://download.pytorch.org/whl/cpu"
         $reqs += "torch==2.6.0+cpu", "torchvision==0.21.0+cpu", "torchaudio==2.6.0+cpu", "onnxruntime"
     }
-
-    # Применяем патчи
-    Patch-Pipeline-Model "core\ai_pipeline.py" $gpuType
 
     # Полный список зависимостей
     $coreReqs = @"
@@ -488,26 +470,46 @@ psutil>=6.0.0
     if ($p2.ExitCode -ne 0) { throw "Сбой установки зависимостей!" }
 
     # ==============================================================
+    # ТЕНЗОР-ТЕСТ ВИДЕОКАРТЫ (Микро-тест CUDA)
+    if ($gpuType -eq "NVIDIA") {
+        Write-Log "Аппаратное тестирование (Tensor-Тест CUDA)..." "INFO"
+        try {
+            $pTest = Start-Process ".venv\Scripts\python.exe" "-c `"import torch; torch.zeros(1).cuda()`"" -Wait -NoNewWindow -PassThru
+            if ($pTest.ExitCode -eq 0) {
+                Write-Log "Tensor-Тест пройден: NVIDIA CUDA полностью поддерживается!" "SUCCESS"
+            } else {
+                throw "Cuda test failed"
+            }
+        } catch {
+            Write-Log "Tensor-Тест ПРОВАЛЕН! Видеокарта NVIDIA слишком старая или нет драйверов." "WARN"
+            Write-Log "Активирован АППАРАТНЫЙ ФОЛБЭК: Установка перенастроена на легкие CPU-модели." "WARN"
+            $gpuType = "CPU"
+        }
+    }
+
     # ЗАЩИТА DirectML (ИСПРАВЛЕНИЕ КОНФЛИКТА ПАКЕТОВ ONNX)
     if ($gpuType -eq "AMD") {
         Write-Log "Защита драйвера DirectML..." "INFO"
-        Start-Process "bin\uv.exe" "pip uninstall onnxruntime" -Wait -NoNewWindow | Out-Null
-        Start-Process "bin\uv.exe" "pip uninstall onnxruntime-directml" -Wait -NoNewWindow | Out-Null
+        Start-Process "bin\uv.exe" "pip uninstall onnxruntime -y" -Wait -NoNewWindow | Out-Null
+        Start-Process "bin\uv.exe" "pip uninstall onnxruntime-directml -y" -Wait -NoNewWindow | Out-Null
         Start-Process "bin\uv.exe" "pip install onnxruntime-directml" -Wait -NoNewWindow | Out-Null
     }
+    
+    # Патчим код после тестирования GPU
+    Patch-Pipeline-Model "core\ai_pipeline.py" $gpuType
     # ==============================================================
 
     # 5. Строго локальное кэширование моделей (Offline-First)
-    Write-Log "Загрузка и локальное кэширование ML-моделей..."
+    Write-Log "Загрузка портативных ML-моделей..."
     
     Install-Model "https://github.com/TRvlvr/model_repo/releases/download/all_public_uvr_models/Kim_Vocal_1.onnx" "core\models\audio_separator\Kim_Vocal_1.onnx" "Kim_Vocal_1 (Fallback CPU)" 10000000
-    Install-Model "https://github.com/TRvlvr/model_repo/releases/download/all_public_uvr_models/UVR-MDX-NET-Inst_HQ_3.onnx" "core\models\audio_separator\UVR-MDX-NET-Inst_HQ_3.onnx" "UVR-MDX-NET (ONNX)" 10000000
+    Install-Model "https://github.com/TRvlvr/model_repo/releases/download/all_public_uvr_models/UVR-MDX-NET-Inst_HQ_3.onnx" "core\models\audio_separator\UVR-MDX-NET-Inst_HQ_3.onnx" "UVR-MDX-NET (ONNX AMD)" 10000000
     
     if ($gpuType -eq "NVIDIA") {
         Install-Model "https://openaipublic.azureedge.net/main/whisper/models/345ae4da62f9b3d59415adc60127b97c714f32e89e936602e85993674d08dcb1/medium.pt" "core\models\whisper\medium.pt" "Whisper Medium" 10000000
         Install-Model "https://github.com/TRvlvr/model_repo/releases/download/all_public_uvr_models/MDX23C-8KFFT-InstVoc_HQ.ckpt" "core\models\audio_separator\MDX23C-8KFFT-InstVoc_HQ.ckpt" "MDX23C (PyTorch/CUDA)" 10000000
     } else {
-        Write-Log "Прямая (скоростная) загрузка легкой модели Faster-Whisper (small) для быстрой работы на ЦПУ..." "INFO"
+        Write-Log "Прямая (скоростная) загрузка легкой модели Faster-Whisper (small) для процессора..." "INFO"
         $fw_dir = "$InstallDir\core\models\whisper\faster-whisper-small"
         if (-not (Test-Path $fw_dir)) { New-Item -ItemType Directory -Force -Path $fw_dir | Out-Null }
         
@@ -518,8 +520,40 @@ psutil>=6.0.0
         Install-Model "$hf_base/tokenizer.json" "$fw_dir\tokenizer.json" "Faster-Whisper (tokenizer)" 1000
     }
 
+    # 6. Загрузка вспомогательных файлов (Silero VAD и конфигурации .yaml)
+    Write-Log "Загрузка вспомогательных файлов (Silero VAD и конфигурации)..."
+    $env:TORCH_HOME = "$InstallDir\core\models\torch"
+    $env:HF_HOME = "$InstallDir\core\models"
+    
+    $pySetup = @"
+import os
+try:
+    from faster_whisper.vad import get_vad_model
+    get_vad_model()
+    print('   ✅ Silero VAD успешно закэширован в портативную папку')
+except Exception as e:
+    print('   ⚠️ Ошибка загрузки Silero VAD:', e)
+
+try:
+    from audio_separator.separator import Separator
+    import logging
+    sep_dir = r'$InstallDir\core\models\audio_separator'.replace('\\', '/')
+    sep = Separator(model_file_dir=sep_dir, log_level=logging.ERROR)
+    ckpt_path = os.path.join(sep_dir, 'MDX23C-8KFFT-InstVoc_HQ.ckpt')
+    if os.path.exists(ckpt_path):
+        sep.download_model_files('MDX23C-8KFFT-InstVoc_HQ.ckpt')
+        print('   ✅ YAML-конфигурация для MDX23C успешно загружена')
+except Exception as e:
+    print('   ⚠️ Ошибка загрузки YAML-конфигурации:', e)
+"@
+    [System.IO.File]::WriteAllText(".t_setup.py", $pySetup, (New-Object System.Text.UTF8Encoding($false)))
+    & ".venv\Scripts\python.exe" ".t_setup.py"
+    Remove-Item ".t_setup.py" -Force
+
     if (-not (Test-Path "core\.env")) { Set-Content "core\.env" -Value "APP_PORT=8000" -Encoding UTF8 }
-    Set-Content "core\.env.cache" -Value "UV_CACHE_DIR=$InstallDir\.cache\uv`nTORCH_HOME=$InstallDir\.cache\torch`nHF_HOME=$InstallDir\.cache\huggingface" -Encoding UTF8
+    
+    # Строго направляем системные кэши в портативную папку models
+    Set-Content "core\.env.cache" -Value "UV_CACHE_DIR=$InstallDir\.cache\uv`nTORCH_HOME=$InstallDir\core\models\torch`nHF_HOME=$InstallDir\core\models" -Encoding UTF8
 
     $runCmd = "@echo off`nsetlocal`ncd /d `"%~dp0`"`nset `"PATH=%~dp0bin;%PATH%`"`nset `"PYTHONUTF8=1`"`nfor /f `"tokens=*`" %%i in (core\.env.cache) do set `"%%i`"`ncall .venv\Scripts\activate.bat`npythonw.exe core\launcher.py"
     $vbsCode = "Set WshShell = CreateObject(`"WScript.Shell`")`nWshShell.CurrentDirectory = CreateObject(`"Scripting.FileSystemObject`").GetParentFolderName(WScript.ScriptFullName)`nWshShell.Run `"cmd.exe /c run.cmd`", 0, False"

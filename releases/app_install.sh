@@ -303,7 +303,7 @@ echo "Будет выполнено:"
 echo "   1. Установка системных зависимостей через $PACKAGE_MANAGER"
 echo "   2. Создание виртуального окружения Python в $INSTALL_DIR/.venv"
 echo "   3. Установка Python-пакетов (PyTorch под $GPU_TYPE)"
-echo "   4. Загрузка ML-моделей (~2 ГБ)"
+echo "   4. Загрузка портативных ML-моделей (~2 ГБ)"
 echo "   5. Создание desktop-файла для запуска"
 echo ""
 
@@ -425,19 +425,16 @@ fi
 echo ""
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 6. Создание структуры папок
+# 6. Создание структуры папок (Строгая портативность)
 # ─────────────────────────────────────────────────────────────────────────────
 log_step "Создание структуры папок"
 echo ""
 
-# Создаем только необходимые папки внутри core
 mkdir -p "$INSTALL_DIR/core"
 mkdir -p "$INSTALL_DIR/core/cache/uv"
-mkdir -p "$INSTALL_DIR/core/cache/torch"
-mkdir -p "$INSTALL_DIR/core/cache/huggingface"
 mkdir -p "$INSTALL_DIR/core/models/audio_separator"
 mkdir -p "$INSTALL_DIR/core/models/whisper"
-# Папки library, debug_logs, shared создаются программой при первом запуске
+mkdir -p "$INSTALL_DIR/core/models/torch"
 
 log_success "Структура папок создана (все данные внутри core/)"
 echo ""
@@ -450,7 +447,6 @@ echo ""
 
 REPO_URL="https://github.com/dsteppp/free_karaoke.git"
 
-# Проверяем, есть ли уже папка core и насколько она полная
 CORE_EXISTS=false
 if [ -d "$INSTALL_DIR/core" ] && [ -f "$INSTALL_DIR/core/main.py" ] && [ -f "$INSTALL_DIR/core/tasks.py" ]; then
     CORE_EXISTS=true
@@ -460,7 +456,6 @@ fi
 if [ "$CORE_EXISTS" = false ]; then
     log_info "Клонируем репозиторий..."
     if command -v git &> /dev/null; then
-        # Используем редирект для предотвращения зависания
         git clone --depth 1 "$REPO_URL" "$INSTALL_DIR/tmp_clone" < /dev/null
         cp -r "$INSTALL_DIR/tmp_clone/core/"* "$INSTALL_DIR/core/"
         rm -rf "$INSTALL_DIR/tmp_clone"
@@ -485,7 +480,7 @@ cat > "$INSTALL_DIR/core/requirements.txt" << EOF
 # АВТОГЕНЕРАЦИЯ ПОД $GPU_TYPE
 EOF
 
-if [ "$GPU_TYPE" = "NVIDIA" ]; then
+if [ "$GPU_TYPE" = "NVIDIA" ] || [ "$GPU_TYPE" = "HYBRID" ]; then
     echo "--extra-index-url https://download.pytorch.org/whl/cu124" >> "$INSTALL_DIR/core/requirements.txt"
     echo "torch==2.6.0+cu124" >> "$INSTALL_DIR/core/requirements.txt"
     echo "torchvision==0.21.0+cu124" >> "$INSTALL_DIR/core/requirements.txt"
@@ -625,14 +620,10 @@ fi
 
 source "$VENV_DIR/bin/activate"
 
-# Сохраняем метку архитектуры GPU
-echo "$GPU_TYPE" > "$VENV_DIR/.gpu_arch"
-
 log_step "Установка Python-пакетов"
 echo ""
 log_info "Проверяем наличие ключевых пакетов..."
 
-# Проверяем, установлены ли уже основные пакеты
 PACKAGES_INSTALLED=false
 if python -c "import torch; import torchaudio; import lyricsgenius; import fastapi" 2>/dev/null; then
     PACKAGES_INSTALLED=true
@@ -645,17 +636,36 @@ else
     fi
     log_success "Все пакеты установлены"
 fi
-
 echo ""
 
+# ==============================================================================
+# ТЕНЗОР-ТЕСТ ВИДЕОКАРТЫ (Микро-тест CUDA/ROCm)
+# ==============================================================================
+if [ "$GPU_TYPE" != "CPU" ]; then
+    log_step "Аппаратное тестирование (Tensor-Тест)"
+    echo ""
+    log_info "Проверяем совместимость PyTorch с вашей видеокартой ($GPU_TYPE)..."
+    
+    # Пытаемся закинуть микро-данные в видеокарту. Старые карты без нужных инструкций выдадут ошибку.
+    if python -c "import torch; torch.zeros(1).cuda()" 2>/dev/null; then
+        log_success "Tensor-Тест пройден: Видеокарта полностью поддерживается!"
+    else
+        log_warn "Tensor-Тест ПРОВАЛЕН! Видеокарта устарела или не настроены драйверы."
+        log_warn "Активирован АППАРАТНЫЙ ФОЛБЭК: Установка будет перенастроена на легкие CPU-модели."
+        GPU_TYPE="CPU"
+    fi
+    echo ""
+fi
+
+# Сохраняем итоговую (проверенную) архитектуру
+echo "$GPU_TYPE" > "$VENV_DIR/.gpu_arch"
+
 # ─────────────────────────────────────────────────────────────────────────────
-# 10. Загрузка ML-моделей
+# 10. Загрузка ML-моделей в портативные папки
 # ─────────────────────────────────────────────────────────────────────────────
-log_step "Загрузка ML-моделей"
+log_step "Загрузка портативных ML-моделей"
 echo ""
 
-# Функция безопасной загрузки с проверкой размера
-# $1 — URL, $2 — путь назначения, $3 — имя для вывода, $4 — мин. размер (байты)
 download_model() {
     local url="$1" dest="$2" name="$3" min_size="$4"
     
@@ -690,29 +700,30 @@ download_model() {
     fi
 }
 
-# Kim_Vocal_1.onnx — fallback модель для CPU (~63 MB)
+# 1. Kim_Vocal_1.onnx — fallback модель для CPU (~63 MB)
 download_model \
     "https://github.com/TRvlvr/model_repo/releases/download/all_public_uvr_models/Kim_Vocal_1.onnx" \
     "$INSTALL_DIR/core/models/audio_separator/Kim_Vocal_1.onnx" \
     "Kim_Vocal_1.onnx" \
     50000000
 
-# MDX23C-8KFFT-InstVoc_HQ.ckpt — основная GPU-модель сепарации (~428 MB)
+# 2. MDX23C-8KFFT-InstVoc_HQ.ckpt — основная GPU-модель сепарации (~428 MB)
 download_model \
     "https://github.com/TRvlvr/model_repo/releases/download/all_public_uvr_models/MDX23C-8KFFT-InstVoc_HQ.ckpt" \
     "$INSTALL_DIR/core/models/audio_separator/MDX23C-8KFFT-InstVoc_HQ.ckpt" \
     "MDX23C-8KFFT-InstVoc_HQ.ckpt" \
     200000000
 
-# Модель транскрипции (medium для GPU, faster-whisper-small для CPU)
+# 3. Модель транскрипции
 if [ "$GPU_TYPE" = "NVIDIA" ] || [ "$GPU_TYPE" = "AMD" ] || [ "$GPU_TYPE" = "HYBRID" ]; then
+    log_info "Скачиваем тяжелую модель Whisper (medium) для видеокарты..."
     download_model \
         "https://openaipublic.azureedge.net/main/whisper/models/345ae4da62f9b3d59415adc60127b97c714f32e89e936602e85993674d08dcb1/medium.pt" \
         "$INSTALL_DIR/core/models/whisper/medium.pt" \
         "Whisper medium" \
         500000000
 else
-    log_info "Оптимизация для CPU: скачиваем легкую модель Faster-Whisper (small)..."
+    log_info "Скачиваем легкую модель Faster-Whisper (small) для процессора..."
     FW_DIR="$INSTALL_DIR/core/models/whisper/faster-whisper-small"
     mkdir -p "$FW_DIR"
     HF_BASE="https://huggingface.co/Systran/faster-whisper-small/resolve/main"
@@ -723,8 +734,40 @@ else
     download_model "$HF_BASE/tokenizer.json" "$FW_DIR/tokenizer.json" "Faster-Whisper (tokenizer)" 1000
 fi
 
+# 4. Вспомогательные данные (Silero VAD и конфигурации .yaml)
+log_info "Загрузка вспомогательных файлов (Silero VAD и конфигурации)..."
+export TORCH_HOME="$INSTALL_DIR/core/models/torch"
+export HF_HOME="$INSTALL_DIR/core/models"
+
+python -c "
+import os
+import sys
+
+# 1. Silero VAD (для Whisper)
+try:
+    from faster_whisper.vad import get_vad_model
+    get_vad_model()
+    print('   ✅ Silero VAD успешно закэширован в портативную папку')
+except Exception as e:
+    print('   ⚠️ Ошибка загрузки Silero VAD:', e)
+
+# 2. YAML-конфиг для Audio Separator
+try:
+    from audio_separator.separator import Separator
+    import logging
+    sep_dir = '${INSTALL_DIR}/core/models/audio_separator'
+    sep = Separator(model_file_dir=sep_dir, log_level=logging.ERROR)
+    
+    ckpt_path = os.path.join(sep_dir, 'MDX23C-8KFFT-InstVoc_HQ.ckpt')
+    if os.path.exists(ckpt_path):
+        sep.download_model_files('MDX23C-8KFFT-InstVoc_HQ.ckpt')
+        print('   ✅ YAML-конфигурация для MDX23C успешно загружена')
+except Exception as e:
+    print('   ⚠️ Ошибка загрузки YAML-конфигурации:', e)
+"
+
 log_success "ML-модели загружены"
-log_info "Модели находятся в $INSTALL_DIR/core/models/"
+log_info "Все модели привязаны к папке $INSTALL_DIR/core/models/"
 echo ""
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -777,17 +820,16 @@ log_success "Файл .env создан"
 echo ""
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 12. Создание .env.cache для изоляции кэшей
+# 12. Создание .env.cache для изоляции системных кэшей
 # ─────────────────────────────────────────────────────────────────────────────
-log_step "Настройка изоляции кэшей"
+log_step "Настройка строгой изоляции кэшей"
 echo ""
 
+# Строго направляем все пути кэша в наши локальные папки (совпадает с ai_pipeline.py)
 cat > "$INSTALL_DIR/core/.env.cache" << EOF
 UV_CACHE_DIR=$INSTALL_DIR/core/cache/uv
-TORCH_HOME=$INSTALL_DIR/core/cache/torch
-HF_HOME=$INSTALL_DIR/core/cache/huggingface
-HUGGINGFACE_HUB_CACHE=$INSTALL_DIR/core/cache/huggingface/hub
-TRANSFORMERS_CACHE=$INSTALL_DIR/core/cache/huggingface/hub
+TORCH_HOME=$INSTALL_DIR/core/models/torch
+HF_HOME=$INSTALL_DIR/core/models
 XDG_CACHE_HOME=$INSTALL_DIR/core/cache
 EOF
 
@@ -795,7 +837,7 @@ if [ "$GPU_TYPE" = "AMD" ]; then
     echo "HSA_OVERRIDE_GFX_VERSION=11.0.0" >> "$INSTALL_DIR/core/.env.cache"
 fi
 
-log_success "Изоляция кэшей настроена"
+log_success "Изоляция путей настроена"
 echo ""
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -912,9 +954,6 @@ fi
 
 # Флаги стабильности QtWebEngine
 export QTWEBENGINE_CHROMIUM_FLAGS="$QTWEBENGINE_CHROMIUM_FLAGS --disable-features=VizDisplayCompositor"
-
-# Отладка масштабирования (раскомментируйте если нужно)
-# export QT_LOGGING_RULES="qt.qpa.xcb=debug"
 
 # -----------------------------------------------------------------------------
 # 5. Запуск основного скрипта

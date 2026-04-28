@@ -2,95 +2,6 @@ import os
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 os.environ["PYTORCH_ALLOC_CONF"]       = "expandable_segments:True"
 
-# ── AppImage: определяем writable MODELS_DIR ─────────────────────────────
-def _resolve_models_dir():
-    """
-    Если FK_MODELS_DIR указывает на read-only (AppImage squashfs),
-    переопределяем на FK_CACHE_DIR/models (writable) и копируем модели.
-    """
-    models = os.environ.get("FK_MODELS_DIR", "")
-    if not models:
-        # Dev-режим: fallback на core/models
-        return os.path.join(os.path.dirname(os.path.abspath(__file__)), "models")
-
-    # Проверяем запись
-    try:
-        test = os.path.join(models, ".write_check")
-        os.makedirs(models, exist_ok=True)
-        with open(test, "w") as f:
-            f.write("ok")
-        os.remove(test)
-        return models
-    except OSError:
-        # Read-only (AppImage) — используем writable overlay
-        cache = os.environ.get("FK_CACHE_DIR", "")
-        if not cache:
-            return models  # Нет кэша — возвращаем что есть
-        writable = os.path.join(cache, "models")
-        os.makedirs(writable, exist_ok=True)
-
-        # Копируем модели из read-only AppImage
-        _copy_models_to_writable(models, writable)
-
-        os.environ["FK_MODELS_DIR"] = writable
-        return writable
-
-
-def _copy_models_to_writable(src: str, dst: str):
-    """Копирует модели из read-only src в writable dst с проверкой размера."""
-    import shutil
-
-    MIN_MODEL_SIZE = 100 * 1024 * 1024  # 100 MB минимум
-
-    def _safe_copy(src_path: str, dst_path: str, name: str):
-        if not os.path.exists(src_path):
-            return
-        # Проверяем размер — если файл уже есть и достаточно большой, пропускаем
-        if os.path.exists(dst_path):
-            dst_size = os.path.getsize(dst_path)
-            if dst_size >= MIN_MODEL_SIZE:
-                return  # Файл OK
-            log.warning("   ⚠️  %s слишком мал (%.1f MB) — перезаписываю",
-                        name, dst_size / (1024*1024))
-            os.remove(dst_path)
-        try:
-            os.makedirs(os.path.dirname(dst_path), exist_ok=True)
-            shutil.copy2(src_path, dst_path)
-            new_size = os.path.getsize(dst_path)
-            log.info("   ✅ %s скопирована (%.1f MB)", name, new_size / (1024*1024))
-        except OSError:
-            pass  # Модель может загрузиться из интернета
-
-    # MDX23C vocal separation model
-    mdx_src = os.path.join(src, "audio_separator", "MDX23C-8KFFT-InstVoc_HQ.ckpt")
-    mdx_dst = os.path.join(dst, "audio_separator", "MDX23C-8KFFT-InstVoc_HQ.ckpt")
-    _safe_copy(mdx_src, mdx_dst, "MDX23C")
-
-    # YAML конфигурация модели (обязательна для audio-separator)
-    yaml_src = os.path.join(src, "audio_separator", "MDX23C-8KFFT-InstVoc_HQ.yaml")
-    yaml_dst = os.path.join(dst, "audio_separator", "MDX23C-8KFFT-InstVoc_HQ.yaml")
-    if os.path.exists(yaml_src) and not os.path.exists(yaml_dst):
-        try:
-            os.makedirs(os.path.dirname(yaml_dst), exist_ok=True)
-            shutil.copy2(yaml_src, yaml_dst)
-        except OSError:
-            pass
-
-    # download_checks.json — список моделей для валидации (офлайн)
-    checks_src = os.path.join(src, "audio_separator", "download_checks.json")
-    checks_dst = os.path.join(dst, "audio_separator", "download_checks.json")
-    if os.path.exists(checks_src) and not os.path.exists(checks_dst):
-        try:
-            os.makedirs(os.path.dirname(checks_dst), exist_ok=True)
-            shutil.copy2(checks_src, checks_dst)
-        except OSError:
-            pass
-
-    # Whisper модель
-    whisper_src = os.path.join(src, "whisper", "medium.pt")
-    whisper_dst = os.path.join(dst, "whisper", "medium.pt")
-    _safe_copy(whisper_src, whisper_dst, "Whisper medium")
-
 import subprocess
 import re
 import json
@@ -544,21 +455,33 @@ def repair_all_library_meta(library_dir: str, db_path: str = ""):
     log.info("🔧 Ремонт _library.json: обновлено %d файлов, удалено %d _meta.json за %.1fс",
              repaired, removed_meta, elapsed)
 
-BASE_DIR    = os.path.dirname(os.path.abspath(__file__))
-MODELS_DIR  = _resolve_models_dir()
-WHISPER_DIR = os.path.join(MODELS_DIR, "whisper")
+# ──────────────────────────────────────────────────────────────────────────────
+# --- СТРОГАЯ ПОРТАТИВНОСТЬ ПУТЕЙ ---
+# ──────────────────────────────────────────────────────────────────────────────
+BASE_DIR      = os.path.dirname(os.path.abspath(__file__))
+MODELS_DIR    = os.path.join(BASE_DIR, "models")
+WHISPER_DIR   = os.path.join(MODELS_DIR, "whisper")
+SEPARATOR_DIR = os.path.join(MODELS_DIR, "audio_separator")
+TORCH_DIR     = os.path.join(MODELS_DIR, "torch")
 
-# Безопасное создание директорий (AppImage: MODELS_DIR может быть read-only fallback)
-try:
-    os.makedirs(MODELS_DIR,  exist_ok=True)
-    os.makedirs(WHISPER_DIR, exist_ok=True)
-except OSError:
-    pass  # В AppImage models уже созданы bootstrap'ом
+# Жестко отключаем любые сетевые запросы у HuggingFace
+os.environ["HF_HUB_OFFLINE"] = "1"
+os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
+
+# Направляем системные кэши библиотек строго в портативную папку models
+os.environ["HF_HOME"] = MODELS_DIR
+os.environ["TORCH_HOME"] = TORCH_DIR
+
+# Безопасное создание директорий
+os.makedirs(MODELS_DIR,  exist_ok=True)
+os.makedirs(WHISPER_DIR, exist_ok=True)
+os.makedirs(SEPARATOR_DIR, exist_ok=True)
+os.makedirs(TORCH_DIR, exist_ok=True)
 
 load_dotenv()
 
 # ==============================================================================
-# 🚀 УМНЫЙ РОУТИНГ МОДЕЛЕЙ И ОПТИМИЗАЦИЯ ЖЕЛЕЗА (Замена старых патчей)
+# 🚀 УМНЫЙ РОУТИНГ МОДЕЛЕЙ И ОПТИМИЗАЦИЯ ЖЕЛЕЗА
 # ==============================================================================
 try:
     import stable_whisper
@@ -579,8 +502,6 @@ try:
     os.environ["OMP_NUM_THREADS"] = cores_str
     os.environ["MKL_NUM_THREADS"] = cores_str
     os.environ["OPENBLAS_NUM_THREADS"] = cores_str
-    os.environ["HF_HUB_OFFLINE"] = "1"
-    os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
 
     # 3. Перехватываем загрузку Whisper для автоматического переключения
     if not hasattr(stable_whisper, '_fk_patched'):
@@ -593,46 +514,22 @@ try:
             local_fw_small = os.path.join(WHISPER_DIR, 'faster-whisper-small')
             local_medium = os.path.join(WHISPER_DIR, 'medium.pt')
 
-            # --- ТЕНЗОР-ТЕСТ ВИДЕОКАРТЫ ---
+            # 1. Если скачана medium (установщик проверил железо)
             import torch as _t
-            cuda_works = False
-            if _t.cuda.is_available():
-                try:
-                    # Пытаемся закинуть микро-данные в видеокарту. 
-                    # Старая карта NVIDIA (архитектура < 5.0) здесь выдаст ошибку!
-                    _t.zeros(1).to('cuda')
-                    cuda_works = True
-                except Exception:
-                    pass
-            # ------------------------------
+            if os.path.exists(local_medium) and _t.cuda.is_available():
+                log.info("🚀 Запуск тяжелой модели Whisper (CUDA/ROCm Mode)...")
+                return stable_whisper._orig_load_model(local_medium, **kwargs)
 
-            # 1. Если скачан small (Аппаратный фолбэк сработал еще на этапе установки)
+            # 2. Если скачан small (аппаратный фолбэк сработал еще на этапе установки)
             if os.path.exists(local_fw_small) and os.path.exists(os.path.join(local_fw_small, "model.bin")):
                 log.info(f"🚀 [Hardware Boost] Активирован легкий Faster-Whisper (CPU Mode, Ядер: {cores_int})...")
                 return stable_whisper.load_faster_whisper(
                     local_fw_small, device='cpu', compute_type='int8', cpu_threads=cores_int, local_files_only=True
                 )
-            
-            # 2. Если скачана medium (NVIDIA), НО видеокарта слишком старая (не прошла тензор-тест)
-            elif os.path.exists(local_medium) and not cuda_works:
-                log.warning("⚠️ ВНИМАНИЕ: Видеокарта устарела (не поддерживает современный CUDA).")
-                log.warning("⚠️ Выполняется аварийный переход на легкую модель Faster-Whisper (small, CPU)...")
-                # Временно разрешаем интернет для скачивания легкой модели на лету
-                os.environ["HF_HUB_OFFLINE"] = "0"
-                return stable_whisper.load_faster_whisper(
-                    "small", device='cpu', compute_type='int8', cpu_threads=cores_int, local_files_only=False
-                )
-
-            # 3. Нормальный запуск на современной NVIDIA / AMD ROCm
-            elif os.path.exists(local_medium) and cuda_works:
-                log.info("🚀 Запуск тяжелой модели Whisper (CUDA/ROCm Mode)...")
-                return stable_whisper._orig_load_model(local_medium, **kwargs)
                 
-            # 4. Fallback (вообще ничего нет)
-            else:
-                log.warning("⚠️ Локальные модели Whisper не найдены! Попытка онлайн-загрузки...")
-                os.environ["HF_HUB_OFFLINE"] = "0"
-                return stable_whisper._orig_load_model(name, **kwargs)
+            # 3. Fallback (ошибка установки)
+            log.warning("⚠️ Локальные портативные модели Whisper не найдены!")
+            return stable_whisper._orig_load_model(name, **kwargs)
 
         stable_whisper.load_model = _smart_load_model
         stable_whisper._fk_patched = True
@@ -731,8 +628,6 @@ def separate_vocals(mp3_path: str) -> tuple[str, str]:
     vocals_final       = os.path.join(basedir, f"{basename}_(Vocals).mp3")
     instrumental_final = os.path.join(basedir, f"{basename}_(Instrumental).mp3")
 
-    sep_model_dir = os.path.join(MODELS_DIR, "audio_separator")
-
     # Класс-перехватчик для логов audio-separator
     class LogCapture(logging.Handler):
         def __init__(self):
@@ -750,8 +645,6 @@ def separate_vocals(mp3_path: str) -> tuple[str, str]:
         
         # Настраиваем перехват логов только для этой библиотеки
         logger_name = "audio_separator" 
-        # Иногда библиотека логируется как root или под другими именами, но обычно это audio_separator
-        # Также ловим логи от underlying библиотек, если они пробрасываются
         target_loggers = [logging.getLogger("audio_separator"), logging.getLogger("separator")]
         
         capture_handler = LogCapture()
@@ -763,7 +656,7 @@ def separate_vocals(mp3_path: str) -> tuple[str, str]:
 
         try:
             separator = Separator(
-                model_file_dir=sep_model_dir,
+                model_file_dir=SEPARATOR_DIR,  # Строго локальный путь
                 output_dir=basedir,
                 output_format="MP3",
                 normalization_threshold=0.9,
@@ -780,7 +673,7 @@ def separate_vocals(mp3_path: str) -> tuple[str, str]:
                "Hardware acceleration not available" in full_log_text:
                 cpu_detected = True
             
-            # Дополнительная проверка через атрибуты объекта (если библиотека их экспонирует)
+            # Дополнительная проверка через атрибуты объекта
             if not cpu_detected and not force_cpu_fallback:
                 dev = getattr(separator, 'model_device', None)
                 if dev is None and hasattr(separator, 'model'):
@@ -793,7 +686,7 @@ def separate_vocals(mp3_path: str) -> tuple[str, str]:
                         cpu_detected = True
 
             if cpu_detected and not force_cpu_fallback:
-                log.warning("   ⚠️  MDX23C не смогла использовать GPU (детектировано в логах/атрибутах) — переходим к Kim_Vocal_1...")
+                log.warning("   ⚠️  MDX23C не смогла использовать GPU (детектировано в логах) — переходим к Kim_Vocal_1...")
                 del separator
                 gc.collect()
                 return None  # Триггер фолбэка
@@ -840,8 +733,10 @@ def separate_vocals(mp3_path: str) -> tuple[str, str]:
                     lg.removeHandler(capture_handler)
 
     # ── Попытка 1: MDX23C GPU ──────────────────────────────────────────
-    mdx_model = os.path.join(sep_model_dir, "MDX23C-8KFFT-InstVoc_HQ.ckpt")
-    if os.path.exists(mdx_model):
+    mdx_model_file = "MDX23C-8KFFT-InstVoc_HQ.ckpt"
+    mdx_model_path = os.path.join(SEPARATOR_DIR, mdx_model_file)
+    
+    if os.path.exists(mdx_model_path):
         try:
             device_name = "GPU"
             try:
@@ -852,7 +747,7 @@ def separate_vocals(mp3_path: str) -> tuple[str, str]:
                 pass
             log.info("Запуск сепарации аудио (%s, модель MDX23C)...", device_name)
             
-            result = _run_separation("MDX23C-8KFFT-InstVoc_HQ.ckpt", "MDX23C (офлайн)")
+            result = _run_separation(mdx_model_file, "MDX23C (офлайн)")
             
             if result is not None:
                 return result  # Успешная сепарация на GPU
@@ -863,25 +758,17 @@ def separate_vocals(mp3_path: str) -> tuple[str, str]:
         except Exception as e:
             # Если старая видеокарта (нет нужных ядер) или не хватило видеопамяти
             log.warning("   ⚠️  MDX23C сбой GPU (%s...) — аварийный переход на легкую Kim_Vocal_1 (CPU)...", str(e)[:100].replace('\n', ' '))
-            pass # Не останавливаем программу, идём ниже к загрузке Kim_Vocal_1
-    else:
-        log.info("   📥 MDX23C модель не найдена — загрузка из интернета...")
-
-    # ── Попытка 2: Kim_Vocal_1 ONNX CPU (fallback) ─────────────────────
-    kim_model = os.path.join(sep_model_dir, "Kim_Vocal_1.onnx")
-    if os.path.exists(kim_model):
-        log.info("Запуск сепарации аудио (CPU, модель Kim_Vocal_1 ONNX — fallback)...")
-        return _run_separation("Kim_Vocal_1.onnx", "Kim_Vocal_1 ONNX (CPU fallback)", force_cpu_fallback=True)
-    else:
-        log.info("   📥 Kim_Vocal_1 ONNX не найдена — загрузка из интернета...")
-        # Последняя попытка: загрузить Kim_Vocal_1 из интернета
-        try:
-            log.info("Запуск сепарации аудио (CPU, модель Kim_Vocal_1 ONNX — скачивание)...")
-            return _run_separation("Kim_Vocal_1.onnx", "Kim_Vocal_1 ONNX (download + CPU)", force_cpu_fallback=True)
-        except Exception:
             pass
 
-    raise RuntimeError("Сепарация не удалась: ни MDX23C GPU, ни Kim_Vocal_1 CPU не сработали.")
+    # ── Попытка 2: Kim_Vocal_1 ONNX CPU (fallback) ─────────────────────
+    kim_model_file = "Kim_Vocal_1.onnx"
+    kim_model_path = os.path.join(SEPARATOR_DIR, kim_model_file)
+    
+    if os.path.exists(kim_model_path):
+        log.info("Запуск сепарации аудио (CPU, модель Kim_Vocal_1 ONNX — fallback)...")
+        return _run_separation(kim_model_file, "Kim_Vocal_1 ONNX (CPU fallback)", force_cpu_fallback=True)
+
+    raise RuntimeError("Сепарация не удалась: нужные модели не найдены в портативной папке установки.")
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Метаданные (mutagen: artist, title, lyrics, cover)
@@ -1116,9 +1003,6 @@ def fetch_lyrics(artist: str, title: str, base_path: str) -> tuple[str | None, s
     log.info("📂 Пытаемся извлечь обложку и текст из тегов файла...")
 
     # Находим исходный файл — он мог быть удалён после конвертации в MP3
-    # Ищем по base_name все возможные расширения.
-    # ВАЖНО: .mp3 ищем ПОСЛЕДНИМ — если оригинал был M4A/FLAC и уже сконвертирован,
-    # то MP3 — это конвертированная копия без lyrics. Нужно найти оригинал.
     source_file = None
     for ext in (".flac", ".m4a", ".alac", ".wav", ".ogg", ".aac", ".wma", ".mp3"):
         candidate = f"{base_path}{ext}"
