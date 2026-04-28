@@ -84,6 +84,17 @@ els.vInst.addEventListener("input",      updateVolumes);
 els.vVoc.addEventListener("input",       updateVolumes);
 els.fsBtn.addEventListener("click",      toggleFS);
 
+// Инициализация AudioContext по первому касанию (важно для Android) ──
+document.addEventListener('pointerdown', function initOnFirstTouch() {
+    initAudioContext();
+    if (audioCtx && audioCtx.state === 'suspended') {
+        audioCtx.resume();
+    }
+    // Удаляем слушатель после первого срабатывания, он больше не нужен
+    document.removeEventListener('pointerdown', initOnFirstTouch);
+}, { once: true });
+// ─────────────────────────────────────────────────────────────────────────────
+
 // ── Файловый диалог: вызываем yad через pywebview API ──────────────────────
 // yad работает 100% офлайн, не зависит от Qt/NFS
 const uploadLabel = document.querySelector('label[for="audio-files"]');
@@ -749,6 +760,8 @@ function initAudioContext() {
         const AudioContextClass = window.AudioContext || window.webkitAudioContext;
         audioCtx = new AudioContextClass();
         
+        if (audioCtx.state === 'suspended') audioCtx.resume();
+        
         // Перехватываем потоки из тегов
         const srcInst = audioCtx.createMediaElementSource(instAudio);
         const srcVoc = audioCtx.createMediaElementSource(vocAudio);
@@ -775,11 +788,14 @@ function initAudioContext() {
 async function togglePlay() {
     if (!instAudio.src) return;
 
-    // Инициализируем и будим микшер по клику пользователя (Autoplay Policy)
+    // Инициализируем и будим микшер
     initAudioContext();
-    if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+    if (audioCtx && audioCtx.state === 'suspended') {
+        await audioCtx.resume(); // Ждем пробуждения аудио-чипа
+    }
 
     if (instAudio.paused) {
+        // Жесткая синхронизация времени перед самым стартом
         vocAudio.currentTime = instAudio.currentTime;
         try {
             await Promise.all([instAudio.play(), vocAudio.play()]);
@@ -954,15 +970,28 @@ function loop() {
 // Громкость и UI
 // ─────────────────────────────────────────────────────────────────────────────
 function updateVolumes() {
+    // Если пользователь дергает ползунок, ПРИНУДИТЕЛЬНО создаем микшер (особенно важно для Android)
+    if (!isAudioRouted) {
+        initAudioContext();
+    }
+    if (audioCtx && audioCtx.state === 'suspended') {
+        audioCtx.resume();
+    }
+
     const vInstVal = parseFloat(els.vInst.value);
     const vVocVal = parseFloat(els.vVoc.value);
 
     if (isAudioRouted && gainInst && gainVoc) {
-        // Аппаратная регулировка через усилители Web Audio API
+        // Аппаратная регулировка (работает на Android и Десктопе)
         gainInst.gain.value = vInstVal;
         gainVoc.gain.value = vVocVal;
+        
+        // ВАЖНО: Если микшер перехватил звук, тегам ставим громкость 100%.
+        // Иначе на Десктопе будет двойное затухание (0.5 * 0.5 = 0.25 громкости)
+        instAudio.volume = 1;
+        vocAudio.volume  = 1;
     } else {
-        // Дефолтная регулировка (если трек еще ни разу не включался)
+        // Запасной вариант для Десктопа (если микшер почему-то не создался)
         instAudio.volume = vInstVal;
         vocAudio.volume  = vVocVal;
     }
