@@ -7,6 +7,181 @@ from app_logger import get_logger
 
 log = get_logger("aligner_orchestra")
 
+# ==============================================================================
+# БЛОК ИНИЦИАЛИЗАЦИИ NUMBA (С защитой от Android/Mock)
+# ==============================================================================
+NUMBA_AVAILABLE = False
+try:
+    import numpy as np
+    from numba import njit
+    
+    # Жесткая защита от Chaquopy (Android) и виртуальных заглушек
+    if type(np).__name__ == "MagicMock" or type(njit).__name__ == "MagicMock":
+        raise ImportError("Обнаружены Mock-библиотеки (Android среда). Numba отключена.")
+
+    @njit(fastmath=True)
+    def _numba_dp_solver(c_starts, c_ends, c_sims, c_cidx, canon_vowels, canon_lbreaks):
+        num_cand = len(c_starts)
+        dp = np.full(num_cand, -np.inf)
+        parent = np.full(num_cand, -1, dtype=np.int32)
+        
+        for i in range(num_cand):
+            dp[i] = c_sims[i]
+
+        for i in range(1, num_cand):
+            best_val = dp[i]
+            best_p = -1
+            for p in range(i):
+                if c_cidx[i] <= c_cidx[p]:
+                    continue
+                if c_starts[i] < c_ends[p]:
+                    continue
+                
+                gap = c_starts[i] - c_ends[p]
+                if gap < -0.1 or gap > 30.0:
+                    continue
+                
+                is_sane = True
+                if c_cidx[i] == c_cidx[p] + 1:
+                    is_same_line = not canon_lbreaks[c_cidx[p]]
+                    if is_same_line and gap > 2.5:
+                        is_sane = False
+                else:
+                    gap_vowels = 0
+                    for v_idx in range(c_cidx[p] + 1, c_cidx[i]):
+                        gap_vowels += canon_vowels[v_idx]
+                    
+                    if gap > 0:
+                        vps = gap_vowels / gap
+                        if vps < 0.5:
+                            is_sane = False
+                    else:
+                        is_sane = False
+                
+                if is_sane:
+                    val = dp[p] + c_sims[i]
+                    if val > best_val:
+                        best_val = val
+                        best_p = p
+                        
+            dp[i] = best_val
+            parent[i] = best_p
+            
+        max_idx = -1
+        max_val = -np.inf
+        for i in range(num_cand):
+            if dp[i] > max_val:
+                max_val = dp[i]
+                max_idx = i
+                
+        return parent, max_idx, max_val
+
+    NUMBA_AVAILABLE = True
+except ImportError as ie:
+    # Тихий пропуск, это нормально для Android
+    pass
+except Exception as e:
+    log.warning(f"⚠️ Ошибка инициализации Numba: {e}. Оркестратор будет работать в режиме Python.")
+# ==============================================================================
+
+
+def _solve_dp_path(candidates: list, active_canon: list) -> list:
+    """
+    Единая функция динамического программирования для поиска оптимального пути.
+    Автоматически переключается между C++ (Numba) и чистым Python (Fallback).
+    """
+    num_cand = len(candidates)
+    if num_cand == 0:
+        return []
+
+    # --- ВЕТКА 1: БЫСТРЫЙ ПУТЬ (Numba / C++) ---
+    if NUMBA_AVAILABLE:
+        try:
+            c_starts = np.array([c.get("start", 0.0) for c in candidates], dtype=np.float64)
+            c_ends = np.array([c.get("end", 0.0) for c in candidates], dtype=np.float64)
+            c_sims = np.array([c.get("sim", 0.0) for c in candidates], dtype=np.float64)
+            c_cidx = np.array([c.get("c_idx", 0) for c in candidates], dtype=np.int32)
+            
+            def _count_vowels(text):
+                return sum(1 for char in str(text).lower() if char in "aeiouyаеёиоуыэюя")
+                
+            canon_vowels = np.array([_count_vowels(w.get("clean_text", w.get("word", ""))) for w in active_canon], dtype=np.int32)
+            canon_lbreaks = np.array([bool(w.get("line_break", False)) for w in active_canon], dtype=np.bool_)
+            
+            parent, max_idx, max_val = _numba_dp_solver(c_starts, c_ends, c_sims, c_cidx, canon_vowels, canon_lbreaks)
+            
+            raw_sequence = []
+            curr_idx = max_idx
+            while curr_idx != -1:
+                raw_sequence.append(candidates[curr_idx])
+                curr_idx = parent[curr_idx]
+            
+            raw_sequence.reverse()
+            return raw_sequence
+        except Exception as e:
+            log.error(f"⚠️ Сбой Numba-акселерации ({e}). Экстренный переход на безопасный Python-цикл.")
+            # Если упало (например, из-за битых данных), проваливаемся в Ветку 2
+
+    # --- ВЕТКА 2: МЕДЛЕННЫЙ ПУТЬ (Чистый Python / Fallback) ---
+    dp = [c["sim"] for c in candidates]
+    parent = [-1] * num_cand
+
+    MAX_GAP = 30.0
+    start_times = [c["start"] for c in candidates]
+
+    for i in range(1, num_cand):
+        best_score = dp[i]
+        best_p = -1
+        curr = candidates[i]
+
+        min_start = curr["start"] - MAX_GAP
+        j_min = bisect_right(start_times, min_start)
+
+        for j in range(i - 1, j_min - 1, -1):
+            prev = candidates[j]
+
+            if curr["c_idx"] <= prev["c_idx"]:
+                continue
+
+            dur = curr["start"] - prev["end"]
+            if dur < -0.1:
+                continue
+
+            if dur > MAX_GAP:
+                continue
+
+            is_sane = False
+
+            if curr["c_idx"] == prev["c_idx"] + 1:
+                is_same_line = not active_canon[prev["c_idx"]]["line_break"]
+                if is_same_line and dur > 2.5:
+                    is_sane = False
+                else:
+                    is_sane = True
+            else:
+                is_sane, _ = check_sdr_sanity(active_canon, prev["c_idx"] + 1, curr["c_idx"] - 1, dur, False)
+
+            if is_sane:
+                score = dp[j] + curr["sim"]
+                if score > best_score:
+                    best_score = score
+                    best_p = j
+
+        dp[i] = best_score
+        parent[i] = best_p
+
+    max_idx = dp.index(max(dp))
+    curr_idx = max_idx
+    raw_sequence = []
+
+    while curr_idx != -1:
+        raw_sequence.append(candidates[curr_idx])
+        curr_idx = parent[curr_idx]
+
+    raw_sequence.reverse()
+    return raw_sequence
+
+
 def execute_sequence_matching(canon_words: list, heard_words: list, vad_intervals: list, audio_duration: float, start_word_index: int = 0, anchor_time: float = None) -> list:
     """
     V8.4 Elastic Cluster Alignment.
@@ -66,67 +241,10 @@ def _full_sequence_matching(canon_words: list, heard_words: list, vad_intervals:
     candidates.sort(key=lambda x: x["start"])
 
     # 2. SDR-Guard v2: Динамическое программирование пути
-    num_cand = len(candidates)
-    if num_cand == 0:
+    raw_sequence = _solve_dp_path(candidates, canon_words)
+    if not raw_sequence:
         log.warning("   ⚠️ Нет ни одного валидного совпадения текста.")
         return canon_words
-
-    dp = [c["sim"] for c in candidates]
-    parent = [-1] * num_cand
-
-    MAX_GAP = 30.0
-    start_times = [c["start"] for c in candidates]
-
-    for i in range(1, num_cand):
-        best_score = dp[i]
-        best_p = -1
-        curr = candidates[i]
-
-        min_start = curr["start"] - MAX_GAP
-        j_min = bisect_right(start_times, min_start)
-
-        for j in range(i - 1, j_min - 1, -1):
-            prev = candidates[j]
-
-            if curr["c_idx"] <= prev["c_idx"]:
-                continue
-
-            dur = curr["start"] - prev["end"]
-            if dur < -0.1:
-                continue
-
-            if dur > MAX_GAP:
-                continue
-
-            is_sane = False
-
-            if curr["c_idx"] == prev["c_idx"] + 1:
-                is_same_line = not canon_words[prev["c_idx"]]["line_break"]
-                if is_same_line and dur > 2.5:
-                    is_sane = False
-                else:
-                    is_sane = True
-            else:
-                is_sane, _ = check_sdr_sanity(canon_words, prev["c_idx"] + 1, curr["c_idx"] - 1, dur, False)
-
-            if is_sane:
-                score = dp[j] + curr["sim"]
-                if score > best_score:
-                    best_score = score
-                    best_p = j
-
-        dp[i] = best_score
-        parent[i] = best_p
-
-    max_idx = dp.index(max(dp))
-    curr_idx = max_idx
-    raw_sequence = []
-
-    while curr_idx != -1:
-        raw_sequence.append(candidates[curr_idx])
-        curr_idx = parent[curr_idx]
-
-    raw_sequence.reverse()
 
     # 3. V8.4 Cluster Filter
     clusters = []
@@ -237,69 +355,14 @@ def _partial_sequence_matching(canon_words: list, heard_words: list, vad_interva
                      tc["sim"], tc["start"])
 
     # 2. SDR-Guard v2: Динамическое программирование пути
-    num_cand = len(candidates)
-    if num_cand == 0:
+    raw_sequence = _solve_dp_path(candidates, partial_canon)
+    if not raw_sequence:
         log.warning("   ⚠️ Нет ни одного валидного совпадения текста.")
         return canon_words
 
-    dp = [c["sim"] for c in candidates]
-    parent = [-1] * num_cand
-
-    MAX_GAP = 30.0
-    start_times = [c["start"] for c in candidates]
-
-    for i in range(1, num_cand):
-        best_score = dp[i]
-        best_p = -1
-        curr = candidates[i]
-
-        min_start = curr["start"] - MAX_GAP
-        j_min = bisect_right(start_times, min_start)
-
-        for j in range(i - 1, j_min - 1, -1):
-            prev = candidates[j]
-
-            if curr["c_idx"] <= prev["c_idx"]:
-                continue
-
-            dur = curr["start"] - prev["end"]
-            if dur < -0.1:
-                continue
-
-            if dur > MAX_GAP:
-                continue
-
-            is_sane = False
-
-            if curr["c_idx"] == prev["c_idx"] + 1:
-                is_same_line = not partial_canon[prev["c_idx"]]["line_break"]
-                if is_same_line and dur > 2.5:
-                    is_sane = False
-                else:
-                    is_sane = True
-            else:
-                is_sane, _ = check_sdr_sanity(partial_canon, prev["c_idx"] + 1, curr["c_idx"] - 1, dur, False)
-
-            if is_sane:
-                score = dp[j] + curr["sim"]
-                if score > best_score:
-                    best_score = score
-                    best_p = j
-
-        dp[i] = best_score
-        parent[i] = best_p
-
-    max_idx = dp.index(max(dp))
-    curr_idx = max_idx
-    raw_sequence = []
-
-    while curr_idx != -1:
-        raw_sequence.append(candidates[curr_idx])
-        curr_idx = parent[curr_idx]
-
-    raw_sequence.reverse()
-
-    log.info("   🛤️ DP нашёл путь: %d якорей, score=%d", len(raw_sequence), dp[max_idx])
+    path_score = sum(match["sim"] for match in raw_sequence)
+    log.info("   🛤️ DP нашёл путь: %d якорей, score ≈ %d", len(raw_sequence), path_score)
+    
     # Покажем путь
     for i, match in enumerate(raw_sequence[:8]):
         log.info("      path[%d]: canon[%d]«%s» ← heard «%s» t=%.2fс sim=%d",
@@ -393,7 +456,6 @@ def _partial_sequence_matching(canon_words: list, heard_words: list, vad_interva
     log.info("🧠 [Orchestra] Partial Sequence Matching завершен.")
     log.info("=" * 50)
     return canon_words  # Возвращаем полный массив (старые + новые тайминги)
-
 
 def _elastic_vad_assembly(words: list, vad_intervals: list, audio_duration: float, anchor_time: float = None):
     """
