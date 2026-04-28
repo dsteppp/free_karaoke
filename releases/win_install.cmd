@@ -365,6 +365,7 @@ stable-ts>=2.17.0
 faster-whisper>=1.2.1
 tiktoken>=0.7.0
 ctranslate2>=4.7.0
+faster-whisper>=1.0.0
 tokenizers>=0.22.0
 audio-separator>=0.41.0
 librosa>=0.11.0
@@ -527,18 +528,31 @@ psutil>=6.0.0
     
     $pySetup = @"
 import os
+import sys
+import logging
+
+# 1. Silero VAD (PyTorch Hub - нужен для stable-ts на видеокартах)
+try:
+    import torch
+    torch.hub.load('snakers4/silero-vad', 'silero_vad', force_reload=False, trust_repo=True)
+    print('   ✅ Silero VAD (PyTorch Hub) успешно закэширован')
+except Exception as e:
+    print('   ⚠️ Ошибка загрузки Silero VAD (PyTorch Hub):', e)
+
+# 2. Silero VAD (для faster-whisper на процессорах)
 try:
     from faster_whisper.vad import get_vad_model
     get_vad_model()
-    print('   ✅ Silero VAD успешно закэширован в портативную папку')
+    print('   ✅ Silero VAD (faster-whisper) успешно закэширован')
 except Exception as e:
-    print('   ⚠️ Ошибка загрузки Silero VAD:', e)
+    print('   ⚠️ Ошибка загрузки Silero VAD (faster-whisper):', e)
 
+# 3. YAML-конфиг для Audio Separator
 try:
     from audio_separator.separator import Separator
-    import logging
     sep_dir = r'$InstallDir\core\models\audio_separator'.replace('\\', '/')
     sep = Separator(model_file_dir=sep_dir, log_level=logging.ERROR)
+    
     ckpt_path = os.path.join(sep_dir, 'MDX23C-8KFFT-InstVoc_HQ.ckpt')
     if os.path.exists(ckpt_path):
         sep.download_model_files('MDX23C-8KFFT-InstVoc_HQ.ckpt')

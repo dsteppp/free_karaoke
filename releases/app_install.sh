@@ -520,6 +520,7 @@ openai-whisper>=20240930
 stable-ts>=2.17.0
 tiktoken>=0.7.0
 ctranslate2>=4.7.0
+faster-whisper>=1.0.0
 tokenizers>=0.22.0
 audio-separator>=0.41.0
 librosa>=0.11.0
@@ -625,20 +626,12 @@ source "$VENV_DIR/bin/activate"
 
 log_step "Установка Python-пакетов"
 echo ""
-log_info "Проверяем наличие ключевых пакетов..."
-
-PACKAGES_INSTALLED=false
-if python -c "import torch; import torchaudio; import lyricsgenius; import fastapi" 2>/dev/null; then
-    PACKAGES_INSTALLED=true
-    log_success "Python-пакеты уже установлены. Пропускаем установку."
-else
-    log_info "Устанавливаем пакеты через uv (это может занять несколько минут)..."
-    if ! uv pip install --index-strategy unsafe-best-match -r "$INSTALL_DIR/core/requirements.txt"; then
-        log_error "Ошибка установки Python-пакетов!"
-        exit 1
-    fi
-    log_success "Все пакеты установлены"
+log_info "Синхронизируем Python-пакеты через uv..."
+if ! uv pip install --index-strategy unsafe-best-match -r "$INSTALL_DIR/core/requirements.txt"; then
+    log_error "Ошибка установки Python-пакетов!"
+    exit 1
 fi
+log_success "Пакеты успешно установлены/обновлены"
 echo ""
 
 # ==============================================================================
@@ -745,19 +738,28 @@ export HF_HOME="$INSTALL_DIR/core/models"
 python -c "
 import os
 import sys
+import logging
 
-# 1. Silero VAD (для Whisper)
+# 1. Silero VAD (PyTorch Hub - нужен для stable-ts на видеокартах)
+try:
+    import torch
+    # trust_repo=True нужен для новых версий PyTorch
+    torch.hub.load('snakers4/silero-vad', 'silero_vad', force_reload=False, trust_repo=True)
+    print('   ✅ Silero VAD (PyTorch Hub) успешно закэширован')
+except Exception as e:
+    print('   ⚠️ Ошибка загрузки Silero VAD (PyTorch Hub):', e)
+
+# 2. Silero VAD (для faster-whisper на процессорах)
 try:
     from faster_whisper.vad import get_vad_model
     get_vad_model()
-    print('   ✅ Silero VAD успешно закэширован в портативную папку')
+    print('   ✅ Silero VAD (faster-whisper) успешно закэширован')
 except Exception as e:
-    print('   ⚠️ Ошибка загрузки Silero VAD:', e)
+    print('   ⚠️ Ошибка загрузки Silero VAD (faster-whisper):', e)
 
-# 2. YAML-конфиг для Audio Separator
+# 3. YAML-конфиг для Audio Separator
 try:
     from audio_separator.separator import Separator
-    import logging
     sep_dir = '${INSTALL_DIR}/core/models/audio_separator'
     sep = Separator(model_file_dir=sep_dir, log_level=logging.ERROR)
     
