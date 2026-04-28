@@ -5,6 +5,12 @@ let allTracks = [];
 const instAudio = new Audio();
 const vocAudio  = new Audio();
 
+// --- WEB AUDIO API (Аппаратный микшер) ---
+let audioCtx = null;
+let gainInst = null;
+let gainVoc = null;
+let isAudioRouted = false;
+
 // Экспортируем в глобальную область видимости для editor.js
 window.instAudio = instAudio;
 window.vocAudio = vocAudio;
@@ -223,6 +229,9 @@ els.seek.addEventListener("input", () => {
 });
 
 els.seek.addEventListener("change", () => {
+    initAudioContext();
+    if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+
     const val = parseFloat(els.seek.value);
     instAudio.currentTime = val;
     vocAudio.currentTime = val;
@@ -261,6 +270,9 @@ els.lDisp.addEventListener("click", (e) => {
 
     const idx = parseInt(target.dataset.index, 10);
     if (!isNaN(idx) && window.lyricsData && window.lyricsData[idx]) {
+        initAudioContext();
+        if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+
         const t = window.lyricsData[idx].start;
         instAudio.currentTime = t;
         vocAudio.currentTime = t;
@@ -731,8 +743,41 @@ window.scrollToActiveLine = scrollToActiveLine; // Доступен из editor.
 // ─────────────────────────────────────────────────────────────────────────────
 // ПЛЕЕР И АНИМАЦИЯ
 // ─────────────────────────────────────────────────────────────────────────────
+function initAudioContext() {
+    if (isAudioRouted) return;
+    try {
+        const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+        audioCtx = new AudioContextClass();
+        
+        // Перехватываем потоки из тегов
+        const srcInst = audioCtx.createMediaElementSource(instAudio);
+        const srcVoc = audioCtx.createMediaElementSource(vocAudio);
+        
+        // Создаем аппаратные усилители (GainNodes)
+        gainInst = audioCtx.createGain();
+        gainVoc = audioCtx.createGain();
+        
+        // Применяем текущую громкость из UI
+        gainInst.gain.value = parseFloat(els.vInst.value);
+        gainVoc.gain.value = parseFloat(els.vVoc.value);
+        
+        // Собираем цепь: Звук -> Усилитель -> Динамики
+        srcInst.connect(gainInst).connect(audioCtx.destination);
+        srcVoc.connect(gainVoc).connect(audioCtx.destination);
+        
+        isAudioRouted = true;
+        console.log("[AudioContext] Нативный аппаратный микшер инициализирован");
+    } catch (e) {
+        console.error("[AudioContext] Ошибка инициализации:", e);
+    }
+}
+
 async function togglePlay() {
     if (!instAudio.src) return;
+
+    // Инициализируем и будим микшер по клику пользователя (Autoplay Policy)
+    initAudioContext();
+    if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
 
     if (instAudio.paused) {
         vocAudio.currentTime = instAudio.currentTime;
@@ -860,6 +905,11 @@ function updateLineClasses(t) {
 function loop() {
     if (instAudio.paused && !isSeeking) return;
 
+    // Жесткая покадровая страховка рассинхрона (если браузер/ОС замедлили поток)
+    if (!instAudio.paused && !vocAudio.paused && Math.abs(instAudio.currentTime - vocAudio.currentTime) > 0.05) {
+        vocAudio.currentTime = instAudio.currentTime;
+    }
+
     const t = instAudio.currentTime;
 
     if (!isSeeking) {
@@ -904,10 +954,21 @@ function loop() {
 // Громкость и UI
 // ─────────────────────────────────────────────────────────────────────────────
 function updateVolumes() {
-    instAudio.volume = parseFloat(els.vInst.value);
-    vocAudio.volume  = parseFloat(els.vVoc.value);
-    els.lInst.innerText = `${Math.round(instAudio.volume * 100)}%`;
-    els.lVoc.innerText  = `${Math.round(vocAudio.volume  * 100)}%`;
+    const vInstVal = parseFloat(els.vInst.value);
+    const vVocVal = parseFloat(els.vVoc.value);
+
+    if (isAudioRouted && gainInst && gainVoc) {
+        // Аппаратная регулировка через усилители Web Audio API
+        gainInst.gain.value = vInstVal;
+        gainVoc.gain.value = vVocVal;
+    } else {
+        // Дефолтная регулировка (если трек еще ни разу не включался)
+        instAudio.volume = vInstVal;
+        vocAudio.volume  = vVocVal;
+    }
+
+    els.lInst.innerText = `${Math.round(vInstVal * 100)}%`;
+    els.lVoc.innerText  = `${Math.round(vVocVal * 100)}%`;
     syncSliders();
 }
 
