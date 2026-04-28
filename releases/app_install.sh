@@ -598,6 +598,9 @@ echo ""
 log_step "Создание виртуального окружения Python"
 echo ""
 
+# ВАЖНО: Заставляем uv скачивать пакеты строго в папку программы!
+export UV_CACHE_DIR="$INSTALL_DIR/core/cache/uv"
+
 VENV_DIR="$INSTALL_DIR/.venv"
 
 if [ -d "$VENV_DIR" ] && [ -f "$VENV_DIR/bin/activate" ]; then
