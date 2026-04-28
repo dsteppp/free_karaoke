@@ -589,27 +589,49 @@ try:
         def _smart_load_model(*args, **kwargs):
             name = args[0] if args else kwargs.get('name', 'medium')
             if str(name).endswith('.pt'): name = 'medium'
-            
+
             local_fw_small = os.path.join(WHISPER_DIR, 'faster-whisper-small')
             local_medium = os.path.join(WHISPER_DIR, 'medium.pt')
-            
-            # Если скачан small (AMD/CPU) -> принудительно CPU + int8
+
+            # --- ТЕНЗОР-ТЕСТ ВИДЕОКАРТЫ ---
+            import torch as _t
+            cuda_works = False
+            if _t.cuda.is_available():
+                try:
+                    # Пытаемся закинуть микро-данные в видеокарту. 
+                    # Старая карта NVIDIA (архитектура < 5.0) здесь выдаст ошибку!
+                    _t.zeros(1).to('cuda')
+                    cuda_works = True
+                except Exception:
+                    pass
+            # ------------------------------
+
+            # 1. Если скачан small (Аппаратный фолбэк сработал еще на этапе установки)
             if os.path.exists(local_fw_small) and os.path.exists(os.path.join(local_fw_small, "model.bin")):
                 log.info(f"🚀 [Hardware Boost] Активирован легкий Faster-Whisper (CPU Mode, Ядер: {cores_int})...")
                 return stable_whisper.load_faster_whisper(
-                    local_fw_small, 
-                    device='cpu', 
-                    compute_type='int8', 
-                    cpu_threads=cores_int, 
-                    local_files_only=True
+                    local_fw_small, device='cpu', compute_type='int8', cpu_threads=cores_int, local_files_only=True
                 )
-            # Если скачан medium (NVIDIA)
-            elif os.path.exists(local_medium):
+            
+            # 2. Если скачана medium (NVIDIA), НО видеокарта слишком старая (не прошла тензор-тест)
+            elif os.path.exists(local_medium) and not cuda_works:
+                log.warning("⚠️ ВНИМАНИЕ: Видеокарта устарела (не поддерживает современный CUDA).")
+                log.warning("⚠️ Выполняется аварийный переход на легкую модель Faster-Whisper (small, CPU)...")
+                # Временно разрешаем интернет для скачивания легкой модели на лету
+                os.environ["HF_HUB_OFFLINE"] = "0"
+                return stable_whisper.load_faster_whisper(
+                    "small", device='cpu', compute_type='int8', cpu_threads=cores_int, local_files_only=False
+                )
+
+            # 3. Нормальный запуск на современной NVIDIA / AMD ROCm
+            elif os.path.exists(local_medium) and cuda_works:
                 log.info("🚀 Запуск тяжелой модели Whisper (CUDA/ROCm Mode)...")
                 return stable_whisper._orig_load_model(local_medium, **kwargs)
-            # Fallback, если ничего не скачано
+                
+            # 4. Fallback (вообще ничего нет)
             else:
                 log.warning("⚠️ Локальные модели Whisper не найдены! Попытка онлайн-загрузки...")
+                os.environ["HF_HUB_OFFLINE"] = "0"
                 return stable_whisper._orig_load_model(name, **kwargs)
 
         stable_whisper.load_model = _smart_load_model
@@ -838,13 +860,10 @@ def separate_vocals(mp3_path: str) -> tuple[str, str]:
             # Если результат None — значит модель загрузилась на CPU, переходим к фолбэку
             log.info("   ↪ Активирован фолбэк на Kim_Vocal_1 из-за отсутствия GPU у MDX23C")
             
-        except RuntimeError as e:
-            err_msg = str(e)
-            # Детектируем HIP/ROCm ошибки
-            if "HIP" in err_msg or "rocBLAS" in err_msg or "invalid device" in err_msg.lower():
-                log.warning("   ⚠️  MDX23C GPU сбой (%s) — fallback на Kim_Vocal_1 CPU...", err_msg[:120])
-            else:
-                raise  # Не HIP ошибка — пробрасываем дальше
+        except Exception as e:
+            # Если старая видеокарта (нет нужных ядер) или не хватило видеопамяти
+            log.warning("   ⚠️  MDX23C сбой GPU (%s...) — аварийный переход на легкую Kim_Vocal_1 (CPU)...", str(e)[:100].replace('\n', ' '))
+            pass # Не останавливаем программу, идём ниже к загрузке Kim_Vocal_1
     else:
         log.info("   📥 MDX23C модель не найдена — загрузка из интернета...")
 
@@ -1165,26 +1184,21 @@ def fetch_lyrics(artist: str, title: str, base_path: str) -> tuple[str | None, s
     lib_meta = load_library_meta(base_path)
 
     if lib_meta:
-        # Восстанавливаем обложки
-        meta = {}
-        if lib_meta.get("cover"):
-            meta["cover"] = lib_meta["cover"]
-            meta["cover_genius"] = lib_meta["cover"]
-            meta["bg"] = lib_meta.get("bg", lib_meta["cover"])
-            meta["bg_genius"] = lib_meta.get("bg_genius", lib_meta["cover"])
-            log.info("   🖼️ Обложка из _library.json")
+        log.info("   🖼️ Метаданные загружены из локальной библиотеки")
 
-        with open(meta_file, "w", encoding="utf-8") as f:
-            json.dump(meta, f, ensure_ascii=False)
-
-        # Восстанавливаем текст
+        # Восстанавливаем текст (алигнеру нужен именно .txt файл для работы)
         if lib_meta.get("lyrics"):
             with open(lyrics_file, "w", encoding="utf-8") as f:
                 f.write(lib_meta["lyrics"])
             log.info("   📝 Текст из _library.json: %d символов", len(lib_meta["lyrics"]))
-            return lyrics_file, artist, title
+            
+            # Возвращаем artist и title из тегов (если были) или из самого json
+            final_artist = artist or lib_meta.get("artist", "")
+            final_title = title or lib_meta.get("title", "")
+            
+            return lyrics_file, final_artist, final_title
 
-    log.info("   ⚠️ Методанные в _library.json не найдены или пусты")
+    log.info("   ⚠️ Метаданные в _library.json не найдены или текст отсутствует")
     return None, None, None
 
 def generate_karaoke_subtitles(inst_mp3: str, vocals_mp3: str, lyrics_path: str) -> str | None:
