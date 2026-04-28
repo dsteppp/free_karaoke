@@ -704,15 +704,15 @@ download_model \
     "MDX23C-8KFFT-InstVoc_HQ.ckpt" \
     200000000
 
-# Модель транскрипции (medium для NVIDIA, faster-whisper-small для остальных)
-if [ "$GPU_TYPE" = "NVIDIA" ]; then
+# Модель транскрипции (medium для GPU, faster-whisper-small для CPU)
+if [ "$GPU_TYPE" = "NVIDIA" ] || [ "$GPU_TYPE" = "AMD" ] || [ "$GPU_TYPE" = "HYBRID" ]; then
     download_model \
         "https://openaipublic.azureedge.net/main/whisper/models/345ae4da62f9b3d59415adc60127b97c714f32e89e936602e85993674d08dcb1/medium.pt" \
         "$INSTALL_DIR/core/models/whisper/medium.pt" \
         "Whisper medium" \
         500000000
 else
-    log_info "Оптимизация для CPU/AMD: скачиваем легкую модель Faster-Whisper (small)..."
+    log_info "Оптимизация для CPU: скачиваем легкую модель Faster-Whisper (small)..."
     FW_DIR="$INSTALL_DIR/core/models/whisper/faster-whisper-small"
     mkdir -p "$FW_DIR"
     HF_BASE="https://huggingface.co/Systran/faster-whisper-small/resolve/main"
