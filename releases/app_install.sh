@@ -704,12 +704,24 @@ download_model \
     "MDX23C-8KFFT-InstVoc_HQ.ckpt" \
     200000000
 
-# Whisper medium.pt — модель транскрипции (~1.5 GB)
-download_model \
-    "https://openaipublic.azureedge.net/main/whisper/models/345ae4da62f9b3d59415adc60127b97c714f32e89e936602e85993674d08dcb1/medium.pt" \
-    "$INSTALL_DIR/core/models/whisper/medium.pt" \
-    "Whisper medium" \
-    500000000
+# Модель транскрипции (medium для NVIDIA, faster-whisper-small для остальных)
+if [ "$GPU_TYPE" = "NVIDIA" ]; then
+    download_model \
+        "https://openaipublic.azureedge.net/main/whisper/models/345ae4da62f9b3d59415adc60127b97c714f32e89e936602e85993674d08dcb1/medium.pt" \
+        "$INSTALL_DIR/core/models/whisper/medium.pt" \
+        "Whisper medium" \
+        500000000
+else
+    log_info "Оптимизация для CPU/AMD: скачиваем легкую модель Faster-Whisper (small)..."
+    FW_DIR="$INSTALL_DIR/core/models/whisper/faster-whisper-small"
+    mkdir -p "$FW_DIR"
+    HF_BASE="https://huggingface.co/Systran/faster-whisper-small/resolve/main"
+    
+    download_model "$HF_BASE/model.bin" "$FW_DIR/model.bin" "Faster-Whisper (model)" 10000000
+    download_model "$HF_BASE/config.json" "$FW_DIR/config.json" "Faster-Whisper (config)" 1000
+    download_model "$HF_BASE/vocabulary.txt" "$FW_DIR/vocabulary.txt" "Faster-Whisper (vocab)" 1000
+    download_model "$HF_BASE/tokenizer.json" "$FW_DIR/tokenizer.json" "Faster-Whisper (tokenizer)" 1000
+fi
 
 log_success "ML-модели загружены"
 log_info "Модели находятся в $INSTALL_DIR/core/models/"

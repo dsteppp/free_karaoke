@@ -86,9 +86,8 @@ function Patch-Pipeline-Model {
     param([string]$FilePath, [string]$GpuType)
     if (-not (Test-Path $FilePath)) { return }
     $txt = [IO.File]::ReadAllText($FilePath)
-    
-    # ----------------------------------------------------------------------------------
-    # САМООЧИСТКА: Удаляем старые куски патчей AMD/HARDWARE/CPU, если скрипт ставится поверх
+
+    # Самоочистка старых патчей
     $txt = $txt -replace '(?s)# --- AMD.*?GLOBAL PATCH.*?# -+\r?\n?', ''
     $txt = $txt -replace '(?s)# --- HARDWARE.*?GLOBAL PATCH.*?# -+\r?\n?', ''
     $txt = $txt -replace 'cpu_detected = False # Patched for AMD DirectML', 'cpu_detected = True'
@@ -96,8 +95,8 @@ function Patch-Pipeline-Model {
     $txt = $txt -replace '"UVR-MDX-NET \(DirectML\)"', '"MDX23C (офлайн)"'
     $txt = $txt -replace 'Kim_Vocal_1\.onnx', 'MDX23C-8KFFT-InstVoc_HQ.ckpt'
     $txt = $txt -replace '"Kim_Vocal_1 \(CPU\)"', '"MDX23C (офлайн)"'
-    # ----------------------------------------------------------------------------------
-    
+
+    # Подмена моделей сепаратора для Windows
     if ($txt -match 'MDX23C-8KFFT-InstVoc_HQ\.ckpt') {
         if ($GpuType -eq "AMD") {
             $txt = $txt -replace 'MDX23C-8KFFT-InstVoc_HQ\.ckpt', 'UVR-MDX-NET-Inst_HQ_3.onnx'
@@ -111,66 +110,12 @@ function Patch-Pipeline-Model {
             Write-Log "Сепаратор ($FilePath) настроен на PyTorch (NVIDIA)" "SUCCESS"
         }
     }
-    
+
     # Отключаем прерывание фолбэка для AMD
     if ($GpuType -eq "AMD") {
         $txt = $txt -replace 'cpu_detected = True', 'cpu_detected = False # Patched for AMD DirectML'
     }
-    
-    # ГЛОБАЛЬНЫЙ ПАТЧ V9: Изоляция физических ядер и Faster-Whisper Small (для CPU и AMD)
-    if ($GpuType -ne "NVIDIA" -and $txt -notmatch "HARDWARE GLOBAL PATCH V9") {
-        $hardwarePatch = @'
-# --- HARDWARE GLOBAL PATCH V9 ---
-try:
-    import os, multiprocessing
-    try:
-        import psutil
-        cores_int = psutil.cpu_count(logical=False)
-        if not cores_int: cores_int = multiprocessing.cpu_count() // 2
-    except:
-        cores_int = multiprocessing.cpu_count() // 2
-    
-    if cores_int < 1: cores_int = 1
-    cores = str(cores_int)
-    
-    os.environ["OMP_NUM_THREADS"] = cores
-    os.environ["MKL_NUM_THREADS"] = cores
-    os.environ["OPENBLAS_NUM_THREADS"] = cores
-    os.environ["HF_HUB_OFFLINE"] = "1"
-    os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
 
-    import onnxruntime as ort
-    if not hasattr(ort, '_orig_InferenceSession'):
-        ort._orig_InferenceSession = ort.InferenceSession
-        def _patched_InferenceSession(path_or_bytes, sess_options=None, providers=None, provider_options=None, **kwargs):
-            providers = ['DmlExecutionProvider', 'CPUExecutionProvider']
-            return ort._orig_InferenceSession(path_or_bytes, sess_options, providers, provider_options, **kwargs)
-        ort.InferenceSession = _patched_InferenceSession
-
-    import stable_whisper
-    if not hasattr(stable_whisper, '_orig_load_model'):
-        stable_whisper._orig_load_model = stable_whisper.load_model
-        def _patched_load_model(*args, **kwargs):
-            name = args[0] if args else kwargs.get('name', 'small')
-            if str(name).endswith('.pt'): name = 'small'
-            
-            # Обход симлинков: Формируем жесткий путь к легкой модели small
-            core_dir = os.path.dirname(os.path.abspath(__file__))
-            local_model_path = os.path.join(core_dir, 'models', 'whisper', 'faster-whisper-small')
-            model_to_load = local_model_path if os.path.exists(local_model_path) else 'small'
-            
-            print(f"\n🚀 [Hardware Boost] Запуск Faster-Whisper (Direct Path, Физических ядер: {cores})...")
-            return stable_whisper.load_faster_whisper(model_to_load, device='cpu', compute_type='int8', cpu_threads=cores_int, local_files_only=True)
-        stable_whisper.load_model = _patched_load_model
-
-except Exception as e:
-    pass
-# --------------------------------
-'@
-        $txt = $hardwarePatch + "`r`n" + $txt
-        Write-Log "Внедрен Hardware Патч V9 (Изоляция ядер L3 кэша + Faster-Whisper Small)" "SUCCESS"
-    }
-    
     [IO.File]::WriteAllText($FilePath, $txt, (New-Object System.Text.UTF8Encoding($false)))
 }
 

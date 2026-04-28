@@ -557,6 +557,68 @@ except OSError:
 
 load_dotenv()
 
+# ==============================================================================
+# 🚀 УМНЫЙ РОУТИНГ МОДЕЛЕЙ И ОПТИМИЗАЦИЯ ЖЕЛЕЗА (Замена старых патчей)
+# ==============================================================================
+try:
+    import stable_whisper
+    import multiprocessing
+    
+    # 1. Определяем количество физических ядер (важно для слабых CPU)
+    try:
+        import psutil
+        cores_int = psutil.cpu_count(logical=False)
+        if not cores_int: cores_int = multiprocessing.cpu_count() // 2
+    except Exception:
+        cores_int = multiprocessing.cpu_count() // 2
+        
+    if cores_int < 1: cores_int = 1
+    cores_str = str(cores_int)
+    
+    # 2. Изолируем потоки (предотвращает зависание UI на слабых ПК и AMD)
+    os.environ["OMP_NUM_THREADS"] = cores_str
+    os.environ["MKL_NUM_THREADS"] = cores_str
+    os.environ["OPENBLAS_NUM_THREADS"] = cores_str
+    os.environ["HF_HUB_OFFLINE"] = "1"
+    os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
+
+    # 3. Перехватываем загрузку Whisper для автоматического переключения
+    if not hasattr(stable_whisper, '_fk_patched'):
+        stable_whisper._orig_load_model = stable_whisper.load_model
+        
+        def _smart_load_model(*args, **kwargs):
+            name = args[0] if args else kwargs.get('name', 'medium')
+            if str(name).endswith('.pt'): name = 'medium'
+            
+            local_fw_small = os.path.join(WHISPER_DIR, 'faster-whisper-small')
+            local_medium = os.path.join(WHISPER_DIR, 'medium.pt')
+            
+            # Если скачан small (AMD/CPU) -> принудительно CPU + int8
+            if os.path.exists(local_fw_small) and os.path.exists(os.path.join(local_fw_small, "model.bin")):
+                log.info(f"🚀 [Hardware Boost] Активирован легкий Faster-Whisper (CPU Mode, Ядер: {cores_int})...")
+                return stable_whisper.load_faster_whisper(
+                    local_fw_small, 
+                    device='cpu', 
+                    compute_type='int8', 
+                    cpu_threads=cores_int, 
+                    local_files_only=True
+                )
+            # Если скачан medium (NVIDIA)
+            elif os.path.exists(local_medium):
+                log.info("🚀 Запуск тяжелой модели Whisper (CUDA/ROCm Mode)...")
+                return stable_whisper._orig_load_model(local_medium, **kwargs)
+            # Fallback, если ничего не скачано
+            else:
+                log.warning("⚠️ Локальные модели Whisper не найдены! Попытка онлайн-загрузки...")
+                return stable_whisper._orig_load_model(name, **kwargs)
+
+        stable_whisper.load_model = _smart_load_model
+        stable_whisper._fk_patched = True
+
+except Exception as e:
+    log.warning(f"⚠️ Ошибка инициализации умного роутинга Whisper: {e}")
+# ==============================================================================
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Технические суффиксы в именах файлов
 # ──────────────────────────────────────────────────────────────────────────────
