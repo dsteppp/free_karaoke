@@ -1,6 +1,6 @@
 # 📦 Установщики Free Karaoke
 
-> **🇬 English version:** [scroll to the bottom](#-english-version)
+> **🇬🇧 English version:** [scroll to the bottom](#-english-version)
 
 В этой папке находятся установщики для всех поддерживаемых платформ.
 
@@ -115,7 +115,8 @@ chmod +x alternative_app_install.sh
 ---
 
 <!-- 🇬🇧 ENGLISH VERSION -->
-# 🇬🇧 Installers Overview
+# 🇬🇧 English Version
+# Installers Overview
 
 This script is a fully autonomous, portable installer for running Free Karaoke on Windows. It handles all the heavy lifting: from setting up an isolated Python environment to adapting neural networks specifically for your graphics card.
 
