@@ -9,7 +9,7 @@
 | Платформа | Файл | Описание |
 |-----------|------|----------|
 | 🪟 **Windows** | [`win_install.cmd`](#-установка-windows) | Полностью автоматический установщик |
-| 🐧 **Linux** | [`app_install.sh`](#-установка-linux) | Универсальный скрипт для любого дистрибутива |
+| 🐧 **Linux** | [`app_install.sh`](#-установка-linux)<br>[`alternative_app_install.sh`](#-установка-linux) | Универсальный скрипт для любого дистрибутива<br>Версия для систем без компиляторов (Pure-Python) |
 | 📱 **Android** | [`android/FreeKaraoke-Native-Release.apk`](android/FreeKaraoke-Native-Release.apk) | Готовый APK для установки |
 
 ---
@@ -66,23 +66,32 @@
 
 ---
 
-# 🐧 Установка Linux (`app_install.sh`)
+# 🐧 Установка Linux
 
-Полный скрипт установки для Linux доступен в файле [`app_install.sh`](app_install.sh).
+В репозитории доступны два варианта скрипта для установки:
+
+1. **Стандартный** (`app_install.sh`) — обычный установщик, подходящий для подавляющего большинства дистрибутивов (Ubuntu, Debian, Arch, Fedora и др.).
+2. **Альтернативный** (`alternative_app_install.sh`) — специальная версия для систем со строгими ограничениями (неизменяемые/immutable дистрибутивы) или систем без установленных инструментов разработчика и компиляторов (`gcc`/`clang`). Этот скрипт применяет патчи к сложным пакетам (например, `diffq`), принудительно устанавливая их в "Pure-Python" режиме, полностью обходя этап локальной компиляции C-кода.
 
 **Особенности:**
-- Автоматически определяет дистрибутив (Ubuntu, Debian, Arch, Fedora, openSUSE и др.)
-- Проверяет и устанавливает Python 3.11 (строго требуется эта версия!)
-- Скачивает и настраивает `uv` (быстрый пакетный менеджер)
-- Определяет видеокарту (NVIDIA/AMD/CPU) и подбирает оптимальные зависимости
-- Создаёт изолированное виртуальное окружение
-- Загружает ML-модели (~2 ГБ)
-- Создаёт .desktop файл для запуска из меню приложений
+- Автоматически определяет дистрибутив и системный пакетный менеджер.
+- Проверяет наличие Python 3.11 (строго требуется эта версия!).
+- Скачивает и настраивает `uv` (сверхбыстрый пакетный менеджер).
+- Определяет видеокарту (NVIDIA/AMD/CPU) и подбирает оптимальные зависимости (CUDA/ROCm).
+- Создаёт строго изолированное виртуальное окружение.
+- Загружает ML-модели (~2 ГБ).
+- Создаёт `.desktop` файл для удобного запуска из меню приложений.
 
-**Быстрый старт:**
+**Быстрый старт (Стандартный):**
 ```bash
 chmod +x app_install.sh
 ./app_install.sh
+```
+
+**Быстрый старт (Альтернативный):**
+```bash
+chmod +x alternative_app_install.sh
+./alternative_app_install.sh
 ```
 
 Подробные инструкции см. в **[INSTALL.md](../INSTALL.md#-linux)**.
@@ -160,23 +169,32 @@ The installer doesn't just download code from GitHub; it modifies it for the Win
 
 ---
 
-## 🐧 Linux Installation (`app_install.sh`)
+## 🐧 Linux Installation
 
-Full installation script for Linux: [`app_install.sh`](app_install.sh)
+There are two installer versions available in the repository:
+
+1. **Standard** (`app_install.sh`) — The default choice, suitable for the vast majority of Linux distributions (Ubuntu, Debian, Arch, Fedora, etc.).
+2. **Alternative** (`alternative_app_install.sh`) — A specialized version for systems with restricted build environments (immutable distributions) or systems missing developer tools/compilers (`gcc`/`clang`). This script applies patches to complex packages (like `diffq`), forcing them to install in a "Pure-Python" mode, completely bypassing local C-code compilation.
 
 **Features:**
-- Auto-detects distribution (Ubuntu, Debian, Arch, Fedora, openSUSE, etc.)
-- Verifies and installs Python 3.11 (strictly required!)
-- Downloads and configures `uv` (fast package manager)
-- Detects GPU (NVIDIA/AMD/CPU) and selects optimal dependencies
-- Creates isolated virtual environment
-- Downloads ML models (~2 GB)
-- Creates .desktop file for menu launch
+- Auto-detects the distribution and system package manager.
+- Verifies and installs Python 3.11 (strictly required!).
+- Downloads and configures `uv` (fast package manager).
+- Detects GPU (NVIDIA/AMD/CPU) and selects optimal dependencies (CUDA/ROCm).
+- Creates an isolated virtual environment.
+- Downloads ML models (~2 GB).
+- Creates a `.desktop` file for easy menu launch.
 
-**Quick start:**
+**Quick start (Standard):**
 ```bash
 chmod +x app_install.sh
 ./app_install.sh
+```
+
+**Quick start (Alternative):**
+```bash
+chmod +x alternative_app_install.sh
+./alternative_app_install.sh
 ```
 
 See detailed instructions in **[INSTALL.md](../INSTALL.md#-linux)**.
