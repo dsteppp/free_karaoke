@@ -88,15 +88,43 @@ function Patch-Pipeline-Model {
     $txt = [IO.File]::ReadAllText($FilePath)
 
     # Очистка возможных старых патчей
+    $txt = $txt -replace 'if False and not force_cpu_fallback:.*$', 'if cpu_detected and not force_cpu_fallback:'
     $txt = $txt -replace '(?m)^.*# Patched for AMD DirectML.*$', ''
 
-    # Если AMD — настраиваем ONNX сепаратор и отключаем CPU-фолбэк
+    # Если AMD — настраиваем ONNX сепаратор и внедряем умный перехватчик DirectML
     if ($GpuType -eq "AMD" -and ($txt -match 'MDX23C-8KFFT-InstVoc_HQ\.ckpt')) {
+        
+        # 1. Подмена тяжелой модели на ONNX
         $txt = $txt -replace 'MDX23C-8KFFT-InstVoc_HQ\.ckpt', 'UVR-MDX-NET-Inst_HQ_3.onnx'
         $txt = $txt -replace '"MDX23C \(офлайн\)"', '"UVR-MDX-NET (DirectML)"'
         
-        # Перехватываем новую логику отключения фолбэка из ai_pipeline.py
-        $txt = $txt -replace 'if cpu_detected and not force_cpu_fallback:', 'if False and not force_cpu_fallback: # Patched for AMD DirectML'
+        # 2. Игнорируем ложную панику audio-separator (т.к. он не знает про DirectML и думает, что это CPU)
+        $txt = $txt -replace 'if cpu_detected and not force_cpu_fallback:', 'if False and not force_cpu_fallback: # Patched for AMD: Игнор ложной тревоги'
+        
+        # 3. Внедрение микро-патча DirectML (Monkey Patch) в самое начало файла
+        if ($txt -notmatch "AMD DIRECTML ONNX PATCH") {
+            $injection = @'
+# --- AMD DIRECTML ONNX PATCH ---
+try:
+    import onnxruntime as _ort
+    if not hasattr(_ort, '_fk_dml_patched'):
+        _orig_InferenceSession = _ort.InferenceSession
+        def _patched_InferenceSession(*args, **kwargs):
+            avail = _ort.get_available_providers()
+            if 'DmlExecutionProvider' in avail:
+                providers = kwargs.get('providers', avail)
+                if providers is None: providers = avail
+                kwargs['providers'] = ['DmlExecutionProvider'] + [p for p in providers if p != 'DmlExecutionProvider']
+            return _orig_InferenceSession(*args, **kwargs)
+        _ort.InferenceSession = _patched_InferenceSession
+        _ort._fk_dml_patched = True
+except Exception:
+    pass
+# -------------------------------
+
+'@
+            $txt = $injection + $txt
+        }
         
         Write-Log "Сепаратор ($FilePath) перенастроен на ONNX (AMD DirectML GPU)" "SUCCESS"
     }
