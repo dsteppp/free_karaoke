@@ -122,7 +122,7 @@ free_karaoke/
 
 ## ℹ️ Статус проекта
 
-> Проект распространяется в текущем виде (**«как есть»**). Активная поддержка и дальнейшее развитие **не запланированы**, но полностью **не исключены** в будущем. Обновления могут выходить нерегулярно или не выходить совсем.
+> Проект распространяется в текущем виде. Активная поддержка и дальнейшее развитие **не запланированы**, но полностью **не исключены** в будущем. Обновления могут выходить нерегулярно или не выходить совсем.
 
 ## ⚠️ Дисклеймер о разработке
 
@@ -263,7 +263,7 @@ Requires: **Python 3.11**, Genius token (`.env` file).
 
 ## ℹ️ Project Status
 
-> The project is distributed in its current state (**"as is"**). Active support and further development are **not planned**, but not completely **excluded** in the future. Updates may be released irregularly or not released in future.
+> The project is distributed in its current state. Active support and further development are **not planned**, but not completely **excluded** in the future. Updates may be released irregularly or not released in future.
 
 ## ⚠️ Development Disclaimer
 
