@@ -47,6 +47,8 @@
 - Патчит код под вашу видеокарту
 - Создаёт изолированное окружение (не мусорит в системе)
 
+📖 Подробнее о том, как устроен установщик изнутри (Hardware Patch, Numba Patch, Diffq Patch и др.): **[releases/README.md — Установка Windows](releases/README.md#windows-detail)**
+
 ---
 
 ## 🐧 Linux
@@ -98,6 +100,8 @@ sudo pacman -S python-virtualenv python-pip curl git ffmpeg libsndfile portaudio
 sudo dnf install python3-devel python3-virtualenv curl git ffmpeg libsndfile portaudio-devel yad python3-gobject gtk3 qt6-qtwayland
 ```
 
+📖 Подробнее об отличиях `app_install.sh`/`alternative_app_install.sh` и о том, что именно делает установщик: **[releases/README.md — Установка Linux](releases/README.md#linux-detail)**
+
 ---
 
 ## 📱 Android
@@ -136,6 +140,8 @@ bash build-apk.sh
 - Скомпилирует и подпишет APK
 
 Готовый файл появится в папке `output/`.
+
+📖 Подробнее об Android-установщике: **[releases/README.md — Android](releases/README.md#android-detail)**
 
 ---
 
@@ -186,6 +192,7 @@ bash build-apk.sh
 - Решение без полной переустановки: `./releases/repair_env.sh /путь/к/установке`
   — переустановит только ML-рантайм (torch/onnxruntime) под текущее железо,
   не трогая уже скачанные модели и библиотеку треков.
+  📖 Подробнее: **[releases/README.md — Восстановление окружения](releases/README.md#repair-detail)**
 
 ---
 
@@ -244,6 +251,8 @@ bash build-apk.sh
 - Patches code for your GPU
 - Creates isolated environment (zero system pollution)
 
+📖 More on how the installer works under the hood (Hardware Patch, Numba Patch, Diffq Patch, etc.): **[releases/README.md — Windows Installation](releases/README.md#windows-detail-en)**
+
 ---
 
 ## 🐧 Linux
@@ -295,6 +304,8 @@ sudo pacman -S python-virtualenv python-pip curl git ffmpeg libsndfile portaudio
 sudo dnf install python3-devel python3-virtualenv curl git ffmpeg libsndfile portaudio-devel yad python3-gobject gtk3 qt6-qtwayland
 ```
 
+📖 More on the differences between `app_install.sh`/`alternative_app_install.sh` and what the installer actually does: **[releases/README.md — Linux Installation](releases/README.md#linux-detail-en)**
+
 ---
 
 ## 📱 Android
@@ -333,6 +344,8 @@ The script automatically:
 - Compiles and signs APK
 
 Ready APK will be in `output/` folder.
+
+📖 More on the Android installer: **[releases/README.md — Android](releases/README.md#android-detail-en)**
 
 ---
 
@@ -383,3 +396,4 @@ Genius API token is required:
 - Fix without a full reinstall: `./releases/repair_env.sh /path/to/install`
   — reinstalls only the ML runtime (torch/onnxruntime) for your current
   hardware, without touching already-downloaded models or your library.
+  📖 More: **[releases/README.md — Environment Repair](releases/README.md#repair-detail-en)**

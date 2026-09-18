@@ -8,13 +8,14 @@
 
 | Платформа | Файл | Описание |
 |-----------|------|----------|
-| 🪟 **Windows** | [`win_install.cmd`](#-установка-windows) | Полностью автоматический установщик |
-| 🐧 **Linux** | [`app_install.sh`](#-установка-linux)<br>[`alternative_app_install.sh`](#-установка-linux) | Универсальный скрипт для любого дистрибутива<br>Версия для систем без компиляторов (Pure-Python) |
-| 🔧 **Linux (восстановление)** | [`repair_env.sh`](#-восстановление-окружения) | Переустановка ML-рантайма без полной переустановки приложения |
+| 🪟 **Windows** | [`win_install.cmd`](#windows-detail) | Полностью автоматический установщик |
+| 🐧 **Linux** | [`app_install.sh`](#linux-detail)<br>[`alternative_app_install.sh`](#linux-detail) | Универсальный скрипт для любого дистрибутива<br>Версия для систем без компиляторов (Pure-Python) |
+| 🔧 **Linux (восстановление)** | [`repair_env.sh`](#repair-detail) | Переустановка ML-рантайма без полной переустановки приложения |
 | 📱 **Android** | [`android/FreeKaraoke-Native-Release.apk`](android/FreeKaraoke-Native-Release.apk) | Готовый APK для установки |
 
 ---
 
+<a name="windows-detail"></a>
 # 🪟 Установка Windows (`win_install.cmd`)
 
 ## ⚠️ Важные предупреждения (Читать обязательно)
@@ -67,6 +68,7 @@
 
 ---
 
+<a name="linux-detail"></a>
 # 🐧 Установка Linux
 
 В репозитории доступны два варианта скрипта для установки:
@@ -99,6 +101,7 @@ chmod +x alternative_app_install.sh
 
 ---
 
+<a name="repair-detail"></a>
 # 🔧 Восстановление окружения (`repair_env.sh`)
 
 На rolling-release дистрибутивах (Arch, Manjaro, EndeavourOS) системное
@@ -119,6 +122,7 @@ onnxruntime) под текущее железо — без повторной з
 
 ---
 
+<a name="android-detail"></a>
 # 📱 Android
 
 Готовый APK для установки на Android:  
@@ -145,13 +149,14 @@ This folder contains installers for all supported platforms.
 
 | Platform | File | Description |
 |-----------|------|----------|
-| 🪟 **Windows** | [`win_install.cmd`](#-windows-installation-win_installcmd) | Fully automatic installer |
-| 🐧 **Linux** | [`app_install.sh`](#-linux-installation)<br>[`alternative_app_install.sh`](#-linux-installation) | Universal script for any distro<br>Version for systems without compilers (Pure-Python) |
-| 🔧 **Linux (repair)** | [`repair_env.sh`](#-environment-repair-repair_envsh) | Reinstall the ML runtime without a full reinstall |
+| 🪟 **Windows** | [`win_install.cmd`](#windows-detail-en) | Fully automatic installer |
+| 🐧 **Linux** | [`app_install.sh`](#linux-detail-en)<br>[`alternative_app_install.sh`](#linux-detail-en) | Universal script for any distro<br>Version for systems without compilers (Pure-Python) |
+| 🔧 **Linux (repair)** | [`repair_env.sh`](#repair-detail-en) | Reinstall the ML runtime without a full reinstall |
 | 📱 **Android** | [`android/FreeKaraoke-Native-Release.apk`](android/FreeKaraoke-Native-Release.apk) | Ready-to-install APK |
 
 ---
 
+<a name="windows-detail-en"></a>
 This script is a fully autonomous, portable installer for running Free Karaoke on Windows. It handles all the heavy lifting: from setting up an isolated Python environment to adapting neural networks specifically for your graphics card.
 
 ## ⚠️ Crucial Warnings (Must Read)
@@ -204,6 +209,7 @@ The installer doesn't just download code from GitHub; it modifies it for the Win
 
 ---
 
+<a name="linux-detail-en"></a>
 ## 🐧 Linux Installation
 
 There are two installer versions available in the repository:
@@ -236,6 +242,7 @@ See detailed instructions in **[INSTALL.md](../INSTALL.md#-linux)**.
 
 ---
 
+<a name="repair-detail-en"></a>
 ## 🔧 Environment Repair (`repair_env.sh`)
 
 On rolling-release distros (Arch, Manjaro, EndeavourOS), a system
@@ -256,6 +263,7 @@ See symptoms and details in **[INSTALL.md — Troubleshooting](../INSTALL.md#tro
 
 ---
 
+<a name="android-detail-en"></a>
 ## 📱 Android
 
 Ready-to-install APK:  
