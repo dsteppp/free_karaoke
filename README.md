@@ -1,6 +1,6 @@
 # 🎤 Free Karaoke
 
-> **🇬 English version:** [scroll to the bottom](#-english-version)
+> **🇬🇧 English version:** [scroll to the bottom](#-english-version)
 
 **Кроссплатформенное караоке-приложение** — создаёт караоке из любого аудиофайла с помощью нейросетей.
 
@@ -36,13 +36,19 @@ free_karaoke/
 │   ├── app_status.py  #   Отслеживание статуса задач
 │   ├── editor_backend.py   #   Бэкенд редактора таймингов
 │   ├── library_io.py  #   Импорт/экспорт библиотек
+│   ├── qt_env.py       #   Настройка Qt/Chromium-окружения (не затирает GPU-флаги run.sh)
+│   ├── ml_healthcheck.py  #   Диагностика ML-рантайма (torch) при старте
 │   ├── run.sh         #   Скрипт запуска для Linux
 │   ├── static/        #   HTML/CSS/JS интерфейс
+│   ├── tests/          #   Автотесты (pytest)
 │   ├── .env.example   #   Шаблон переменных окружения
 │   └── ...            #   Другие модули (aligner_utils, metadata_parser, и т.д.)
 ├── releases/          # 📦 Установщики и дистрибутивы
 │   ├── win_install.cmd    #   Windows установщик
 │   ├── app_install.sh     #   Linux установщик
+│   ├── alternative_app_install.sh  #   Linux установщик (Pure-Python, без компиляторов)
+│   ├── repair_env.sh      #   Восстановление ML-рантайма без переустановки
+│   ├── lib/torch_requirements.sh   #   Версии torch/onnxruntime по типу GPU
 │   └── android/           #   Android версия
 │       ├── FreeKaraoke-Native-Release.apk  #   Готовый APK
 │       └── build-apk.sh   #   Скрипт сборки APK
@@ -72,6 +78,7 @@ free_karaoke/
 | Файл | Описание |
 |------|----------|
 | **[INSTALL.md](INSTALL.md)** | 📥 Подробная инструкция по установке для Windows, Linux и Android. Системные требования, настройка токенов, troubleshooting. |
+| **[INSTALL.md — Частые проблемы](INSTALL.md#частые-проблемы)** | ❓ Решения типичных проблем установки и запуска, включая восстановление после обновления системы (`repair_env.sh`). |
 | **[releases/README.md](releases/README.md)** | 📦 Описание установщиков: как работает Windows installer (win_install.cmd), Linux script (app_install.sh), ссылки на APK. |
 | **[releases/android/README.md](releases/android/README.md)** | 📱 Android-версия: возможности, сценарий использования, инструкция по сборке APK из исходников. |
 
@@ -99,10 +106,13 @@ free_karaoke/
 🏠 README.md (этот файл)
 ├── 📥 INSTALL.md → Установка для всех платформ
 │   ├── 🪟 Windows (win_install.cmd)
-│   ├── 🐧 Linux (app_install.sh)
-│   └── 📱 Android (APK + сборка)
+│   ├── 🐧 Linux (app_install.sh / alternative_app_install.sh)
+│   ├── 📱 Android (APK + сборка)
+│   └── ❓ Частые проблемы → включая repair_env.sh
 ├── 📦 releases/
 │   ├── README.md → Описание установщиков
+│   ├── repair_env.sh → Восстановление ML-рантайма без переустановки
+│   ├── lib/torch_requirements.sh → Версии torch/onnxruntime по GPU
 │   └── android/
 │       ├── README.md → Android-версия
 │       ├── FreeKaraoke-Native-Release.apk → Готовый APK
@@ -177,13 +187,19 @@ free_karaoke/
 │   ├── app_status.py  #   Task status tracking
 │   ├── editor_backend.py   #   Timing editor backend
 │   ├── library_io.py  #   Library import/export
+│   ├── qt_env.py       #   Qt/Chromium environment setup (never overrides run.sh's GPU flags)
+│   ├── ml_healthcheck.py  #   ML runtime (torch) diagnostics at startup
 │   ├── run.sh         #   Launch script for Linux
 │   ├── static/        #   HTML/CSS/JS interface
+│   ├── tests/          #   Automated tests (pytest)
 │   ├── .env.example   #   Environment variables template
 │   └── ...            #   Other modules (aligner_utils, metadata_parser, etc.)
 ├── releases/          # 📦 Installers and distributions
 │   ├── win_install.cmd    #   Windows installer
 │   ├── app_install.sh     #   Linux installer
+│   ├── alternative_app_install.sh  #   Linux installer (Pure-Python, no compilers needed)
+│   ├── repair_env.sh      #   Restore the ML runtime without a full reinstall
+│   ├── lib/torch_requirements.sh   #   torch/onnxruntime versions per GPU type
 │   └── android/           #   Android version
 │       ├── FreeKaraoke-Native-Release.apk  #   Ready APK
 │       └── build-apk.sh   #   APK build script
@@ -213,6 +229,7 @@ Requires: **Python 3.11**, Genius token (`.env` file).
 | File | Description |
 |------|-------------|
 | **[INSTALL.md](INSTALL.md)** | 📥 Detailed installation guide for Windows, Linux and Android. System requirements, token setup, troubleshooting. |
+| **[INSTALL.md — Troubleshooting](INSTALL.md#troubleshooting)** | ❓ Fixes for common install/launch issues, including recovery after a system update (`repair_env.sh`). |
 | **[releases/README.md](releases/README.md)** | 📦 Installers description: how Windows installer (win_install.cmd) works, Linux script (app_install.sh), APK links. |
 | **[releases/android/README.md](releases/android/README.md)** | 📱 Android version: features, usage scenario, APK build instructions from source. |
 
@@ -240,10 +257,13 @@ Requires: **Python 3.11**, Genius token (`.env` file).
 🏠 README.md (this file)
 ├── 📥 INSTALL.md → Installation for all platforms
 │   ├── 🪟 Windows (win_install.cmd)
-│   ├── 🐧 Linux (app_install.sh)
-│   └── 📱 Android (APK + build)
+│   ├── 🐧 Linux (app_install.sh / alternative_app_install.sh)
+│   ├── 📱 Android (APK + build)
+│   └── ❓ Troubleshooting → including repair_env.sh
 ├── 📦 releases/
 │   ├── README.md → Installers description
+│   ├── repair_env.sh → Restore ML runtime without a full reinstall
+│   ├── lib/torch_requirements.sh → torch/onnxruntime versions per GPU
 │   └── android/
 │       ├── README.md → Android version
 │       ├── FreeKaraoke-Native-Release.apk → Ready APK

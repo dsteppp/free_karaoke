@@ -10,6 +10,7 @@
 |-----------|------|----------|
 | 🪟 **Windows** | [`win_install.cmd`](#-установка-windows) | Полностью автоматический установщик |
 | 🐧 **Linux** | [`app_install.sh`](#-установка-linux)<br>[`alternative_app_install.sh`](#-установка-linux) | Универсальный скрипт для любого дистрибутива<br>Версия для систем без компиляторов (Pure-Python) |
+| 🔧 **Linux (восстановление)** | [`repair_env.sh`](#-восстановление-окружения) | Переустановка ML-рантайма без полной переустановки приложения |
 | 📱 **Android** | [`android/FreeKaraoke-Native-Release.apk`](android/FreeKaraoke-Native-Release.apk) | Готовый APK для установки |
 
 ---
@@ -98,6 +99,26 @@ chmod +x alternative_app_install.sh
 
 ---
 
+# 🔧 Восстановление окружения (`repair_env.sh`)
+
+На rolling-release дистрибутивах (Arch, Manjaro, EndeavourOS) системное
+обновление ROCm/CUDA/Mesa может разойтись с версией PyTorch, под которую
+собрано приложение — тогда оно перестаёт запускаться. `repair_env.sh`
+переустанавливает **только** ML-рантайм (torch/torchvision/torchaudio/
+onnxruntime) под текущее железо — без повторной загрузки моделей (~2 ГБ)
+и без переустановки всего приложения.
+
+```bash
+./repair_env.sh /путь/к/установке
+```
+
+Использует общий источник версий — [`lib/torch_requirements.sh`](lib/torch_requirements.sh)
+(тот же, что и `app_install.sh`/`alternative_app_install.sh`).
+
+Подробнее о симптомах и решении — в **[INSTALL.md — Частые проблемы](../INSTALL.md#частые-проблемы)**.
+
+---
+
 # 📱 Android
 
 Готовый APK для установки на Android:  
@@ -117,6 +138,19 @@ chmod +x alternative_app_install.sh
 <!-- 🇬🇧 ENGLISH VERSION -->
 # 🇬🇧 English Version
 # Installers Overview
+
+This folder contains installers for all supported platforms.
+
+## Available Installers
+
+| Platform | File | Description |
+|-----------|------|----------|
+| 🪟 **Windows** | [`win_install.cmd`](#-windows-installation-win_installcmd) | Fully automatic installer |
+| 🐧 **Linux** | [`app_install.sh`](#-linux-installation)<br>[`alternative_app_install.sh`](#-linux-installation) | Universal script for any distro<br>Version for systems without compilers (Pure-Python) |
+| 🔧 **Linux (repair)** | [`repair_env.sh`](#-environment-repair-repair_envsh) | Reinstall the ML runtime without a full reinstall |
+| 📱 **Android** | [`android/FreeKaraoke-Native-Release.apk`](android/FreeKaraoke-Native-Release.apk) | Ready-to-install APK |
+
+---
 
 This script is a fully autonomous, portable installer for running Free Karaoke on Windows. It handles all the heavy lifting: from setting up an isolated Python environment to adapting neural networks specifically for your graphics card.
 
@@ -199,6 +233,26 @@ chmod +x alternative_app_install.sh
 ```
 
 See detailed instructions in **[INSTALL.md](../INSTALL.md#-linux)**.
+
+---
+
+## 🔧 Environment Repair (`repair_env.sh`)
+
+On rolling-release distros (Arch, Manjaro, EndeavourOS), a system
+ROCm/CUDA/Mesa update can drift out of sync with the PyTorch build shipped
+with the app — the app then stops starting. `repair_env.sh` reinstalls
+**only** the ML runtime (torch/torchvision/torchaudio/onnxruntime) for your
+current hardware — without re-downloading models (~2 GB) and without
+reinstalling the whole app.
+
+```bash
+./repair_env.sh /path/to/install
+```
+
+Uses the shared version source — [`lib/torch_requirements.sh`](lib/torch_requirements.sh)
+(the same one used by `app_install.sh`/`alternative_app_install.sh`).
+
+See symptoms and details in **[INSTALL.md — Troubleshooting](../INSTALL.md#troubleshooting)**.
 
 ---
 

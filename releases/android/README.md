@@ -29,9 +29,10 @@
 
 **Требования для сборки:** Любой Linux-дистрибутив (Manjaro, Arch, Ubuntu) и доступ в интернет.
 
-1. Запустите баш-скрипт сборки в терминале:
+1. Запустите баш-скрипт сборки в терминале (из папки `releases/android`):
    ```bash
-   bash build_android.sh
+   cd releases/android
+   bash build-apk.sh
    ```
 2. Укажите директорию, где скрипт развернет временные файлы сборки (например, `/home/user/build`).
 3. Скрипт **самостоятельно**:
@@ -78,9 +79,10 @@ The build process is fully automated. You **do not need** Android Studio install
 
 **Build Requirements:** Any Linux distribution (Manjaro, Arch, Ubuntu) and an internet connection.
 
-1. Run the build bash script in your terminal:
+1. Run the build bash script in your terminal (from the `releases/android` folder):
    ```bash
-   bash build_android.sh
+   cd releases/android
+   bash build-apk.sh
    ```
 2. Specify a working directory where the script will place temporary build files (e.g., `/home/user/build`).
 3. The script will **automatically**:

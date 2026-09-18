@@ -1,6 +1,6 @@
 # 📥 Установка Free Karaoke
 
-> **🇬 English version:** [scroll to the bottom](#-english-version)
+> **🇬🇧 English version:** [scroll to the bottom](#-english-version)
 
 **Free Karaoke** — кроссплатформенное приложение для создания караоке из любых аудиофайлов с помощью нейросетей.
 
@@ -158,6 +158,7 @@ bash build-apk.sh
 
 ---
 
+<a name="частые-проблемы"></a>
 ## ❓ Частые проблемы
 
 ### Установка на Windows не запускается
@@ -354,6 +355,7 @@ Genius API token is required:
 
 ---
 
+<a name="troubleshooting"></a>
 ## ❓ Troubleshooting
 
 ### Windows installer won't start
@@ -372,3 +374,12 @@ Genius API token is required:
 ### No audio / audio errors
 - Install system dependencies (ffmpeg, portaudio, libsndfile)
 - Check system audio output settings
+
+### App worked before, but stopped starting after a system update
+- On rolling-release distros (Arch, Manjaro, EndeavourOS), a system
+  ROCm/CUDA/Mesa update can drift out of sync with the PyTorch build shipped
+  with the app — this shows up as a crash on startup or errors like
+  "Could not initialize GLX" / "Failed to get system egl display".
+- Fix without a full reinstall: `./releases/repair_env.sh /path/to/install`
+  — reinstalls only the ML runtime (torch/onnxruntime) for your current
+  hardware, without touching already-downloaded models or your library.

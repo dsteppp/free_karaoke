@@ -50,6 +50,7 @@ Without them, the track is skipped.
 
 ## 🔍 Детали форматов / Format Details
 
+<a name="karaoke-lyrics-format"></a>
 ### Формат таймингов / Karaoke Lyrics Format
 
 Массив объектов с таймингами каждого слова:  
@@ -72,6 +73,7 @@ Array of objects with timings for each word:
 
 📖 **Полная схема / Full schema:** [`formats/karaoke-lyrics-schema.json`](formats/karaoke-lyrics-schema.json)
 
+<a name="library-metadata-format"></a>
 ### Формат метаданных / Library Metadata Format
 
 ```json
@@ -102,7 +104,7 @@ Array of objects with timings for each word:
 
 ## 🔗 Навигация / Navigation
 
-- 🏠 [Главная README](../../README.md) — общее описание проекта / main project overview
-- 📥 [INSTALL.md](../../INSTALL.md) — установка для всех платформ / installation guide
-- 📚 [Shared README](../README.md) — эта страница / this page
+- 🏠 [Главная README](../README.md) — общее описание проекта / main project overview
+- 📥 [INSTALL.md](../INSTALL.md) — установка для всех платформ / installation guide
+- 📚 Shared README — эта страница / this page
 - 📦 [ZIP Structure](formats/zip-structure.md) — детальное описание ZIP-формата / detailed ZIP format docs
