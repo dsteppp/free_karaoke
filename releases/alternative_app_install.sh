@@ -453,11 +453,24 @@ if [ -d "$INSTALL_DIR/core" ] && [ -f "$INSTALL_DIR/core/main.py" ] && [ -f "$IN
     log_info "Папка core существует. Проверяем целостность..."
 fi
 
-if [ "$CORE_EXISTS" = false ]; then
+# releases/lib/ нужна и при переустановке поверх существующей core/ — это
+# скрипт, скачанный пользователем отдельным файлом (см. INSTALL.md), поэтому
+# lib/torch_requirements.sh на диске может отсутствовать даже если core/ уже есть.
+LIB_EXISTS=false
+if [ -f "$INSTALL_DIR/releases/lib/torch_requirements.sh" ]; then
+    LIB_EXISTS=true
+fi
+
+if [ "$CORE_EXISTS" = false ] || [ "$LIB_EXISTS" = false ]; then
     log_info "Клонируем репозиторий..."
     if command -v git &> /dev/null; then
         git clone --depth 1 "$REPO_URL" "$INSTALL_DIR/tmp_clone" < /dev/null
-        cp -r "$INSTALL_DIR/tmp_clone/core/"* "$INSTALL_DIR/core/"
+        if [ "$CORE_EXISTS" = false ]; then
+            cp -r "$INSTALL_DIR/tmp_clone/core/"* "$INSTALL_DIR/core/"
+        fi
+        mkdir -p "$INSTALL_DIR/releases/lib"
+        cp "$INSTALL_DIR/tmp_clone/releases/lib/torch_requirements.sh" "$INSTALL_DIR/releases/lib/"
+        cp "$INSTALL_DIR/tmp_clone/releases/repair_env.sh" "$INSTALL_DIR/releases/" 2>/dev/null || true
         rm -rf "$INSTALL_DIR/tmp_clone"
         log_success "Файлы загружены из репозитория"
     else
@@ -476,29 +489,13 @@ echo ""
 log_step "Генерация requirements.txt под $GPU_TYPE"
 echo ""
 
+source "$INSTALL_DIR/releases/lib/torch_requirements.sh"
+
 cat > "$INSTALL_DIR/core/requirements.txt" << EOF
 # АВТОГЕНЕРАЦИЯ ПОД $GPU_TYPE
 EOF
 
-if [ "$GPU_TYPE" = "NVIDIA" ] || [ "$GPU_TYPE" = "HYBRID" ]; then
-    echo "--extra-index-url https://download.pytorch.org/whl/cu124" >> "$INSTALL_DIR/core/requirements.txt"
-    echo "torch==2.6.0+cu124" >> "$INSTALL_DIR/core/requirements.txt"
-    echo "torchvision==0.21.0+cu124" >> "$INSTALL_DIR/core/requirements.txt"
-    echo "torchaudio==2.6.0+cu124" >> "$INSTALL_DIR/core/requirements.txt"
-    echo "onnxruntime-gpu" >> "$INSTALL_DIR/core/requirements.txt"
-elif [ "$GPU_TYPE" = "AMD" ]; then
-    echo "--extra-index-url https://download.pytorch.org/whl/rocm6.2" >> "$INSTALL_DIR/core/requirements.txt"
-    echo "torch==2.5.1+rocm6.2" >> "$INSTALL_DIR/core/requirements.txt"
-    echo "torchvision==0.20.1+rocm6.2" >> "$INSTALL_DIR/core/requirements.txt"
-    echo "torchaudio==2.5.1+rocm6.2" >> "$INSTALL_DIR/core/requirements.txt"
-    echo "onnxruntime" >> "$INSTALL_DIR/core/requirements.txt"
-else
-    echo "--extra-index-url https://download.pytorch.org/whl/cpu" >> "$INSTALL_DIR/core/requirements.txt"
-    echo "torch==2.6.0+cpu" >> "$INSTALL_DIR/core/requirements.txt"
-    echo "torchvision==0.21.0+cpu" >> "$INSTALL_DIR/core/requirements.txt"
-    echo "torchaudio==2.6.0+cpu" >> "$INSTALL_DIR/core/requirements.txt"
-    echo "onnxruntime" >> "$INSTALL_DIR/core/requirements.txt"
-fi
+write_torch_requirements "$GPU_TYPE" "$INSTALL_DIR/core/requirements.txt"
 
 cat >> "$INSTALL_DIR/core/requirements.txt" << 'EOF'
 fastapi>=0.135.0
