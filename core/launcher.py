@@ -42,19 +42,28 @@ elif sys.argv[0] == "":
     sys.argv[0] = "ai-karaoke-pro"
 
 # ── Настройки Chromium ────────────────────────────────────────────────────────
+from qt_env import resolve_qt_platform, merge_chromium_flags
+
 _webview_cache = os.path.join(CACHE_DIR, "webview")
 os.makedirs(_webview_cache, exist_ok=True)
-os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = (
-    "--no-sandbox "
-    "--disable-gpu-sandbox "
-    "--disable-dev-shm-usage "
-    "--disable-http-cache "
-    f"--disk-cache-dir={_webview_cache} "
-    "--disk-cache-size=0"
-)
+# ВАЖНО: дополняем то, что уже выставил run.sh (он учитывает вендора GPU и
+# гибридную графику), а не затираем — см. core/qt_env.py.
+os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = merge_chromium_flags(os.environ, [
+    "--no-sandbox",
+    "--disable-gpu-sandbox",
+    "--disable-dev-shm-usage",
+    "--disable-http-cache",
+    f"--disk-cache-dir={_webview_cache}",
+    "--disk-cache-size=0",
+])
 
 if sys.platform.startswith("linux"):
-    os.environ["QT_QPA_PLATFORM"] = "xcb"
+    # xcb (XWayland) под Wayland-сессией не создаёт GL-контекст ни через GLX,
+    # ни через EGL на некоторых связках AMD+Mesa ("Could not initialize GLX" /
+    # "Failed to query DRM FD for EGL") — используем нативный Wayland-плагин,
+    # когда сессия действительно Wayland. Но если run.sh уже сам решил
+    # (учитывая вендора GPU/гибридную графику) — используем его выбор.
+    os.environ["QT_QPA_PLATFORM"] = resolve_qt_platform(os.environ)
 
 # ── Chromium кэш внутри проекта ───────────────────────────────────────────────
 chromium_cache = os.path.join(CACHE_DIR, "chromium")
@@ -209,16 +218,10 @@ def wait_for_server(url, timeout=30):
 def _cleanup():
     """Вызывается при любом завершении."""
     log.info("Финальная очистка...")
-    try:
-        import gc
-        import torch
-        gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-            torch.cuda.ipc_collect()
-            log.info("GPU память освобождена.")
-    except Exception:
-        pass
+    # ВАЖНО: main-процесс (этот файл) больше не импортирует torch нигде —
+    # вся ML-работа изолирована в подпроцессы (huey worker, uvicorn,
+    # разовые subprocess.run для обложек/миграции). Освобождать GPU-память
+    # здесь нечего: этот процесс её никогда не занимал.
     kill_child_processes()
     log_shutdown()
 
@@ -440,28 +443,54 @@ def main():
     clear_python_cache(BASE_DIR)
     clear_chromium_cache()
 
+    # ── Проверка ML-рантайма (torch) — не блокирует запуск ─────────────────
+    # Если venv рассинхронизировался с системным ROCm/CUDA после обновления
+    # ОС (см. инцидент 18.09.2026), обработка новых треков будет недоступна,
+    # но плеер и уже готовые треки должны продолжать работать.
+    from ml_healthcheck import check_ml_runtime
+    ml_ok, ml_detail = check_ml_runtime(sys.executable, cwd=BASE_DIR, timeout=20.0)
+    if not ml_ok:
+        log.warning(
+            "⚠️ ML-рантайм (PyTorch) не загружается в этом окружении. "
+            "Обработка новых треков будет недоступна. Вероятная причина: "
+            "версия PyTorch/ROCm/CUDA в venv разошлась с системной после "
+            "обновления системы. На Linux попробуйте "
+            "releases/repair_env.sh, на Windows — переустановку. "
+            "Подробности: %s", ml_detail,
+        )
+
     log.info("Запуск фоновых сервисов AI-Karaoke Pro...")
     free_port(8000)
 
     # ── Встраиваем обложки из URL в base64 ─────────────────────────────────
+    # ВАЖНО: запускаем в отдельном процессе, а не импортируем ai_pipeline здесь.
+    # ai_pipeline тянет за собой `import torch` (сборка ROCm), а инициализация
+    # ROCm/HIP в ТОМ ЖЕ процессе, где потом создаётся Qt/WebEngine-окно, ломает
+    # EGL/Vulkan для WebEngine ("Failed to get system egl display",
+    # "Could not initialize GLX") и приводит к аварийному завершению.
     log.info("Сканирование библиотеки на наличие URL-обложек...")
-    from ai_pipeline import download_and_embed_covers
     try:
-        download_and_embed_covers(LIBRARY_DIR, max_total_time=30.0)
+        subprocess.run(
+            [sys.executable, "-c",
+             "from ai_pipeline import download_and_embed_covers; "
+             f"download_and_embed_covers({LIBRARY_DIR!r}, max_total_time=30.0)"],
+            cwd=BASE_DIR, timeout=40,
+        )
     except Exception as e:
         log.warning("Обложки не встроены (интернет недоступен): %s", e)
     log.info("Обложки обработаны.")
     log.info("")
 
     # ── Миграция: создаём _library.json для старых треков ────────────────
+    # Та же причина — выполняем в отдельном процессе, не импортируя ai_pipeline.
     log.info("Миграция: проверка _library.json...")
-    from ai_pipeline import migrate_create_library_meta
-    from database import DB_PATH
     try:
-        migrate_create_library_meta(
-            LIBRARY_DIR,
-            db_path=DB_PATH,
-            max_total_time=60.0,
+        subprocess.run(
+            [sys.executable, "-c",
+             "from ai_pipeline import migrate_create_library_meta; "
+             "from database import DB_PATH; "
+             f"migrate_create_library_meta({LIBRARY_DIR!r}, db_path=DB_PATH, max_total_time=60.0)"],
+            cwd=BASE_DIR, timeout=70,
         )
     except Exception as e:
         log.warning("Миграция _library.json пропущена: %s", e)
