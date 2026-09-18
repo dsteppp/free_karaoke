@@ -12,8 +12,11 @@ log = logging.getLogger("karaoke.token_prompt")
 _PROMPT_MSG = (
     "Для поиска текстов песен нужен токен Genius.\n\n"
     "1. Откройте: https://genius.com/api-clients/new\n"
-    "2. Создайте приложение\n"
-    "3. Скопируйте 'Client Access Token'\n\n"
+    "2. Заполните форму: App Website URL (обязательно начинается\n"
+    "   с https://, например https://genius.com) и Redirect URI\n"
+    "   (например www.google.com) — оба поля обязательны\n"
+    "3. Нажмите Save, затем на странице приложения нажмите\n"
+    "   'Generate Access Token' и скопируйте токен\n\n"
     "Вставьте токен ниже:"
 )
 
@@ -149,7 +152,11 @@ def ensure_genius_token(config_dir: str) -> bool:
         print("")
         print("Для поиска текстов песен нужен токен Genius.")
         print("1. Зарегистрируйтесь: https://genius.com/api-clients/new")
-        print("2. Создайте приложение и скопируйте 'Client Access Token'")
+        print("2. Заполните форму: App Website URL (обязательно начинается")
+        print("   с https://, например https://genius.com) и Redirect URI")
+        print("   (например www.google.com) — оба поля обязательны")
+        print("3. Нажмите Save, затем на странице приложения нажмите")
+        print("   'Generate Access Token' и скопируйте токен")
         print("")
         print("Токен будет сохранён в: " + env_file)
         print("")

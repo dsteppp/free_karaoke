@@ -151,9 +151,15 @@ bash build-apk.sh
 
 1. Перейдите на [genius.com/api-clients/new](https://genius.com/api-clients/new)
 2. Зарегистрируйтесь/войдите
-3. Создайте новое приложение (любые название и URL)
-4. Скопируйте **Access Token**
-5. Вставьте токен в файл `.env` (в папке программы):
+3. Заполните форму создания приложения:
+   - **App Name** — любое имя, например `Free Karaoke`
+   - **Icon URL** — можно оставить значение по умолчанию
+   - **App Website URL** — **обязательно валидный URL, начинающийся с `https://`** (например `https://genius.com`); если оставить пустым, указать без `https://` или невалидный адрес, форма не сохранится с ошибкой «App website url is not a valid URL»
+   - **Redirect URI** — тоже нужно заполнить каким-либо значением (например `www.google.com`)
+4. Нажмите **Save**
+5. На открывшейся странице приложения найдите **Client Access Token** и нажмите **Generate Access Token** — без этого клика токен не появится
+6. Скопируйте сгенерированный токен
+7. Вставьте токен в файл `.env` (в папке программы):
    ```
    GENIUS_ACCESS_TOKEN=ваш_токен_здесь
    ```
@@ -355,9 +361,15 @@ Genius API token is required:
 
 1. Go to [genius.com/api-clients/new](https://genius.com/api-clients/new)
 2. Register/login
-3. Create new app (any name and URL)
-4. Copy **Access Token**
-5. Insert token into `.env` file (in program folder):
+3. Fill in the app creation form:
+   - **App Name** — any name, e.g. `Free Karaoke`
+   - **Icon URL** — you can leave the default value
+   - **App Website URL** — **must be a valid URL starting with `https://`** (e.g. `https://genius.com`); if left blank, missing `https://`, or otherwise invalid, the form won't save and shows "App website url is not a valid URL"
+   - **Redirect URI** — also required, fill in any value (e.g. `www.google.com`)
+4. Click **Save**
+5. On the app page, find **Client Access Token** and click **Generate Access Token** — the token won't appear without this click
+6. Copy the generated token
+7. Insert it into the `.env` file (in the program folder):
    ```
    GENIUS_ACCESS_TOKEN=your_token_here
    ```

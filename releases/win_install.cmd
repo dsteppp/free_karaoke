@@ -168,7 +168,7 @@ def _check_genius_token():
     if not token:
         ps_script = f"""
         [System.Reflection.Assembly]::LoadWithPartialName('Microsoft.VisualBasic') | Out-Null
-        $msg = "Для поиска текстов песен нужен токен Genius.`n1. Зарегистрируйтесь: https://genius.com/api-clients/new`n2. Создайте приложение и скопируйте 'Client Access Token'`n`nТокен будет сохранён в:`n{portable_env_path}"
+        $msg = "Для поиска текстов песен нужен токен Genius.`n1. Зарегистрируйтесь: https://genius.com/api-clients/new`n2. App Website URL (обязательно начинается с https://, например https://genius.com) и Redirect URI (например www.google.com) — оба поля обязательны`n3. Нажмите Save, затем 'Generate Access Token' и скопируйте токен`n`nТокен будет сохранён в:`n{portable_env_path}"
         $t = [Microsoft.VisualBasic.Interaction]::InputBox($msg, 'Free Karaoke - Авторизация', '')
         if ($t) {{ Write-Output $t }}
         """
