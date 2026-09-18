@@ -15,7 +15,6 @@ set -euo pipefail
 
 DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
 INSTALL_DIR="${1:-$DIR}"
-CORE_DIR="$INSTALL_DIR/core"
 
 if [ ! -d "$INSTALL_DIR/.venv" ]; then
     echo "❌ Не найден venv в $INSTALL_DIR/.venv"
